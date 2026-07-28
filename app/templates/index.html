@@ -1,0 +1,3537 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ZMUX</title>
+<!-- Ace Editor 1.32.4 — bundled locally: the IDE must work with zero network access. -->
+<script src="/static/vendor/ace/ace.js" type="text/javascript" charset="utf-8"></script>
+<script src="/static/vendor/ace/ext-settings_menu.js" type="text/javascript" charset="utf-8"></script>
+<script src="/static/vendor/ace/ext-language_tools.js" type="text/javascript" charset="utf-8"></script>
+<script src="/static/vendor/ace/ext-searchbox.js" type="text/javascript" charset="utf-8"></script>
+<script src="/static/vendor/ace/mode-python.js" type="text/javascript" charset="utf-8"></script>
+<script src="/static/vendor/ace/theme-tomorrow_night_eighties.js" type="text/javascript" charset="utf-8"></script>
+
+<style>
+  :root {
+    --bg: #050806;
+    --bg-panel: #0A100D;
+    --bg-panel-2: #0F1712;
+    --border: #1B4D2E;
+    --border-bright: #2E8B4F;
+    --text: #B9F5C4;
+    --text-bright: #39FF14;
+    --text-dim: #4D7A5A;
+    --err: #FF4B4B;
+    --err-dim: #7A2424;
+    --ai: #FFB000;
+    --ai-dim: #7A5800;
+    --mono: 'JetBrains Mono', 'Fira Code', 'Courier New', ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; width: 100%; margin: 0; padding: 0; overflow-x: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Ace Editor Custom Terminal Theme Override */
+  .ace_editor {
+    background-color: var(--bg) !important;
+    color: var(--text) !important;
+    font-family: var(--mono) !important;
+    font-size: 14px !important;
+    line-height: 22px !important;
+  }
+  .ace_gutter {
+    background-color: var(--bg-panel) !important;
+    color: var(--text-dim) !important;
+    border-right: 1px solid var(--border) !important;
+  }
+  .ace_gutter-active-line {
+    background-color: rgba(57, 255, 20, 0.05) !important;
+  }
+  .ace_active-line {
+    background-color: transparent !important;
+  }
+  .ace_keyword {
+    color: var(--text-bright) !important;
+    font-weight: bold !important;
+  }
+  .ace_string {
+    color: var(--ai) !important;
+  }
+  .ace_numeric {
+    color: #50FA7B !important;
+  }
+  .ace_comment {
+    color: var(--text-dim) !important;
+    font-style: italic !important;
+  }
+  .ace_cursor {
+    color: var(--text-bright) !important;
+    border-left-width: 2px !important;
+  }
+  .ace_selection {
+    background: rgba(46, 139, 79, 0.3) !important;
+  }
+  .ace_marker-layer .ace_active-line {
+    background: transparent !important;
+  }
+
+  /* Mobile Symbol Quick Bar */
+  #mobile-symbol-bar {
+    display: none; background: var(--bg-panel-2); border-top: 1px solid var(--border);
+    padding: 4px 8px; gap: 6px; overflow-x: auto; scrollbar-width: none; flex: 0 0 auto;
+  }
+  #mobile-symbol-bar.active { display: flex; }
+  #mobile-symbol-bar::-webkit-scrollbar { display: none; }
+  .symbol-btn {
+    background: var(--bg-panel); color: var(--text-bright); border: 1px solid var(--border);
+    padding: 4px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; font-family: var(--mono);
+  }
+  .symbol-btn:active { background: var(--border-bright); color: var(--bg); }
+
+  /* ---------- CRT Scanline Overlay ---------- */
+  #scanlines {
+    position: fixed; inset: 0; z-index: 999; pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 1px,
+      rgba(0,0,0,.18) 2px, rgba(0,0,0,0) 3px
+    );
+    mix-blend-mode: multiply;
+    opacity: .5;
+  }
+  #scanlines::after {
+    content: ''; position: absolute; inset: 0;
+    box-shadow: inset 0 0 120px rgba(0,0,0,.65);
+  }
+
+  /* ---------- Boot Screen ---------- */
+  #boot-screen {
+    position: fixed; inset: 0; background: #000000; z-index: 1000;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 20px; overflow: hidden;
+  }
+  #matrix-canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1;
+    opacity: 0.35; pointer-events: none;
+  }
+  #boot-container {
+    position: relative; z-index: 2; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; max-width: 90%;
+  }
+  .boot-logo-img {
+    width: 120px; height: 120px; margin-bottom: 24px;
+    filter: drop-shadow(0 0 12px var(--text-bright));
+    animation: pulseLogo 2s infinite ease-in-out;
+  }
+  @keyframes pulseLogo {
+    0%, 100% { transform: scale(1); filter: drop-shadow(0 0 12px var(--text-bright)); }
+    50% { transform: scale(1.05); filter: drop-shadow(0 0 24px var(--text-bright)); }
+  }
+  #boot-lines { font-size: 12px; line-height: 1.8; max-height: 250px; overflow: hidden; text-align: left; width: 100%; max-width: 480px; }
+  #boot-lines .line { opacity: 0; animation: bootIn .15s forwards; text-shadow: 0 0 6px rgba(57,255,20,.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #boot-lines .ok { color: var(--text-bright); }
+  #boot-lines .dim { color: var(--text-dim); }
+  @keyframes bootIn { to { opacity: 1; } }
+  .cursor-block {
+    display: inline-block; width: 8px; height: 14px; background: var(--text-bright);
+    animation: blink 1s steps(1) infinite; vertical-align: -2px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  #app { display: none; flex: 1; min-height: 0; flex-direction: column; opacity: 0; transition: opacity .3s; width: 100%; height: 100%; }
+  #app.ready { opacity: 1; display: flex; }
+
+  /* ---------- View Swap Layout ---------- */
+  .view {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    background: var(--bg);
+    width: 100%; max-width: 100vw; overflow-x: hidden;
+  }
+  #view-editor { z-index: 2; }
+  #view-output { z-index: 3; display: none; }
+  #view-output.active { display: flex; }
+  #view-editor.behind { display: none; }
+  #view-root { position: relative; flex: 1; min-height: 0; width: 100%; overflow-x: hidden; }
+
+  /* ---------- Top Bar ---------- */
+  .topbar {
+    height: 44px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+    padding: 0 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border);
+    width: 100%;
+  }
+  .icon-btn { background: none; border: none; color: var(--text-bright); font-size: 18px; cursor: pointer; padding: 6px; font-family: var(--mono); }
+  #app-title { font-weight: 700; letter-spacing: .04em; font-size: 14px; color: var(--text-bright); text-shadow: 0 0 8px rgba(57,255,20,.4); }
+  #app-title::before { content: '> '; }
+  #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+  #status-dot.running { background: var(--ai); animation: blink .6s infinite; }
+  #status-dot.ok { background: var(--text-bright); box-shadow: 0 0 6px var(--text-bright); }
+  #status-dot.err { background: var(--err); box-shadow: 0 0 6px var(--err); }
+  #line-counter { margin-left: auto; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+
+  /* ---------- Multi-Tab Bar ---------- */
+  #tab-bar {
+    display: flex; background: var(--bg-panel-2); border-bottom: 1px solid var(--border);
+    overflow-x: auto; scrollbar-width: none; flex: 0 0 auto; height: 32px; width: 100%;
+  }
+  #tab-bar::-webkit-scrollbar { display: none; }
+  .editor-tab {
+    display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 11px;
+    color: var(--text-dim); border-right: 1px solid var(--border); cursor: pointer;
+    background: transparent; white-space: nowrap; user-select: none; transition: all .15s;
+  }
+  .editor-tab.active { background: var(--bg); color: var(--text-bright); border-top: 2px solid var(--text-bright); }
+  .tab-close { font-size: 10px; opacity: 0.6; padding: 2px 4px; border-radius: 2px; }
+  .tab-close:hover { opacity: 1; background: var(--err-dim); color: var(--err); }
+  #add-tab-btn { padding: 0 10px; color: var(--text-bright); font-weight: bold; cursor: pointer; display: flex; align-items: center; border-right: 1px solid var(--border); }
+
+  /* ---------- Sidebar ---------- */
+  #sidebar-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 29; display: none; }
+  #sidebar-backdrop.open { display: block; }
+  #sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0; width: 280px;
+    background: var(--bg-panel); border-right: 1px solid var(--border);
+    transform: translateX(-100%); transition: transform .2s ease;
+    z-index: 30; overflow-y: auto; padding-bottom: 24px;
+  }
+  #sidebar.open { transform: translateX(0); }
+  .sidebar-header { padding: 14px 16px; font-weight: 700; color: var(--text-bright); border-bottom: 1px solid var(--border); }
+  .sidebar-header::before { content: '/// '; color: var(--text-dim); }
+  .sidebar-section { border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  .sidebar-section h3 { font-size: 11px; letter-spacing: .06em; color: var(--text-dim); margin: 0; padding: 12px 16px 6px; }
+  
+  .mini-btn {
+    background: transparent; color: var(--text-bright); border: 1px solid var(--border-bright);
+    padding: 6px 12px; font-size: 11px; cursor: pointer; font-family: var(--mono); transition: all .15s;
+  }
+  .mini-btn:active { background: var(--border-bright); color: var(--bg); }
+  .mini-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ---------- Code Editor Container ---------- */
+  #code-editor-container {
+    flex: 1; background: var(--bg); overflow: hidden; position: relative;
+    display: flex; width: 100%; min-height: 0;
+  }
+  #code-editor { width: 100%; height: 100%; flex: 1; overflow: hidden; touch-action: auto; }
+  
+  /* Native Fallback Editor Styling */
+  #native-editor-wrapper {
+    display: none; width: 100%; height: 100%; flex: 1; overflow: hidden;
+    background: var(--bg); font-family: var(--mono);
+  }
+  #native-editor-wrapper.active { display: flex; }
+  #native-gutter {
+    width: 38px; flex: 0 0 38px; background: var(--bg-panel); color: var(--text-dim);
+    padding: 10px 4px; text-align: right; font-size: 13px; line-height: 1.5;
+    user-select: none; overflow: hidden; border-right: 1px solid var(--border);
+  }
+  #native-code-area {
+    flex: 1; width: 100%; background: transparent; color: var(--text);
+    border: none; outline: none; padding: 10px; font-family: var(--mono);
+    font-size: 13px; line-height: 1.5; resize: none; overflow-y: auto; overflow-x: hidden;
+    white-space: pre-wrap; word-break: break-word; tab-size: 4;
+  }
+  
+  #editor-controls {
+    flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 12px;
+    background: var(--bg-panel); border-top: 1px solid var(--border); width: 100%;
+  }
+  button.action { font-family: var(--mono); font-weight: 700; font-size: 13px; letter-spacing: .04em; border-radius: 2px; padding: 10px 18px; cursor: pointer; transition: all .15s; }
+  #run-btn { background: var(--text-bright); color: #00190A; border: none; flex: 1; }
+  #run-btn:active { background: #2ecc0f; }
+  #run-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  #clear-btn { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+
+  /* ---------- Output View Terminal ---------- */
+  #output-terminal { flex: 1; overflow-y: auto; padding: 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  #terminal-stdin-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--bg-panel); }
+  #terminal-stdin-label { color: var(--text-bright); font-size: 12px; white-space: nowrap; }
+  #stdin-input { flex: 1; min-width: 0; background: var(--bg-panel-2); color: var(--text); border: 1px solid var(--border); padding: 8px 10px; font-size: 12px; font-family: var(--mono); outline: none; }
+  #stdin-input:disabled { cursor: not-allowed; opacity: .6; }
+  #stdin-send-btn { background: transparent; color: var(--text-bright); border: 1px solid var(--border-bright); padding: 8px 10px; font: 700 12px var(--mono); cursor: pointer; }
+  #stdin-send-btn:disabled { cursor: not-allowed; opacity: .6; }
+  .prompt-line { color: var(--text-bright); margin-bottom: 8px; }
+  .prompt-line .user { color: var(--text-dim); }
+  #output-terminal .stdout-line { color: var(--text); }
+  #output-terminal .stderr-block { color: var(--err); border-left: 2px solid var(--err); padding-left: 8px; margin-top: 6px; }
+  /* Charts written by the running script (matplotlib savefig et al). */
+  .output-image { margin: 8px 0; padding: 6px; border: 1px solid var(--border);
+                  border-left: 3px solid var(--ai); border-radius: 4px;
+                  background: rgba(0,0,0,.22); }
+  .output-image-name { color: var(--ai); font-size: 10.5px; margin-bottom: 5px;
+                       letter-spacing: .4px; }
+  .output-image img { display: block; max-width: 100%; height: auto;
+                      border-radius: 3px; cursor: zoom-in;
+                      background: #fff; /* charts are usually transparent PNGs */ }
+  .output-image img.expanded { cursor: zoom-out; max-width: none; width: 100%; }
+
+  /* Zaba Oracle — offline error explanation */
+  .oracle-card { margin-top: 10px; border: 1px solid var(--ai); border-left: 3px solid var(--ai);
+                 background: rgba(255,176,0,0.06); padding: 10px 12px; border-radius: 4px;
+                 animation: oracleIn .28s ease-out; }
+  @keyframes oracleIn { from { opacity:0; transform: translateY(-6px);} to {opacity:1; transform:none;} }
+  .oracle-head { color: var(--ai); font-weight: bold; font-size: 12px; letter-spacing:.5px;
+                 display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+  .oracle-badge { font-size:9px; border:1px solid var(--ai); border-radius:3px; padding:1px 5px;
+                  opacity:.85; font-weight:normal; }
+  /* These referenced --fg/--ok/--dim, which this stylesheet never defines, so
+     the card silently inherited its colours and the green "Fix:" emphasis was
+     invisible. The real variables are --text / --text-bright / --text-dim. */
+  .oracle-what { color: var(--text); font-size: 12.5px; line-height:1.55; margin-bottom:6px; }
+  .oracle-fix  { color: var(--text-bright); font-size: 12.5px; line-height:1.55; }
+  .oracle-fix b { color: var(--text-bright); }
+  .oracle-line { color: var(--text-dim); font-size: 11px; margin-top:6px; }
+  /* Offending source line, echoed under the explanation so the user doesn't
+     have to scroll the editor to see what the Oracle is talking about. */
+  .oracle-src { margin:4px 0 0; padding:6px 8px; background:rgba(0,0,0,.28);
+                border-left:2px solid var(--ai); border-radius:3px;
+                font-family:inherit; font-size:11.5px; line-height:1.5;
+                color: var(--text); white-space:pre; overflow-x:auto; }
+  .oracle-jump { color: var(--ai); cursor:pointer; text-decoration:underline;
+                 margin-left:4px; }
+  #output-terminal .exit-line { margin-top: 10px; color: var(--text-dim); }
+  #output-terminal .exit-line.ok { color: var(--text-bright); }
+  #output-terminal .exit-line.err { color: var(--err); }
+
+  /* ---------- AI Bottom Sheet ---------- */
+  #ai-fab {
+    position: fixed; width: 48px; height: 48px; border-radius: 50%;
+    bottom: 90px; right: 20px;
+    background: var(--ai); color: #1A0F00; border: none; font-size: 16px; cursor: grab;
+    box-shadow: 0 0 16px rgba(255,176,0,.5); z-index: 25; font-family: var(--mono); font-weight: 700;
+    touch-action: none; user-select: none; display: flex; align-items: center; justify-content: center;
+  }
+  #ai-panel {
+    position: fixed; left: 0; right: 0; bottom: 0; height: 62%;
+    background: var(--bg-panel); border-top: 1px solid var(--ai-dim); border-radius: 10px 10px 0 0;
+    transform: translateY(100%); transition: transform .2s ease; z-index: 40; display: flex; flex-direction: column;
+  }
+  #ai-panel.open { transform: translateY(0); }
+  #ai-panel-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--ai); font-weight: 700; font-size: 13px; }
+  #ai-panel-header select { background: var(--bg-panel-2); color: var(--text); border: 1px solid var(--border); padding: 4px 6px; font-size: 11px; margin-left: auto; font-family: var(--mono); }
+  #ai-close { background: none; border: none; color: var(--text-dim); font-size: 16px; cursor: pointer; }
+  #ai-messages { flex: 1; overflow-y: auto; padding: 12px 14px; font-size: 12px; }
+  .msg { margin-bottom: 10px; max-width: 88%; padding: 8px 11px; line-height: 1.5; border: 1px solid; }
+  .msg.user { border-color: var(--border-bright); color: var(--text-bright); margin-left: auto; }
+  .msg.ai { border-color: var(--ai-dim); color: var(--ai); margin-right: auto; }
+  .msg.system-hint { border: none; color: var(--text-dim); font-style: italic; text-align: center; max-width: 100%; }
+  #ai-input-row { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
+  #ai-input { flex: 1; background: var(--bg-panel-2); color: var(--text); border: 1px solid var(--border); padding: 9px 12px; font-size: 12px; outline: none; font-family: var(--mono); }
+  #ai-send { background: var(--ai); color: #1A0F00; border: none; padding: 9px 16px; font-weight: 700; cursor: pointer; font-family: var(--mono); }
+
+  /* ---------- DEDICATED FULL MODALS ---------- */
+  .full-modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 60;
+    display: none; align-items: center; justify-content: center; backdrop-filter: blur(4px);
+  }
+  .full-modal-backdrop.open { display: flex; }
+  .full-modal {
+    background: var(--bg-panel); border: 1px solid var(--border-bright);
+    width: 92%; max-width: 720px; height: 85vh; display: flex; flex-direction: column;
+    box-shadow: 0 0 30px rgba(46,139,79,.3);
+  }
+  .full-modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--bg-panel-2);
+  }
+  .full-modal-title { font-weight: 700; font-size: 14px; color: var(--text-bright); }
+  .full-modal-close { background: none; border: none; color: var(--text-dim); font-size: 20px; cursor: pointer; }
+
+  /* ---------- MARKETPLACE & LIBRARY CARDS ---------- */
+  .market-grid {
+    flex: 1; overflow-y: auto; padding: 16px 18px; display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-content: start;
+  }
+  .market-card {
+    background: var(--bg-panel-2); border: 1px solid var(--border); padding: 12px;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+
+  /* ---------- Dialog Base Styles ---------- */
+  .dialog-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.75); z-index: 50; display: none; align-items: center; justify-content: center; }
+  .dialog-backdrop.open { display: flex; }
+  .dialog-box { background: var(--bg-panel); border: 1px solid var(--border-bright); width: 90%; max-width: 380px; padding: 18px; }
+  .dialog-box h4 { margin: 0 0 10px; color: var(--text-bright); font-size: 14px; }
+  .dialog-input { width: 100%; background: var(--bg-panel-2); color: var(--text); border: 1px solid var(--border); padding: 8px 10px; font-size: 12px; margin-bottom: 12px; font-family: var(--mono); }
+  .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* ---------- Toast ---------- */
+  .install-toast {
+    position: fixed; bottom: 80px; left: 16px; right: 16px; max-width: 360px;
+    background: var(--bg-panel); border: 1px solid var(--border-bright);
+    padding: 12px 14px; font-size: 12px; z-index: 70; animation: slideUp .3s ease;
+  }
+  .install-toast.success { border-color: var(--text-bright); color: var(--text-bright); }
+  .install-toast.error { border-color: var(--err); color: var(--err); }
+  .install-toast.loading { border-color: var(--ai); color: var(--ai); }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+  .tag { font-size: 9px; padding: 2px 6px; border: 1px solid; }
+  .tag.runtime { border-color: var(--border-bright); color: var(--text-bright); }
+  .tag.buildtime { border-color: var(--ai-dim); color: var(--ai); }
+
+  /* ---------- ACE SETTINGS MENU OVERRIDES (OLED Dark & Hacker Green) ---------- */
+  #ace_settingsmenu {
+    background: #000000 !important;
+    color: #39FF14 !important;
+    font-family: var(--mono) !important;
+    padding: 24px !important;
+    border: 1px solid #39FF14 !important;
+    box-shadow: 0 0 20px rgba(57, 255, 20, 0.4) !important;
+    max-width: 600px !important;
+    margin: 20px auto !important;
+    border-radius: 8px !important;
+    max-height: 85vh !important;
+    overflow-y: auto !important;
+    box-sizing: border-box !important;
+  }
+  #ace_settingsmenu input,
+  #ace_settingsmenu select,
+  #ace_settingsmenu button {
+    background: #000000 !important;
+    color: #39FF14 !important;
+    border: 1px solid #39FF14 !important;
+    font-family: var(--mono) !important;
+    padding: 6px 10px !important;
+    border-radius: 4px !important;
+    outline: none !important;
+  }
+  #ace_settingsmenu button:hover,
+  #ace_settingsmenu select:hover,
+  #ace_settingsmenu input:focus {
+    background: rgba(57, 255, 20, 0.1) !important;
+    box-shadow: 0 0 8px rgba(57, 255, 20, 0.5) !important;
+  }
+  #ace_settingsmenu select option {
+    background: #000000 !important;
+    color: #39FF14 !important;
+  }
+  #ace_settingsmenu button[ace_selected_button="true"],
+  #ace_settingsmenu button[aria-pressed="true"] {
+    background: #39FF14 !important;
+    color: #000000 !important;
+    font-weight: bold !important;
+  }
+  #ace_settingsmenu label {
+    color: #39FF14 !important;
+    font-family: var(--mono) !important;
+    font-size: 13px !important;
+  }
+  .ace_optionsMenuEntry {
+    border-bottom: 1px solid rgba(57, 255, 20, 0.15) !important;
+  }
+  .ace_optionsMenuEntry td {
+    padding: 8px 4px !important;
+  }
+
+  /* ---------- Floating Touch Context Menu ---------- */
+  #editor-floating-trigger {
+    position: absolute;
+    z-index: 1000;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-bright);
+    color: var(--text-bright);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: bold;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(57, 255, 20, 0.4);
+    user-select: none;
+    -webkit-user-select: none;
+    transition: background 0.1s, transform 0.1s;
+  }
+  #editor-floating-trigger:active {
+    background: var(--border-bright);
+    color: var(--bg);
+    transform: scale(0.95);
+  }
+  #editor-floating-menu {
+    position: absolute;
+    z-index: 1001;
+    background: var(--bg-panel-2);
+    border: 1px solid var(--border-bright);
+    border-radius: 6px;
+    padding: 4px;
+    display: flex;
+    gap: 4px;
+    box-shadow: 0 0 15px rgba(57, 255, 20, 0.5);
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .floating-menu-btn {
+    background: var(--bg-panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    font-weight: bold;
+    border-radius: 3px;
+    transition: background 0.1s;
+  }
+  .floating-menu-btn:active {
+    background: var(--border-bright);
+    color: var(--bg);
+  }
+</style>
+</head>
+<body>
+
+<div id="scanlines"></div>
+
+<div id="boot-screen">
+  <canvas id="matrix-canvas"></canvas>
+  <div id="boot-container">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="ZMUX Logo" class="boot-logo-img">
+    <div id="boot-lines"></div>
+  </div>
+</div>
+
+<div id="app">
+  <div id="view-root">
+
+    <!-- VIEW EDITOR -->
+    <div id="view-editor" class="view active">
+      <div class="topbar">
+        <button id="hamburger" class="icon-btn" aria-label="Menu">☰</button>
+        <div id="app-title">ZMUX</div>
+        <div id="status-dot"></div>
+        <div id="line-counter">Ln 1, Col 1</div>
+      </div>
+
+      <!-- Multi-Tab Bar -->
+      <div id="tab-bar">
+        <div id="add-tab-btn">+</div>
+      </div>
+
+      <div id="code-editor-container">
+        <!-- Floating touch context menu trigger -->
+        <button id="editor-floating-trigger" style="display: none;" aria-label="Coding Helper Menu">•••</button>
+
+        <!-- Floating touch context menu -->
+        <div id="editor-floating-menu" style="display: none;">
+          <button class="floating-menu-btn" id="floating-undo-btn">Undo</button>
+          <button class="floating-menu-btn" id="floating-redo-btn">Redo</button>
+          <button class="floating-menu-btn" id="floating-find-btn">Find</button>
+          <button class="floating-menu-btn" id="floating-palette-btn">Palette</button>
+        </div>
+
+        <div id="code-editor" tabindex="0"></div>
+        <div id="native-editor-wrapper">
+          <div id="native-gutter">1</div>
+          <textarea id="native-code-area" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off">print('Hello! Welcome to ZMUX')
+print('Try running libraries or executing code here!')
+</textarea>
+        </div>
+      </div>
+
+      <!-- Mobile Symbol Quick Bar -->
+      <div id="mobile-symbol-bar">
+        <button class="symbol-btn" data-sym="    ">TAB</button>
+        <button class="symbol-btn" data-sym=":">:</button>
+        <button class="symbol-btn" data-sym="(">(</button>
+        <button class="symbol-btn" data-sym=")">)</button>
+        <button class="symbol-btn" data-sym="[">[</button>
+        <button class="symbol-btn" data-sym="]">]</button>
+        <button class="symbol-btn" data-sym="{">{</button>
+        <button class="symbol-btn" data-sym="}">}</button>
+        <button class="symbol-btn" data-sym='"'>"</button>
+        <button class="symbol-btn" data-sym="'">'</button>
+        <button class="symbol-btn" data-sym="=">=</button>
+        <button class="symbol-btn" data-sym="_">_</button>
+        <button class="symbol-btn" data-sym="def ">def</button>
+        <button class="symbol-btn" data-sym="return ">return</button>
+        <button class="symbol-btn" data-sym="import ">import</button>
+      </div>
+
+      <div id="editor-controls">
+        <button id="run-btn" class="action">▶ EXECUTE</button>
+        <button id="clear-btn" class="action" title="Clear Editor / Terminal">CLEAR</button>
+      </div>
+    </div>
+
+    <!-- VIEW OUTPUT TERMINAL -->
+    <div id="view-output" class="view">
+      <div class="topbar">
+        <button id="back-to-editor" class="icon-btn" aria-label="Back">◂ EDIT</button>
+        <div id="app-title-output" style="font-weight:bold;color:var(--text-bright);">output terminal</div>
+        <button id="clear-output-btn" class="mini-btn" style="margin-left:auto;background:transparent;color:var(--text-dim);border:1px solid var(--border);">CLEAR</button>
+        <div id="output-status-dot" style="margin-left:8px;width:8px;height:8px;border-radius:50%;"></div>
+      </div>
+      <div id="output-terminal" aria-live="polite"></div>
+      <div id="terminal-stdin-row">
+        <label id="terminal-stdin-label" for="stdin-input">stdin &gt;</label>
+        <input type="text" id="stdin-input" placeholder="Run the program to enable input" disabled autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Input for the currently running program">
+        <button id="stdin-send-btn" type="button" disabled>KIRIM</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- SIDEBAR MENU -->
+  <div id="sidebar-backdrop"></div>
+  <div id="sidebar">
+    <div class="sidebar-header">ZMUX</div>
+    <div class="sidebar-section">
+      <h3 id="lbl-sidebar-control">[ FEATURES & CONTROLS ]</h3>
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 0 16px;">
+        <button id="sidebar-market-btn" class="mini-btn" style="text-align: left; padding: 10px 12px; font-size: 12px; background: rgba(255,176,0,.1); border-color: var(--ai);">🧩 PLUGIN & THEME MARKETPLACE</button>
+        <button id="sidebar-open-btn" class="mini-btn" style="text-align: left; padding: 10px 12px; font-size: 12px;">📂 OPEN / MANAGE FILES</button>
+        <button id="sidebar-save-btn" class="mini-btn" style="text-align: left; padding: 10px 12px; font-size: 12px;">💾 SAVE AS FILE (.py)</button>
+        <button id="sidebar-settings-btn" class="mini-btn" style="text-align: left; padding: 10px 12px; font-size: 12px; background: rgba(57,255,20,.05); border-color: var(--border-bright);">🛠️ SETTINGS & PREFERENCES</button>
+      </div>
+    </div>
+    <div class="sidebar-section">
+      <h3 id="lbl-sidebar-docs">[ DOCS & ROADMAP ]</h3>
+      <div style="padding: 0 16px; margin-top: 8px;">
+        <button id="sidebar-docs-btn" class="mini-btn" style="text-align: left; padding: 10px 12px; font-size: 12px; width: 100%;">📖 DOCS & ROADMAP</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI FAB & PANEL -->
+  <button id="ai-fab" aria-label="AI Assistant">AI</button>
+  <div id="ai-panel">
+    <div id="ai-panel-header">
+      zabacode ai
+      <select id="ai-provider">
+        <option value="openrouter">openrouter</option>
+        <option value="gemini">gemini</option>
+        <option value="groq">groq</option>
+        <option value="mistral">mistral</option>
+        <option value="deepseek">deepseek</option>
+        <option value="ollama">ollama</option>
+        <option value="custom">🔧 custom endpoint</option>
+      </select>
+      <button id="ai-close">✕</button>
+    </div>
+    <!-- Model Selector Row -->
+    <div id="ai-model-row" style="padding: 6px 14px; background: var(--bg-panel-2); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+      <span style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; font-family: var(--mono);">Model:</span>
+      <select id="ai-model" style="flex: 1; background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); font-size: 11px; padding: 4px 6px; outline: none; font-family: var(--mono);">
+        <!-- populated dynamically -->
+      </select>
+    </div>
+    <div id="ai-messages">
+      <div class="msg system-hint" id="lbl-ai-hint">AI automatically reads code in the active editor — ask anything about the code.</div>
+    </div>
+    <div id="ai-input-row">
+      <input id="ai-input" type="text" placeholder="ask AI or request solution...">
+      <button id="ai-send">SEND</button>
+    </div>
+  </div>
+
+  <!-- DEDICATED SETTINGS MODAL -->
+  <div id="settings-modal-backdrop" class="full-modal-backdrop">
+    <div id="settings-modal" class="full-modal">
+      <div class="full-modal-header">
+        <div class="full-modal-title">🛠️ ZMUX SYSTEM SETTINGS</div>
+        <button class="full-modal-close" id="settings-modal-close">✕</button>
+      </div>
+
+      <div style="flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px;">
+        <p style="color: var(--text-dim); font-size: 12px; margin: 0; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+          Configure libraries, starter kits, editor engines, visual themes, and CRT scanlines.
+        </p>
+
+        <!-- Setting Card 1: Library Manager -->
+        <div class="settings-card" id="btn-settings-lib" style="background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-weight: bold; color: var(--text-bright); font-size: 14px;">📦 Library Manager (zabapip)</span>
+            <span style="color: var(--text-dim); font-size: 11px;">&gt;&gt;</span>
+          </div>
+          <span style="color: var(--text-dim); font-size: 11px;">Install, search, and manage PyPI packages directly on your mobile device.</span>
+        </div>
+
+        <!-- Setting Card 2: Offline Starter Kits -->
+        <div class="settings-card" id="btn-settings-starter" style="background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-weight: bold; color: var(--text-bright); font-size: 14px;">🚀 Offline Starter Kits</span>
+            <span style="color: var(--text-dim); font-size: 11px;">&gt;&gt;</span>
+          </div>
+          <span style="color: var(--text-dim); font-size: 11px;">Load standard pre-written templates like CLI To-do, Safe Calculator, and HTTP request examples.</span>
+        </div>
+
+        <!-- Setting Card 3: Engine Selector -->
+        <div class="settings-card" id="btn-settings-engine" style="background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-weight: bold; color: var(--text-bright); font-size: 14px;">⚙️ Editor Engine Switcher</span>
+            <span id="label-settings-engine" style="font-family: var(--mono); font-size: 11px; background: rgba(57,255,20,0.1); color: var(--text-bright); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-bright);">ACE</span>
+          </div>
+          <span style="color: var(--text-dim); font-size: 11px;">Switch between high-fidelity Ace editor (online) and lightweight Kivy Native editor (offline fallback).</span>
+        </div>
+
+        <!-- Setting Card 4: Change Theme Preset -->
+        <div class="settings-card" id="btn-settings-theme" style="background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-weight: bold; color: var(--text-bright); font-size: 14px;">🎨 Change UI/Editor Theme</span>
+            <span style="color: var(--text-dim); font-size: 11px;">&gt;&gt;</span>
+          </div>
+          <span style="color: var(--text-dim); font-size: 11px;">Choose from Dracula, Retro Green, Catppuccin, Tokyo Night, Gruvbox, and more presets.</span>
+        </div>
+
+        <!-- Setting Card 5: CRT Scanlines -->
+        <div class="settings-card" id="btn-settings-crt" style="background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-weight: bold; color: var(--text-bright); font-size: 14px;">📺 CRT Scanlines Toggle</span>
+            <span id="label-settings-crt" style="font-family: var(--mono); font-size: 11px; background: rgba(57,255,20,0.1); color: var(--text-bright); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-bright);">ON</span>
+          </div>
+          <span style="color: var(--text-dim); font-size: 11px;">Toggle the retro scanline terminal overlay effect on/off.</span>
+        </div>
+
+        <!-- Setting Card 6: AI Assistant API Keys -->
+        <div class="settings-card" id="btn-settings-ai-keys" style="background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-weight: bold; color: var(--text-bright); font-size: 14px;">🔑 AI Assistant API Keys</span>
+            <span style="color: var(--text-dim); font-size: 11px;">&gt;&gt;</span>
+          </div>
+          <span style="color: var(--text-dim); font-size: 11px;">Configure manual API Keys for OpenRouter, Google Gemini, Groq, Mistral, and DeepSeek.</span>
+        </div>
+
+        <!-- Setting Card 7: Privacy — Local Drafts (Fix #21) -->
+        <div class="settings-card" id="btn-settings-privacy" style="background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-weight: bold; color: var(--text-bright); font-size: 14px;">🔒 Privacy: Local Drafts</span>
+            <span id="label-settings-privacy" style="font-family: var(--mono); font-size: 11px; background: rgba(57,255,20,0.1); color: var(--text-bright); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-bright);">ON</span>
+          </div>
+          <span style="color: var(--text-dim); font-size: 11px;">
+            Unsaved tabs are saved in WebView <b>localStorage</b> (device-only, not server). On shared/unlocked devices, this can expose credentials or proprietary code. Disable persistence or clear drafts with one click. No encryption — localStorage is plain text.
+          </span>
+          <div style="display:flex; gap:8px; margin-top:4px; flex-wrap:wrap;">
+            <button id="privacy-clear-btn" class="mini-btn" style="border-color: var(--err); color: var(--err);">🗑️ Clear Local Drafts</button>
+            <button id="privacy-toggle-btn" class="mini-btn" style="border-color: var(--border-bright);">Toggle Persistence (Opt-in/Opt-out)</button>
+          </div>
+          <span style="color: var(--text-dim); font-size: 10px; margin-top:4px;">
+            Current: <span id="privacy-status-text">Checking...</span><br>
+            Docs: SECURITY.md → Privacy section
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI KEYS CONFIG MODAL -->
+  <div id="ai-keys-modal-backdrop" class="full-modal-backdrop">
+    <div id="ai-keys-modal" class="full-modal">
+      <div class="full-modal-header">
+        <div class="full-modal-title">🔑 CONFIGURE AI API KEYS</div>
+        <button class="full-modal-close" id="ai-keys-modal-close">✕</button>
+      </div>
+
+      <div style="flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px;">
+        <p style="color: var(--text-dim); font-size: 12px; margin: 0; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+          Saved securely on the device's Keystore or encrypted local memory. Ollama is run offline and does not require an API key.
+        </p>
+
+        <!-- Dynamic keys list populated via JS -->
+        <div id="ai-keys-list" style="display: flex; flex-direction: column; gap: 16px;">
+          <!-- Items will be populated here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DEDICATED LIBRARY MANAGER MODAL -->
+  <div id="lib-modal-backdrop" class="full-modal-backdrop">
+    <div id="lib-modal" class="full-modal">
+      <div class="full-modal-header">
+        <div class="full-modal-title">📦 ZMUX LIBRARY MANAGER (zabapip)</div>
+        <button class="full-modal-close" id="lib-modal-close">✕</button>
+      </div>
+      
+      <div class="lib-search-bar" style="display:flex;gap:8px;padding:12px 18px;border-bottom:1px solid var(--border);">
+        <input type="text" id="lib-search" class="dialog-input" style="margin:0;" placeholder="Search library name (e.g. requests, pandas, fastapi)...">
+      </div>
+
+      <div class="lib-categories" id="lib-cat-container" style="display:flex;gap:6px;padding:10px 18px;overflow-x:auto;border-bottom:1px solid var(--border);background:var(--bg-panel-2);">
+        <div class="lib-cat-pill active" data-cat="all">🌟 All</div>
+        <div class="lib-cat-pill" data-cat="Web & API">🌐 Web & API</div>
+        <div class="lib-cat-pill" data-cat="Data & Math">📊 Data & Science</div>
+        <div class="lib-cat-pill" data-cat="Database">🤖 AI & Database</div>
+        <div class="lib-cat-pill" data-cat="Utilities">🎨 Media & Utils</div>
+      </div>
+
+      <div class="market-grid" id="lib-grid-container"></div>
+
+      <div style="padding:12px 18px;border-top:1px solid var(--border);background:var(--bg-panel-2);display:flex;gap:8px;">
+        <input type="text" id="custom-pip-input" class="dialog-input" style="margin:0;" placeholder="Install library PyPI custom (misal: fake-useragent, colorama)...">
+        <button class="mini-btn" id="custom-pip-btn" style="background:var(--text-bright);color:#00190A;border:none;font-weight:bold;">Install via Pip</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DEDICATED PLUGIN & THEME MARKETPLACE MODAL -->
+  <div id="market-modal-backdrop" class="full-modal-backdrop">
+    <div id="market-modal" class="full-modal">
+      <div class="full-modal-header">
+        <div class="full-modal-title" id="lbl-market-title">🧩 ZMUX ADDON & THEME MARKETPLACE</div>
+        <button class="full-modal-close" id="market-modal-close">✕</button>
+      </div>
+      
+      <div style="display:flex;gap:6px;padding:10px 18px;border-bottom:1px solid var(--border);background:var(--bg-panel-2);">
+        <div class="lib-cat-pill active" id="market-tab-plugins">🔌 Feature Plugins</div>
+        <div class="lib-cat-pill" id="market-tab-themes">🎨 Community Themes</div>
+      </div>
+
+      <div class="market-grid" id="market-grid-container"></div>
+    </div>
+  </div>
+
+  <!-- IN-APP DOCS & ROADMAP MODAL -->
+  <div id="docs-modal-backdrop" class="full-modal-backdrop">
+    <div id="docs-modal" class="full-modal">
+      <div class="full-modal-header">
+        <div class="full-modal-title">📖 ZMUX DOCUMENTATION & ROADMAP</div>
+        <button class="full-modal-close" id="docs-modal-close">✕</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:18px;font-size:12px;line-height:1.7;" id="docs-modal-body">
+        <h3 style="color:var(--text-bright);">⚡ ZMUX Overview</h3>
+        <p>ZMUX is a 100% Standalone, Anti-Capitalist Mobile Python IDE with zero telemetry, designed to run flawlessly on Android devices (ARMv7 32-bit & ARM64 64-bit).</p>
+        
+        <h3 style="color:var(--text-bright);">🚀 Key Features & Solutions</h3>
+        <ul>
+          <li><b>High-Performance Ace Editor:</b> Replaces Monaco Editor to ensure touch responsiveness of 45-60 FPS on mobile devices.</li>
+          <li><b>English-Only i18n Engine:</b> Full-fidelity English support across all elements and backend responses.</li>
+          <li><b>Functional Plugin Addon System:</b> Auto-Formatter, Snippets, Linter, and Extended Mobile Symbol Bar.</li>
+          <li><b>Local Session Auth Token Protection:</b> Binds local API endpoints with a random security token.</li>
+          <li><b>Android Keystore Key Encryption:</b> Secure encrypted storage of API keys.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- API KEY DIALOG -->
+  <div id="key-dialog-backdrop" class="dialog-backdrop">
+    <div class="dialog-box">
+      <h4>&gt; Enter API Key for <span id="key-dialog-provider"></span>_</h4>
+      <p style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Saved encrypted on the device's Keystore/Local storage.</p>
+      <input id="key-dialog-input" class="dialog-input" type="password" placeholder="api key...">
+      <div class="dialog-actions">
+        <button class="mini-btn" id="key-dialog-cancel">cancel</button>
+        <button class="mini-btn" id="key-dialog-save" style="background:var(--text-bright);color:#00190A;border:none;">save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FILE MANAGER DIALOG -->
+  <div id="file-dialog-backdrop" class="dialog-backdrop">
+    <div class="dialog-box" style="max-width:420px;">
+      <h4>&gt; File Manager _</h4>
+      <div id="file-list-container" style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;margin-bottom:12px;"></div>
+      <input id="file-save-input" class="dialog-input" type="text" placeholder="filename (without .py)...">
+      <div class="dialog-actions">
+        <button class="mini-btn" id="file-dialog-cancel">close</button>
+        <button class="mini-btn" id="file-dialog-save" style="background:var(--text-bright);color:#00190A;border:none;">save file</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- OFFLINE STARTER KITS DIALOG -->
+  <div id="starter-dialog-backdrop" class="dialog-backdrop">
+    <div class="dialog-box" style="max-width:520px;">
+      <h4>🚀 Offline starter kits</h4>
+      <p style="color:var(--text-dim);font-size:11px;line-height:1.5;margin:0 0 12px;">Select a template to open a new tab. All of these templates run locally and do not require an account, API key, or internet connection.</p>
+      <div id="starter-kit-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <div class="dialog-actions"><button id="starter-dialog-cancel" class="mini-btn">close</button></div>
+    </div>
+  </div>
+
+  <!-- THEME SELECTOR DIALOG -->
+  <div id="theme-dialog-backdrop" class="dialog-backdrop">
+    <div class="dialog-box">
+      <h4>&gt; Select Visual Theme _</h4>
+      <div id="theme-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
+      <div class="dialog-actions">
+        <button class="mini-btn" id="theme-dialog-cancel">close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- BILLING FAIL DIALOG -->
+  <div id="billing-dialog-backdrop" class="dialog-backdrop" style="z-index: 80;">
+    <div class="dialog-box" style="text-align: center; border-color: var(--err); box-shadow: 0 0 20px rgba(255, 75, 75, 0.4);">
+      <h4 style="color: var(--err); font-size: 16px;">🛑 OUT OF FUNDS</h4>
+      <p id="billing-dialog-message" style="font-size: 13px; color: var(--text); margin-bottom: 20px; font-weight: bold; font-family: var(--mono);">YOU BETER GET SOME JOB AND BE RICH</p>
+      <div class="dialog-actions" style="justify-content: center;">
+        <button class="mini-btn" id="billing-dialog-back" style="background: var(--err); color: #000000; border: none; font-weight: bold; padding: 8px 16px; font-family: var(--mono); cursor: pointer;">BACK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- IN-APP DIALOG — replaces native alert()/confirm().
+       The p4a/Kivy WebView has no JS dialog handler, so native alert() and
+       confirm() never render on Android: confirm() silently returns false,
+       which is exactly what made the RUN button look dead on syntax errors.
+       Every user decision must go through this dialog instead. -->
+  <div id="app-dialog-backdrop" class="dialog-backdrop" style="z-index: 95;">
+    <div class="dialog-box" style="max-width: 420px;">
+      <h4 id="app-dialog-title">&gt; notice _</h4>
+      <p id="app-dialog-message" style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.6;margin:0 0 16px;max-height:45vh;overflow-y:auto;word-break:break-word;"></p>
+      <div class="dialog-actions" id="app-dialog-actions"></div>
+    </div>
+  </div>
+
+</div>
+
+
+
+<script>
+if (typeof window.ace === "undefined") {
+  window.ace = { edit: function() { return { resize: function() {} }; }, require: function() { return { init: function() {} }; } };
+}
+
+
+function rgbaToCss(rgba) {
+  if (!rgba || !Array.isArray(rgba)) return "";
+  const r = Math.round(rgba[0] * 255);
+  const g = Math.round(rgba[1] * 255);
+  const b = Math.round(rgba[2] * 255);
+  const a = rgba[3] !== undefined ? rgba[3] : 1;
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function rgbaToHex(rgba) {
+  if (!rgba || !Array.isArray(rgba)) return "";
+  const r = Math.round(rgba[0] * 255).toString(16).padStart(2, "0");
+  const g = Math.round(rgba[1] * 255).toString(16).padStart(2, "0");
+  const b = Math.round(rgba[2] * 255).toString(16).padStart(2, "0");
+  return `#${r}${g}${b}`;
+}
+
+// ---------- Core Global States (at absolute top to prevent Temporal Dead Zone errors) ----------
+let interactiveActive = false;
+let currentLang = 'en';
+let tabs = [
+  { id: 'tab-1', name: 'main.py', content: "print('Hello! Welcome to ZMUX')\nprint('Try running libraries or executing code here!')\n" }
+];
+let activeTabId = 'tab-1';
+let editor = null;
+let activeEditorMode = localStorage.getItem('zabacode-preferred-engine') === 'native' ? 'native' : 'ace';
+let installedPlugins = JSON.parse(localStorage.getItem('zabacode-active-plugins') || '{}');
+let currentThemeData = null;
+
+const ZMUX_TOKEN = "{{ auth_token }}";
+
+function escapeHtml(str) {
+  return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function fetchApi(url, options = {}) {
+  options.headers = options.headers || {};
+  options.headers['X-ZMUX-Token'] = ZMUX_TOKEN;
+  // Every POST body in this app is JSON. Without this header the browser sends
+  // `text/plain`, Flask's get_json() returns None, and the payload is silently
+  // dropped — the server then sees an empty body (see AUDIT_REPORT.md F-01).
+  // Set it centrally so no caller can forget; explicit headers still win.
+  if (options.body !== undefined && options.body !== null && !options.headers['Content-Type']) {
+    options.headers['Content-Type'] = 'application/json';
+  }
+  return fetch(url, options);
+}
+
+let TRANSLATIONS = {
+  en: {
+    sidebar_control: "[ FEATURES & CONTROLS ]",
+    sidebar_market: "🧩 PLUGIN & THEME MARKETPLACE",
+    sidebar_lib: "📦 LIBRARY MANAGER (zabapip)",
+    sidebar_open: "📂 OPEN / MANAGE FILES",
+    sidebar_save: "💾 SAVE AS FILE (.py)",
+    sidebar_settings_btn: "🛠️ SETTINGS & PREFERENCES",
+    sidebar_theme: "🎨 CHANGE THEME PRESET",
+    sidebar_crt: "📺 CRT SCANLINES",
+    sidebar_docs_lbl: "[ DOCS & ROADMAP ]",
+    sidebar_docs_btn: "📖 DOCS & ROADMAP",
+    ai_hint: "AI automatically reads code in the active editor — ask anything about the code.",
+    exec_btn: "▶ RUN",
+    stop_btn: "⏹ STOP",
+    clear_btn: "CLEAR",
+    market_title: "🧩 ZMUX ADDON & THEME MARKETPLACE",
+    stdin_label: "stdin >",
+    stdin_placeholder_idle: "Run the program to enable input",
+    stdin_placeholder_active: "Type input then press Enter/SEND to send to program...",
+    stdin_send: "SEND",
+    toast_lang: "✓ Switched to English"
+  }
+};
+TRANSLATIONS.id = TRANSLATIONS.en;
+
+let LANGUAGES = { en: "English" };
+const LANG_CYCLE = ['en'];
+
+async function loadTranslations() {
+  return;
+}
+
+function applyLanguage(lang) {
+  currentLang = 'en';
+  localStorage.setItem('zabacode-lang', 'en');
+  const t = TRANSLATIONS.en;
+
+  const controlEl = document.getElementById('lbl-sidebar-control');
+  if (controlEl) controlEl.textContent = t.sidebar_control;
+
+  const marketBtn = document.getElementById('sidebar-market-btn');
+  if (marketBtn) marketBtn.textContent = t.sidebar_market;
+
+  const openBtn = document.getElementById('sidebar-open-btn');
+  if (openBtn) openBtn.textContent = t.sidebar_open;
+
+  const saveBtn = document.getElementById('sidebar-save-btn');
+  if (saveBtn) saveBtn.textContent = t.sidebar_save;
+
+  const docsLbl = document.getElementById('lbl-sidebar-docs');
+  if (docsLbl) docsLbl.textContent = t.sidebar_docs_lbl;
+
+  const docsBtn = document.getElementById('sidebar-docs-btn');
+  if (docsBtn) docsBtn.textContent = t.sidebar_docs_btn;
+
+  const aiHint = document.getElementById('lbl-ai-hint');
+  if (aiHint) aiHint.textContent = t.ai_hint;
+
+  const runBtn = document.getElementById('run-btn');
+  if (runBtn && !interactiveActive) runBtn.textContent = t.exec_btn;
+
+  const clearBtn = document.getElementById('clear-btn');
+  if (clearBtn) clearBtn.textContent = t.clear_btn;
+
+  const marketTitle = document.getElementById('lbl-market-title');
+  if (marketTitle) marketTitle.textContent = t.market_title;
+
+  const stdinLabel = document.getElementById('terminal-stdin-label');
+  const stdinInput = document.getElementById('stdin-input');
+  const stdinSendBtn = document.getElementById('stdin-send-btn');
+  if (stdinLabel) stdinLabel.textContent = t.stdin_label;
+  if (stdinInput) {
+    stdinInput.placeholder = stdinInput.disabled ? t.stdin_placeholder_idle : t.stdin_placeholder_active;
+  }
+  if (stdinSendBtn) stdinSendBtn.textContent = t.stdin_send;
+}
+
+// ---------- Matrix Rain Animation ----------
+let matrixInterval = null;
+let matrixResizeHandler = null;
+
+function startMatrixRain() {
+  const canvas = document.getElementById('matrix-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  matrixResizeHandler = resizeCanvas;
+
+  const latin = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const nums = '0123456789';
+  const katakana = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ';
+  const alphabet = latin + nums + katakana;
+
+  const fontSize = 14;
+  const columns = Math.ceil(canvas.width / fontSize);
+
+  const rainDrops = [];
+  for (let x = 0; x < columns; x++) {
+    rainDrops[x] = Math.random() * -100;
+  }
+
+  const draw = () => {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = '#39FF14';
+    ctx.font = fontSize + 'px monospace';
+
+    for (let i = 0; i < rainDrops.length; i++) {
+      const text = alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+      ctx.fillText(text, i * fontSize, rainDrops[i] * fontSize);
+
+      if (rainDrops[i] * fontSize > canvas.height && Math.random() > 0.975) {
+        rainDrops[i] = 0;
+      }
+      rainDrops[i]++;
+    }
+  };
+
+  matrixInterval = setInterval(draw, 30);
+}
+
+function stopMatrixRain() {
+  if (matrixInterval) {
+    clearInterval(matrixInterval);
+    matrixInterval = null;
+  }
+  if (matrixResizeHandler) {
+    window.removeEventListener('resize', matrixResizeHandler);
+    matrixResizeHandler = null;
+  }
+  const canvas = document.getElementById('matrix-canvas');
+  if (canvas) canvas.remove();
+}
+
+// ---------- Boot Sequence Animation — Updated v1.0.0 (No SSL Bypass, No ZMUX, Clean) ----------
+const BOOT_MESSAGES = [
+  { text: 'ZMUX v1.0.0 Engine Initializing...', cls: 'dim' },
+  { text: '[ OK ] Local Session Token Security Active', cls: 'ok' },
+  { text: '[ OK ] Android Keystore + AES-GCM Vault', cls: 'ok' },
+  { text: '[ OK ] Python 3 Subprocess Sandbox (PGID)', cls: 'ok' },
+  { text: '[ OK ] PyPI Extractor (Verified TLS+SHA256)', cls: 'ok' },
+  { text: '[ OK ] 7 Providers + Custom Endpoint Ready', cls: 'ok' },
+  { text: '[ OK ] Zaba Oracle — Offline Intelligence', cls: 'ok' },
+  { text: '[ OK ] Ace 1.32.4 Bundled (Offline 60 FPS)', cls: 'ok' },
+  { text: '> Workspace Ready. Happy Coding!_', cls: 'ok' }
+];
+
+const bootLines = document.getElementById('boot-lines');
+let bootIdx = 0;
+async function playBoot() {
+  if (bootIdx === 0) {
+    startMatrixRain();
+    await loadTranslations();
+  }
+  if (bootIdx < BOOT_MESSAGES.length) {
+    const msg = BOOT_MESSAGES[bootIdx++];
+    const line = document.createElement('div');
+    line.className = `line ${msg.cls}`;
+    line.textContent = msg.text;
+    if (bootLines) bootLines.appendChild(line);
+    setTimeout(playBoot, 80);
+  } else {
+    setTimeout(() => {
+      stopMatrixRain();
+      const bootScreen = document.getElementById('boot-screen');
+      if (bootScreen) bootScreen.style.display = 'none';
+      const app = document.getElementById('app');
+      if (app) app.classList.add('ready');
+      applyLanguage(currentLang);
+      if (editor && typeof editor.resize === 'function') editor.resize();
+    }, 150);
+  }
+}
+window.addEventListener('DOMContentLoaded', playBoot);
+
+window.addEventListener('pageshow', (e) => {
+  if (editor && activeEditorMode === 'ace') {
+    if (typeof editor.resize === 'function') editor.resize();
+  }
+});
+
+// Load and apply saved theme on startup
+(async function initTheme() {
+  const savedTheme = localStorage.getItem('zabacode-active-theme') || 'retro';
+  try {
+    const res = await fetchApi(`/api/themes/${savedTheme}`);
+    const data = await res.json();
+    if (data.ok) {
+      const t = data.theme;
+      currentThemeData = t;
+      document.documentElement.style.setProperty('--bg', rgbaToCss(t.bg));
+      document.documentElement.style.setProperty('--bg-panel', rgbaToCss(t.bg_panel));
+      document.documentElement.style.setProperty('--bg-panel-2', rgbaToCss(t.bg_panel_2));
+      document.documentElement.style.setProperty('--border', rgbaToCss(t.border));
+      document.documentElement.style.setProperty('--border-bright', rgbaToCss(t.border_bright));
+      document.documentElement.style.setProperty('--text', rgbaToCss(t.text));
+      document.documentElement.style.setProperty('--text-bright', rgbaToCss(t.text_bright));
+      document.documentElement.style.setProperty('--text-dim', rgbaToCss(t.text_dim));
+      document.documentElement.style.setProperty('--err', rgbaToCss(t.err));
+      document.documentElement.style.setProperty('--ai', rgbaToCss(t.ai));
+
+      if (t.err) {
+        const errDim = [t.err[0] * 0.48, t.err[1] * 0.14, t.err[2] * 0.14, t.err[3]];
+        document.documentElement.style.setProperty('--err-dim', rgbaToCss(errDim));
+      }
+      if (t.ai) {
+        const aiDim = [t.ai[0] * 0.48, t.ai[1] * 0.35, t.ai[2], t.ai[3]];
+        document.documentElement.style.setProperty('--ai-dim', rgbaToCss(aiDim));
+      }
+    }
+  } catch (e) {
+    console.error('Failed to initialize theme on startup:', e);
+  }
+})();
+
+// ---------- In-App Dialog System (replaces native alert/confirm) ----------
+// Native alert()/confirm()/prompt() never render inside the p4a/Kivy WebView
+// on Android — confirm() silently returns false without showing anything,
+// which killed the RUN button whenever Syntax Guard found an issue. All
+// modal decisions go through showAppDialog() now. The helpers always resolve
+// (never trap the caller) and fail open if the dialog DOM is missing.
+function showAppDialog({ title, message, buttons }) {
+  return new Promise((resolve) => {
+    const backdrop = document.getElementById('app-dialog-backdrop');
+    const titleEl = document.getElementById('app-dialog-title');
+    const msgEl = document.getElementById('app-dialog-message');
+    const actionsEl = document.getElementById('app-dialog-actions');
+    const opts = (buttons && buttons.length) ? buttons : [{ label: 'OK', value: true, primary: true }];
+    if (!backdrop || !titleEl || !msgEl || !actionsEl) {
+      // Dialog DOM missing — never block the user flow on that.
+      console.warn('app-dialog DOM missing; resolving with default choice');
+      resolve(opts[opts.length - 1].value);
+      return;
+    }
+    titleEl.textContent = title || '> notice _';
+    msgEl.textContent = message || '';
+    actionsEl.innerHTML = '';
+    opts.forEach((b) => {
+      const btn = document.createElement('button');
+      btn.className = 'mini-btn';
+      btn.textContent = b.label;
+      if (b.danger) btn.style.cssText = 'background:var(--err);color:#000000;border:none;font-weight:bold;';
+      else if (b.primary) btn.style.cssText = 'background:var(--text-bright);color:#00190A;border:none;';
+      btn.onclick = () => {
+        backdrop.classList.remove('open');
+        resolve(b.value);
+      };
+      actionsEl.appendChild(btn);
+    });
+    backdrop.classList.add('open');
+  });
+}
+
+function appAlert(message, title) {
+  return showAppDialog({
+    title: title || '> notice _',
+    message: message,
+    buttons: [{ label: 'OK', value: true, primary: true }],
+  });
+}
+
+function appConfirm(message, opts) {
+  const o = opts || {};
+  return showAppDialog({
+    title: o.title || '> confirm _',
+    message: message,
+    buttons: [
+      { label: o.cancelLabel || 'cancel', value: false },
+      { label: o.okLabel || 'OK', value: true, primary: !o.danger, danger: !!o.danger },
+    ],
+  });
+}
+
+// ---------- Multi-Tab File System Manager + Privacy Controls (Fix #21) ----------
+function isPersistEnabled() {
+  // Default: true for backward compat, but user can opt-out via toggle
+  // Explicitly check for 'false' string, everything else means enabled
+  return localStorage.getItem('zabacode-persist-drafts') !== 'false';
+}
+
+function updatePrivacyUI() {
+  const enabled = isPersistEnabled();
+  const label = document.getElementById('label-settings-privacy');
+  const statusText = document.getElementById('privacy-status-text');
+  if (label) {
+    label.textContent = enabled ? 'ON' : 'OFF';
+    label.style.background = enabled ? 'rgba(57,255,20,0.1)' : 'rgba(255,75,75,0.1)';
+    label.style.color = enabled ? 'var(--text-bright)' : 'var(--err)';
+    label.style.borderColor = enabled ? 'var(--border-bright)' : 'var(--err-dim)';
+  }
+  if (statusText) {
+    const tabsData = localStorage.getItem('zabacode-tabs');
+    const size = tabsData ? `${tabsData.length} chars / ${Math.round(tabsData.length/1024)}KB` : 'empty';
+    statusText.innerHTML = `${enabled ? 'Persistence <b>ON</b> (opt-in, device-only, plain-text localStorage)' : '<b>OFF</b> — Private/No-Persistence Mode (tabs only in memory)'}<br>`
+      + `Drafts: ${size}<br>`
+      + `Stored in: localStorage keys zabacode-tabs + zabacode-active-tab-id<br>`
+      + `Not encrypted, not sent to server, device-only. See SECURITY.md → Privacy section.`;
+  }
+}
+
+function saveTabsToStorage() {
+  if (!isPersistEnabled()) {
+    console.log('Draft persistence disabled — not saving to localStorage (private mode)');
+    return;
+  }
+  try {
+    localStorage.setItem('zabacode-tabs', JSON.stringify(tabs));
+    localStorage.setItem('zabacode-active-tab-id', activeTabId);
+  } catch (e) {
+    console.warn('Failed to save tabs to localStorage', e);
+    // If quota exceeded, try clearing old drafts
+    if (e.name === 'QuotaExceededError') {
+      showToast('LocalStorage full — clearing oldest drafts', 'error');
+      try {
+        localStorage.removeItem('zabacode-tabs');
+      } catch {}
+    }
+  }
+  updatePrivacyUI();
+}
+
+function loadTabsFromStorage() {
+  if (!isPersistEnabled()) {
+    console.log('Draft persistence disabled — loading disabled (private mode)');
+    return false;
+  }
+  const savedTabs = localStorage.getItem('zabacode-tabs');
+  const savedActiveTabId = localStorage.getItem('zabacode-active-tab-id');
+  if (savedTabs) {
+    try {
+      const parsedTabs = JSON.parse(savedTabs);
+      if (parsedTabs && parsedTabs.length > 0) {
+        tabs = parsedTabs;
+        activeTabId = savedActiveTabId || tabs[0].id;
+        return true;
+      }
+    } catch (e) {
+      console.error('Failed to parse saved tabs:', e);
+    }
+  }
+  return false;
+}
+
+async function clearLocalDrafts() {
+  const ok = await appConfirm('Clear all locally persisted drafts from localStorage?\n\nThis will delete zabacode-tabs and active tab id from this device only. Editor content in memory will stay until reload.', {
+    title: '> privacy: local drafts _', okLabel: 'clear', cancelLabel: 'keep', danger: true,
+  });
+  if (ok) {
+    localStorage.removeItem('zabacode-tabs');
+    localStorage.removeItem('zabacode-active-tab-id');
+    showToast('✓ Local drafts cleared from device (localStorage)', 'success');
+    updatePrivacyUI();
+  }
+}
+
+async function togglePersistence() {
+  const currentlyEnabled = isPersistEnabled();
+  const newValue = !currentlyEnabled;
+  localStorage.setItem('zabacode-persist-drafts', newValue ? 'true' : 'false');
+  if (!newValue) {
+    // When disabling, offer to clear existing drafts
+    const clearNow = await appConfirm('Persistence disabled — Private/No-Persistence Mode.\n\nDo you also want to clear existing drafts from this device now?\n\n(Recommended on shared devices)', {
+      title: '> privacy: local drafts _', okLabel: 'clear now', cancelLabel: 'keep',
+    });
+    if (clearNow) {
+      localStorage.removeItem('zabacode-tabs');
+      localStorage.removeItem('zabacode-active-tab-id');
+      showToast('✓ Persistence OFF & drafts cleared — private mode', 'success');
+    } else {
+      showToast('Persistence OFF — new edits will not be saved to localStorage (private mode)', 'success');
+    }
+  } else {
+    showToast('Persistence ON — tabs will be saved to localStorage (device-only, plain text, opt-in)', 'success');
+    // Save current tabs now that it's enabled
+    saveTabsToStorage();
+  }
+  updatePrivacyUI();
+}
+
+// Wire the privacy buttons — both functions existed but were never attached
+// to the buttons, so "Clear Local Drafts" and "Toggle Persistence" silently
+// did nothing. (Found during the dead-button audit.)
+const privacyClearBtn = document.getElementById('privacy-clear-btn');
+if (privacyClearBtn) privacyClearBtn.onclick = clearLocalDrafts;
+const privacyToggleBtn = document.getElementById('privacy-toggle-btn');
+if (privacyToggleBtn) privacyToggleBtn.onclick = togglePersistence;
+
+// Load tabs from storage immediately on startup
+loadTabsFromStorage();
+// Initialize privacy UI after DOM ready (will be called again when settings opened)
+setTimeout(updatePrivacyUI, 500);
+
+let saveTimeout = null;
+function triggerAutoSave() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (activeTab) {
+      activeTab.content = getEditorValue();
+    }
+    saveTabsToStorage();
+  }, 500);
+}
+
+const tabBarEl = document.getElementById('tab-bar');
+const addTabBtn = document.getElementById('add-tab-btn');
+
+function renderTabs() {
+  if (!tabBarEl) return;
+  tabBarEl.querySelectorAll('.editor-tab').forEach(el => el.remove());
+  tabs.forEach(tab => {
+    const tabEl = document.createElement('div');
+    tabEl.className = `editor-tab ${tab.id === activeTabId ? 'active' : ''}`;
+    
+    const titleSpan = document.createElement('span');
+    titleSpan.textContent = tab.name;
+    
+    const closeSpan = document.createElement('span');
+    closeSpan.className = 'tab-close';
+    closeSpan.textContent = '✕';
+    closeSpan.dataset.id = tab.id;
+
+    tabEl.appendChild(titleSpan);
+    tabEl.appendChild(closeSpan);
+
+    tabEl.onclick = (e) => {
+      if (e.target.classList.contains('tab-close')) return;
+      switchTab(tab.id);
+    };
+    
+    closeSpan.onclick = (e) => {
+      e.stopPropagation();
+      closeTab(tab.id);
+    };
+    
+    tabBarEl.insertBefore(tabEl, addTabBtn);
+  });
+}
+
+function switchTab(id) {
+  if (activeTabId && activeTabId !== id) {
+    const prevTab = tabs.find(t => t.id === activeTabId);
+    if (prevTab) prevTab.content = getEditorValue();
+  }
+  activeTabId = id;
+  const targetTab = tabs.find(t => t.id === activeTabId);
+  if (targetTab) {
+    setEditorValue(targetTab.content);
+  }
+  renderTabs();
+  saveTabsToStorage();
+}
+
+function closeTab(id) {
+  if (tabs.length <= 1) {
+    appAlert('At least one tab must remain active!', '> tabs _');
+    return;
+  }
+
+  if (activeTabId === id) {
+    const otherTab = tabs.find(t => t.id !== id);
+    if (otherTab) {
+      switchTab(otherTab.id);
+    }
+  } else {
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (activeTab) activeTab.content = getEditorValue();
+  }
+
+  tabs = tabs.filter(t => t.id !== id);
+  renderTabs();
+  saveTabsToStorage();
+}
+
+if (addTabBtn) {
+  addTabBtn.onclick = () => {
+    const newId = 'tab-' + Date.now();
+    tabs.push({ id: newId, name: `untitled_${tabs.length + 1}.py`, content: "# Kode Python Baru\n" });
+    switchTab(newId);
+  };
+}
+
+// ---------- Offline Starter Kits ----------
+const STARTER_KITS = [
+  { name: 'CLI To-do', file: 'todo.py', description: 'Terminal-based to-do list with local JSON storage.', code: `import json\nfrom pathlib import Path\n\nDB = Path("todos.json")\ntodos = json.loads(DB.read_text()) if DB.exists() else []\n\nwhile True:\n    print("\nTODO:", *[f"{i + 1}. {task}" for i, task in enumerate(todos)], sep="\n")\n    task = input("New task (Enter to exit): ").strip()\n    if not task:\n        break\n    todos.append(task)\n    DB.write_text(json.dumps(todos, indent=2))\n` },
+  { name: 'Safe Calculator', file: 'calculator.py', description: 'Four-operation calculator with custom division-by-zero handling.', code: `def calculate(a, operator, b):\n    if operator == "/" and b == 0:\n        return "Division by zero is a violation of natural law"\n    operations = {"+": lambda: a + b, "-": lambda: a - b, "*": lambda: a * b, "/": lambda: a / b}\n    if operator not in operations:\n        raise ValueError("Operator must be +, -, *, or /")\n    return operations[operator]()\n\ntry:\n    a = float(input("First number: "))\n    op = input("Operator (+, -, *, /): ").strip()\n    b = float(input("Second number: "))\n    res = calculate(a, op, b)\n    print("Result:", res)\nexcept ValueError as e:\n    print("Invalid input:", e)\n` },
+  { name: 'HTTP Request (needs online)', file: 'http_request.py', description: 'HTTP request example; requests library and internet connection required.', code: `# Needs online + package requests\nimport requests\n\nurl = input("JSON URL: ").strip()\nresponse = requests.get(url, timeout=15)\nresponse.raise_for_status()\nprint(response.json())\n` }];
+
+function openStarterKits() {
+  const list = document.getElementById('starter-kit-list');
+  if (!list) return;
+  list.replaceChildren();
+  STARTER_KITS.forEach((kit) => {
+    const button = document.createElement('button');
+    button.className = 'mini-btn';
+    button.style.cssText = 'text-align:left;padding:10px 12px;';
+    button.innerHTML = `<strong>${escapeHtml(kit.name)}</strong><br><span style="font-size:10px;color:var(--text-dim);">${escapeHtml(kit.description)}</span>`;
+    button.onclick = () => {
+      const id = 'tab-' + Date.now();
+      tabs.push({ id, name: kit.file, content: kit.code });
+      switchTab(id);
+      const starterDialog = document.getElementById('starter-dialog-backdrop');
+      if (starterDialog) starterDialog.classList.remove('open');
+      if (sidebar) sidebar.classList.remove('open');
+    };
+    list.appendChild(button);
+  });
+  const starterDialog = document.getElementById('starter-dialog-backdrop');
+  if (starterDialog) starterDialog.classList.add('open');
+}
+
+// BIND STARTER KITS EVENT IN SIDEBAR
+const settingsBtn = document.getElementById('sidebar-settings-btn');
+if (settingsBtn) {
+  settingsBtn.onclick = () => {
+    if (sidebar) sidebar.classList.remove('open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.remove('open');
+    const settingsBackdrop = document.getElementById('settings-modal-backdrop');
+    if (settingsBackdrop) settingsBackdrop.classList.add('open');
+  };
+}
+const settingsCloseBtn = document.getElementById('settings-modal-close');
+if (settingsCloseBtn) {
+  settingsCloseBtn.onclick = () => {
+    const settingsBackdrop = document.getElementById('settings-modal-backdrop');
+    if (settingsBackdrop) settingsBackdrop.classList.remove('open');
+  };
+}
+const btnSettingsLib = document.getElementById('btn-settings-lib');
+if (btnSettingsLib) {
+  btnSettingsLib.onclick = () => {
+    const settingsBackdrop = document.getElementById('settings-modal-backdrop');
+    if (settingsBackdrop) settingsBackdrop.classList.remove('open');
+    openLibraryManager();
+  };
+}
+const btnSettingsStarter = document.getElementById('btn-settings-starter');
+if (btnSettingsStarter) {
+  btnSettingsStarter.onclick = () => {
+    const settingsBackdrop = document.getElementById('settings-modal-backdrop');
+    if (settingsBackdrop) settingsBackdrop.classList.remove('open');
+    openStarterKits();
+  };
+}
+// The starter-kits dialog's close button was never wired — dead button.
+const starterDialogCancel = document.getElementById('starter-dialog-cancel');
+if (starterDialogCancel) {
+  starterDialogCancel.onclick = () => {
+    const starterDialog = document.getElementById('starter-dialog-backdrop');
+    if (starterDialog) starterDialog.classList.remove('open');
+  };
+}
+const btnSettingsTheme = document.getElementById('btn-settings-theme');
+if (btnSettingsTheme) {
+  btnSettingsTheme.onclick = () => {
+    const settingsBackdrop = document.getElementById('settings-modal-backdrop');
+    if (settingsBackdrop) settingsBackdrop.classList.remove('open');
+    const themeBackdrop = document.getElementById('theme-dialog-backdrop');
+    if (themeBackdrop) themeBackdrop.classList.add('open');
+    loadThemes();
+  };
+}
+const btnSettingsCrt = document.getElementById('btn-settings-crt');
+if (btnSettingsCrt) {
+  btnSettingsCrt.onclick = () => {
+    toggleCrt();
+  };
+}
+
+// ---------- AI Assistant API Keys Settings ----------
+const btnSettingsAiKeys = document.getElementById('btn-settings-ai-keys');
+if (btnSettingsAiKeys) {
+  btnSettingsAiKeys.onclick = () => {
+    const settingsBackdrop = document.getElementById('settings-modal-backdrop');
+    if (settingsBackdrop) settingsBackdrop.classList.remove('open');
+    openAiKeysConfig();
+  };
+}
+
+const aiKeysModalClose = document.getElementById('ai-keys-modal-close');
+if (aiKeysModalClose) {
+  aiKeysModalClose.onclick = () => {
+    const backdrop = document.getElementById('ai-keys-modal-backdrop');
+    if (backdrop) backdrop.classList.remove('open');
+    const settingsBackdrop = document.getElementById('settings-modal-backdrop');
+    if (settingsBackdrop) settingsBackdrop.classList.add('open');
+  };
+}
+
+async function openAiKeysConfig() {
+  const backdrop = document.getElementById('ai-keys-modal-backdrop');
+  if (backdrop) backdrop.classList.add('open');
+
+  let keysStatus = {};
+  try {
+    const res = await fetchApi('/api/keys/status');
+    keysStatus = await res.json();
+  } catch (err) {
+    console.error("Failed to fetch keys status", err);
+  }
+
+  const listContainer = document.getElementById('ai-keys-list');
+  if (!listContainer) return;
+  listContainer.innerHTML = '';
+
+  const onlineProviders = [
+    { id: 'openrouter', name: 'OpenRouter', icon: '🌐', desc: 'Qwen 2.5, Llama 3.3, Gemini 2.5 (free & paid)' },
+    { id: 'gemini', name: 'Google Gemini', icon: '✨', desc: 'Gemini 1.5 Flash' },
+    { id: 'groq', name: 'Groq', icon: '⚡', desc: 'Llama 3.1 8B (ultra-fast)' },
+    { id: 'mistral', name: 'Mistral', icon: '🌀', desc: 'Codestral' },
+    { id: 'deepseek', name: 'DeepSeek', icon: '🔍', desc: 'DeepSeek Coder' },
+    { id: 'custom', name: 'Custom Endpoint', icon: '🔧', desc: 'OpenAI-compatible URL (e.g. http://192.168.1.10:11434/v1)' },
+    { id: 'ollama', name: 'Ollama (Local)', icon: '🖥️', desc: 'Local Ollama - No Key Required' }
+  ];
+
+  onlineProviders.forEach(prov => {
+    const isSet = keysStatus[prov.id];
+    const statusText = isSet ? '✓ Saved' : 'Not Set';
+    const statusColor = isSet ? 'var(--text-bright)' : 'var(--text-dim)';
+
+    const item = document.createElement('div');
+    item.style.background = 'var(--bg-panel-2)';
+    item.style.border = '1px solid var(--border)';
+    item.style.borderRadius = '6px';
+    item.style.padding = '14px';
+    item.style.display = 'flex';
+    item.style.flexDirection = 'column';
+    item.style.gap = '8px';
+
+    item.innerHTML = `
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 16px;">${prov.icon}</span>
+          <div>
+            <span style="font-weight: bold; color: var(--text-bright);">${prov.name}</span>
+            <div style="font-size: 10px; color: var(--text-dim); margin-top: 2px;">${prov.desc}</div>
+          </div>
+        </div>
+        <span id="key-status-label-${prov.id}" style="font-size: 11px; font-weight: bold; color: ${statusColor};">${statusText}</span>
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: 4px;">
+        <input id="key-input-${prov.id}" type="password" class="dialog-input" style="flex: 1; margin: 0; font-size: 12px; height: 34px; padding: 6px 10px;" placeholder="${isSet ? '••••••••••••••••' : 'Enter API Key...'}">
+        <button class="mini-btn btn-save-key" data-provider="${prov.id}" style="background: var(--text-bright); color: #00190a; border: none; font-weight: bold; height: 34px; font-size: 11px; padding: 0 12px;">SAVE</button>
+        <button class="mini-btn btn-clear-key" data-provider="${prov.id}" style="border-color: var(--err); color: var(--err); height: 34px; font-size: 11px; padding: 0 12px;">CLEAR</button>
+      </div>
+    `;
+
+    listContainer.appendChild(item);
+  });
+
+  listContainer.querySelectorAll('.btn-save-key').forEach(btn => {
+    btn.onclick = async () => {
+      const provider = btn.getAttribute('data-provider');
+      const input = document.getElementById(`key-input-${provider}`);
+      if (!input || !input.value) {
+        showToast('Please enter an API Key first', 'error');
+        return;
+      }
+      // Fix #24: Warn for cleartext HTTP in custom endpoint
+      if (provider === 'custom') {
+        const val = input.value.trim();
+        if (val.startsWith('http://')) {
+          const isPrivate = val.includes('127.0.0.1') || val.includes('localhost') || val.includes('192.168.') || val.includes('10.') || /^http:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\./.test(val);
+          if (!isPrivate) {
+            const accepted = await appConfirm('⚠️ HTTP cleartext warning:\n\nYou entered a public HTTP URL (not HTTPS). Your code context will be sent in cleartext (unencrypted) over the network.\n\nThis is only recommended for loopback/private networks (127.0.0.1, localhost, 192.168.*, 10.*, 172.16-31.*).\n\nContinue saving this HTTP endpoint?\n\nUse https:// for privacy.', {
+              title: '> ⚠ security warning _', okLabel: 'save anyway', cancelLabel: 'go back', danger: true,
+            });
+            if (!accepted) {
+              return;
+            }
+          } else {
+            showToast('⚠️ HTTP cleartext: allowed for loopback/private network only — code will be sent unencrypted', 'loading');
+          }
+        }
+      }
+      try {
+        const res = await fetchApi('/api/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider, api_key: input.value })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(`API Key for ${provider} saved successfully`, 'success');
+          const label = document.getElementById(`key-status-label-${provider}`);
+          if (label) {
+            label.textContent = '✓ Saved';
+            label.style.color = 'var(--text-bright)';
+          }
+          input.value = '';
+          input.placeholder = '••••••••••••••••';
+
+          // Auto-check/test API key after save — Fix #1 from user: save should also test if key works
+          // This addresses issue: user saves new key but it still shows unavailable and fallback to Oracle
+          const savedKeyValue = data.key_value || input.value; // we just cleared input, so use original
+          // Actually we cleared input, so need to store before clear — we have input.value cleared, use res via closure?
+          // We'll test using the provider, with allow_offline=false to force real provider call (no Oracle fallback)
+          showToast(`Testing API key for ${provider}...`, 'loading');
+          try {
+            const testRes = await fetchApi('/api/ai/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                provider: provider, 
+                model: '', 
+                message: 'ping test key — respond with OK if you receive this', 
+                code: '', 
+                allow_offline: false 
+              })
+            });
+            const testData = await testRes.json();
+            if (testRes.status === 401 && testData.needs_key) {
+              showToast(`Key saved but not found on server — try reloading keys`, 'error');
+            } else if (!testData.ok) {
+              // Check if it's rate limit / quota / billing / invalid key
+              const msg = (testData.message || '').toLowerCase();
+              if (msg.includes('billing') || msg.includes('quota') || msg.includes('credit') || msg.includes('rate limit') || msg.includes('balance') || msg.includes('invalid') || msg.includes('unauthorized') || testRes.status === 429 || testRes.status === 402 || testRes.status === 403) {
+                showToast(`Key saved but test failed (${provider} error ${testRes.status}): ${testData.message}. Oracle will be savior when boncos. Check key validity.`, 'error');
+                // Also try Oracle fallback to show it still works
+                const fallbackRes = await fetchApi('/api/ai/chat', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ provider: provider, message: 'ping', code: '', allow_offline: true })
+                });
+                const fallbackData = await fallbackRes.json();
+                if (fallbackData.ok && fallbackData.offline) {
+                  addMsg(`🔮 Oracle (savior mode): Provider ${provider} test failed (${testData.message}), but I can still help offline. Your key is saved, but provider says: ${testData.message}. Check if key is correct or quota left.`, 'system-hint');
+                }
+              } else {
+                showToast(`Key saved but provider test failed: ${testData.message}`, 'error');
+              }
+            } else {
+              // Success — provider returned OK
+              showToast(`✅ API key for ${provider} is valid and working! Reply: ${(testData.reply || '').substring(0, 80)}`, 'success');
+              addMsg(`✅ API key test for ${provider}: valid and working! Provider replied OK. You can now chat without fallback to Oracle.`, 'system-hint');
+            }
+          } catch (testErr) {
+            console.log('Key test error', testErr);
+            showToast(`Key saved, but test request failed: ${testErr}. It may still work — try chatting. Oracle is ready as fallback.`, 'loading');
+          }
+        } else {
+          showToast(`Failed to save key: ${data.message}`, 'error');
+        }
+      } catch (err) {
+        showToast(`Error saving key: ${err}`, 'error');
+      }
+    };
+  });
+
+  listContainer.querySelectorAll('.btn-clear-key').forEach(btn => {
+    btn.onclick = async () => {
+      const provider = btn.getAttribute('data-provider');
+      const input = document.getElementById(`key-input-${provider}`);
+      try {
+        const res = await fetchApi('/api/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider, api_key: '' })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(`API Key for ${provider} cleared`, 'success');
+          const label = document.getElementById(`key-status-label-${provider}`);
+          if (label) {
+            label.textContent = 'Not Set';
+            label.style.color = 'var(--text-dim)';
+          }
+          if (input) {
+            input.value = '';
+            input.placeholder = 'Enter API Key...';
+          }
+        } else {
+          showToast(`Failed to clear key: ${data.message}`, 'error');
+        }
+      } catch (err) {
+        showToast(`Error clearing key: ${err}`, 'error');
+      }
+    };
+  });
+}
+
+// ---------- Adaptive Ace / Native Fallback Editor ----------
+const monacoDiv = document.getElementById('code-editor');
+const nativeWrapper = document.getElementById('native-editor-wrapper');
+const nativeCodeArea = document.getElementById('native-code-area');
+const nativeGutter = document.getElementById('native-gutter');
+const lineCounter = document.getElementById('line-counter');
+// The legacy sidebar button no longer exists since the settings dashboard
+// redesign — do NOT fall back to the settings card here: treating the whole
+// card as "the button" made updateEngineBtnText() wipe the card's inner HTML
+// with a raw textContent write.
+const sidebarEngineBtn = document.getElementById('sidebar-engine-btn');
+const settingsEngineCard = document.getElementById('btn-settings-engine');
+
+if (monacoDiv) {
+  monacoDiv.onclick = () => {
+    if (editor && activeEditorMode === 'ace') editor.focus();
+  };
+}
+
+function updateEngineBtnText() {
+  const lbl = document.getElementById('label-settings-engine');
+  if (lbl) {
+    lbl.textContent = activeEditorMode === 'ace' ? 'ACE' : 'NATIVE';
+  }
+  if (sidebarEngineBtn) {
+    sidebarEngineBtn.textContent = activeEditorMode === 'ace' ? '⚙️ ENGINE: ACE (OPTIMIZED)' : '⚙️ ENGINE: NATIVE (OFFLINE CORE)';
+  }
+}
+
+function updateLineCounter() {
+  if (activeEditorMode === 'ace' && editor) {
+    const pos = editor.getCursorPosition();
+    if (pos) lineCounter.textContent = `Ln ${pos.row + 1}, Col ${pos.column + 1}`;
+  } else {
+    const val = nativeCodeArea ? nativeCodeArea.value : '';
+    const selStart = nativeCodeArea ? (nativeCodeArea.selectionStart || 0) : 0;
+    const lines = val.substring(0, selStart).split('\n');
+    const line = lines.length;
+    const col = lines[lines.length - 1].length + 1;
+    if (lineCounter) lineCounter.textContent = `Ln ${line}, Col ${col}`;
+  }
+}
+
+function updateNativeGutter() {
+  if (!nativeCodeArea || !nativeGutter) return;
+  const linesCount = nativeCodeArea.value.split('\n').length;
+  let numbers = '';
+  for (let i = 1; i <= linesCount; i++) numbers += i + '\n';
+  nativeGutter.textContent = numbers;
+}
+
+if (nativeCodeArea) {
+  nativeCodeArea.addEventListener('input', () => {
+    updateNativeGutter();
+    updateLineCounter();
+    triggerAutoSave();
+  });
+  nativeCodeArea.addEventListener('keyup', updateLineCounter);
+  nativeCodeArea.addEventListener('click', updateLineCounter);
+}
+
+function activateNativeFallback(reason) {
+  activeEditorMode = 'native';
+  localStorage.setItem('zabacode-preferred-engine', 'native');
+  if (monacoDiv) monacoDiv.style.display = 'none';
+  if (nativeWrapper) nativeWrapper.classList.add('active');
+  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+  if (activeTab && nativeCodeArea) nativeCodeArea.value = activeTab.content;
+  updateNativeGutter();
+  updateLineCounter();
+  updateEngineBtnText();
+}
+
+function activateAceEngine() {
+  activeEditorMode = 'ace';
+  localStorage.setItem('zabacode-preferred-engine', 'ace');
+  if (nativeWrapper) nativeWrapper.classList.remove('active');
+  if (monacoDiv) monacoDiv.style.display = 'block';
+  if (editor) {
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (activeTab) editor.setValue(activeTab.content);
+    editor.clearSelection();
+    editor.resize();
+    editor.focus();
+  }
+  updateLineCounter();
+  updateEngineBtnText();
+}
+
+function toggleEditorEngine() {
+  if (sidebar) sidebar.classList.remove('open');
+  if (sidebarBackdrop) sidebarBackdrop.classList.remove('open');
+  if (activeEditorMode === 'ace') {
+    activateNativeFallback('User toggled engine');
+  } else {
+    activateAceEngine();
+  }
+}
+// Both the (legacy) sidebar button and the settings card act as the toggle —
+// only the small label inside the card is ever updated, never the card HTML.
+if (sidebarEngineBtn) sidebarEngineBtn.onclick = toggleEditorEngine;
+if (settingsEngineCard) settingsEngineCard.onclick = toggleEditorEngine;
+
+function getEditorValue() {
+  return activeEditorMode === 'ace' && editor ? editor.getValue() : (nativeCodeArea ? nativeCodeArea.value : '');
+}
+
+function setEditorValue(val) {
+  if (activeEditorMode === 'ace' && editor) {
+    editor.setValue(val);
+    editor.clearSelection();
+  } else if (nativeCodeArea) {
+    nativeCodeArea.value = val;
+    updateNativeGutter();
+  }
+  updateLineCounter();
+}
+
+// Backward Compatibility placeholder function
+function registerCustomMonacoTheme(themeData) {
+  if (editor && activeEditorMode === 'ace') {
+    editor.resize();
+  }
+}
+
+// ---------- Ace Initialization ----------
+try {
+  editor = ace.edit("code-editor");
+  ace.config.set("basePath", "/static/vendor/ace/");
+  editor.session.setMode("ace/mode/python");
+
+  // Hook showSettingsMenu dynamically to style and add Close/Back button safely
+  editor.showSettingsMenu = function() {
+    // 1. Ensure the settings menu module is loaded, required, and initialized
+    let realShowSettingsMenu = null;
+    try {
+      if (typeof ace !== "undefined" && ace.require) {
+        const ext = ace.require("ace/ext/settings_menu");
+        if (ext) {
+          if (typeof ext.init === 'function') {
+            ext.init(editor); // This registers showSettingsMenu on Editor.prototype
+          }
+          const Editor = ace.require("ace/editor").Editor;
+          if (Editor && Editor.prototype && typeof Editor.prototype.showSettingsMenu === 'function') {
+            realShowSettingsMenu = Editor.prototype.showSettingsMenu;
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load or initialize ace/ext/settings_menu:", e);
+    }
+
+    // Call the original settings menu creator
+    if (typeof realShowSettingsMenu === 'function') {
+      realShowSettingsMenu.call(this);
+    } else {
+      console.error("Original showSettingsMenu function not found.");
+    }
+
+    // 2. Use an interval-based polling mechanism to robustly style and add the close button
+    let attempts = 0;
+    const styleInterval = setInterval(() => {
+      const menu = document.getElementById('ace_settingsmenu');
+      attempts++;
+      if (menu) {
+        clearInterval(styleInterval);
+        const overlay = menu.parentNode;
+        if (overlay) {
+          overlay.style.backgroundColor = "rgba(0, 0, 0, 0.85)";
+          overlay.style.backdropFilter = "blur(4px)";
+          overlay.style.display = "flex";
+          overlay.style.alignItems = "center";
+          overlay.style.justifyContent = "center";
+        }
+        if (!document.getElementById('ace-settings-close-btn')) {
+          const header = document.createElement('div');
+          header.className = 'ace_settings_header';
+          header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:1px solid #39FF14; padding-bottom:12px; width:100%;';
+
+          const title = document.createElement('span');
+          title.textContent = '⚙️ ACE EDITOR SETTINGS';
+          title.style.cssText = 'color:#39FF14; font-weight:bold; font-size:14px; font-family:"JetBrains Mono",monospace;';
+
+          const closeBtn = document.createElement('button');
+          closeBtn.id = 'ace-settings-close-btn';
+          closeBtn.textContent = '✕ CLOSE';
+          closeBtn.style.cssText = 'background:#000000; color:#39FF14; border:1px solid #39FF14; padding:6px 12px; cursor:pointer; font-family:"JetBrains Mono",monospace; font-weight:bold; font-size:12px; border-radius:4px;';
+          closeBtn.onclick = function() {
+            if (overlay && overlay.parentNode) {
+              overlay.parentNode.removeChild(overlay);
+            }
+          };
+
+          header.appendChild(title);
+          header.appendChild(closeBtn);
+          menu.insertBefore(header, menu.firstChild);
+        }
+      }
+      if (attempts > 30) {
+        clearInterval(styleInterval);
+      }
+    }, 50);
+  };
+
+  editor.setOptions({
+    fontSize: "14px",
+    fontFamily: "'JetBrains Mono', monospace",
+    showPrintMargin: false,
+    showGutter: true,
+    highlightActiveLine: false,
+    theme: "ace/theme/tomorrow_night_eighties"
+  });
+
+  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+  editor.setValue(activeTab.content);
+  editor.clearSelection();
+
+  editor.session.on('change', () => {
+    triggerAutoSave();
+  });
+
+  editor.selection.on('changeCursor', () => {
+    updateLineCounter();
+  });
+
+  window.addEventListener('resize', () => { if (editor && typeof editor.resize === 'function') editor.resize(); });
+  setTimeout(() => { if (editor && typeof editor.resize === 'function') editor.resize(); }, 100);
+
+  if (activeEditorMode === 'native') {
+    activateNativeFallback('Saved preference');
+  } else {
+    activateAceEngine();
+  }
+} catch (err) {
+  console.error("Failed to initialize Ace Editor, falling back to native:", err);
+  activateNativeFallback('Failed to load Ace');
+}
+
+// ---------- Touch-Friendly Floating Context Menu Helper ----------
+(function() {
+  const trigger = document.getElementById('editor-floating-trigger');
+  const menu = document.getElementById('editor-floating-menu');
+  const container = document.getElementById('code-editor-container');
+
+  if (!trigger || !menu || !container) return;
+
+  function hideFloatingMenu() {
+    trigger.style.display = 'none';
+    menu.style.display = 'none';
+  }
+
+  function updateMenuPosition() {
+    if (activeEditorMode !== 'ace' || !editor) {
+      hideFloatingMenu();
+      return;
+    }
+
+    // Only show if editor is focused
+    if (!editor.isFocused()) {
+      hideFloatingMenu();
+      return;
+    }
+
+    const cursor = editor.getCursorPosition();
+    const coords = editor.renderer.textToScreenCoordinates(cursor.row, cursor.column);
+    const containerRect = container.getBoundingClientRect();
+
+    // Check if coordinates are valid inside the viewport
+    if (coords.pageX === 0 && coords.pageY === 0) {
+      hideFloatingMenu();
+      return;
+    }
+
+    // Convert screen coordinates to parent container relative
+    const x = coords.pageX - containerRect.left;
+    const y = coords.pageY - containerRect.top;
+
+    // Position trigger slightly above the active cursor position
+    trigger.style.left = `${Math.max(5, Math.min(containerRect.width - 50, x - 15))}px`;
+    trigger.style.top = `${Math.max(5, y - 28)}px`;
+    trigger.style.display = 'block';
+  }
+
+  // Handle trigger button click
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    if (activeEditorMode !== 'ace' || !editor) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const triggerLeft = parseFloat(trigger.style.left);
+    const triggerTop = parseFloat(trigger.style.top);
+
+    // Show menu exactly where the trigger was, but offset slightly
+    menu.style.left = `${Math.max(5, Math.min(containerRect.width - 210, triggerLeft - 40))}px`;
+    menu.style.top = `${triggerTop}px`;
+    menu.style.display = 'flex';
+
+    // Hide the small trigger once the menu is opened
+    trigger.style.display = 'none';
+  });
+
+  // Action listeners for menu buttons
+  document.getElementById('floating-undo-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (editor) {
+      editor.undo();
+      editor.focus();
+    }
+    hideFloatingMenu();
+  });
+
+  document.getElementById('floating-redo-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (editor) {
+      editor.redo();
+      editor.focus();
+    }
+    hideFloatingMenu();
+  });
+
+  document.getElementById('floating-find-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (editor) {
+      editor.execCommand("find");
+    }
+    hideFloatingMenu();
+  });
+
+  document.getElementById('floating-palette-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (editor) {
+      editor.showSettingsMenu();
+    }
+    hideFloatingMenu();
+  });
+
+  // Show trigger with debounced delay after cursor moves or click
+  let touchTimeout = null;
+  function triggerMenuWithDelay() {
+    if (touchTimeout) clearTimeout(touchTimeout);
+    touchTimeout = setTimeout(() => {
+      // Don't show menu if currently selecting text (dragging) to avoid clutter
+      if (editor && editor.selection.isEmpty()) {
+        updateMenuPosition();
+      } else {
+        hideFloatingMenu();
+      }
+    }, 150);
+  }
+
+  // Hook into Ace Editor events to update or hide menus
+  setTimeout(() => {
+    if (!editor) return;
+
+    // Listen to click and cursor changes
+    editor.on('click', () => {
+      triggerMenuWithDelay();
+    });
+
+    editor.selection.on('changeCursor', () => {
+      // Hide active menu immediately on cursor move
+      hideFloatingMenu();
+    });
+
+    // Hide menu during typing/editing
+    editor.session.on('change', () => {
+      hideFloatingMenu();
+    });
+
+    // Hide during scrolling
+    editor.session.on('changeScrollTop', () => hideFloatingMenu());
+    editor.session.on('changeScrollLeft', () => hideFloatingMenu());
+  }, 500);
+
+  // Hide when tapping outside
+  document.addEventListener('pointerdown', (e) => {
+    if (!container.contains(e.target)) {
+      hideFloatingMenu();
+    }
+  });
+})();
+
+
+// ---------- Mobile Symbol Toolbar Handlers ----------
+const symbolBar = document.getElementById('mobile-symbol-bar');
+document.querySelectorAll('.symbol-btn').forEach(btn => {
+  btn.onclick = () => {
+    const sym = btn.dataset.sym;
+    if (activeEditorMode === 'ace' && editor) {
+      editor.insert(sym);
+      editor.focus();
+    } else if (nativeCodeArea) {
+      const start = nativeCodeArea.selectionStart;
+      const end = nativeCodeArea.selectionEnd;
+      const val = nativeCodeArea.value;
+      nativeCodeArea.value = val.substring(0, start) + sym + val.substring(end);
+      nativeCodeArea.selectionStart = nativeCodeArea.selectionEnd = start + sym.length;
+      nativeCodeArea.focus();
+      updateNativeGutter();
+    }
+    updateLineCounter();
+  };
+});
+
+// Active Plugins State Management
+if (installedPlugins['symbol_bar'] && symbolBar) {
+  symbolBar.classList.add('active');
+}
+
+// ---------- View Swap Logic ----------
+const viewEditor = document.getElementById('view-editor');
+const viewOutput = document.getElementById('view-output');
+const outputTerminal = document.getElementById('output-terminal');
+const statusDot = document.getElementById('status-dot');
+const outputStatusDot = document.getElementById('output-status-dot');
+
+function goToOutput() {
+  if (viewEditor) viewEditor.classList.add('behind');
+  if (viewOutput) viewOutput.classList.add('active');
+}
+function goToEditor() {
+  if (viewOutput) viewOutput.classList.remove('active');
+  if (viewEditor) viewEditor.classList.remove('behind');
+  if (editor && activeEditorMode === 'ace') setTimeout(() => editor.resize(), 150);
+}
+const backToEditorBtn = document.getElementById('back-to-editor');
+if (backToEditorBtn) backToEditorBtn.onclick = goToEditor;
+
+const clearBtn = document.getElementById('clear-btn');
+if (clearBtn) {
+  clearBtn.onclick = async () => {
+    const ok = await appConfirm('Clear editor content & terminal output?', {
+      title: '> clear _', okLabel: 'clear', cancelLabel: 'keep', danger: true,
+    });
+    if (ok) {
+      setEditorValue('');
+      if (outputTerminal) outputTerminal.innerHTML = '';
+      showToast('✓ Editor & terminal cleared', 'success');
+    }
+  };
+}
+
+const clearOutputBtn = document.getElementById('clear-output-btn');
+if (clearOutputBtn) {
+  clearOutputBtn.onclick = () => {
+    if (outputTerminal) outputTerminal.innerHTML = '';
+    showToast('✓ Output terminal cleared', 'success');
+  };
+}
+
+// ---------- CRT Toggle ----------
+let crtEnabled = true;
+function toggleCrt() {
+  crtEnabled = !crtEnabled;
+  const scanlines = document.getElementById('scanlines');
+  if (scanlines) scanlines.style.display = crtEnabled ? 'block' : 'none';
+  const crtLabel = document.getElementById('label-settings-crt');
+  if (crtLabel) crtLabel.textContent = crtEnabled ? 'ON' : 'OFF';
+}
+const sidebarCrtBtn = document.getElementById('sidebar-crt-btn');
+if (sidebarCrtBtn) sidebarCrtBtn.onclick = toggleCrt;
+
+// ---------- Interactive Run Subprocess (unbuffered terminal) ----------
+let interactivePollTimer = null;
+let interactiveStderrBuffer = '';
+
+function appendStreamChunk(streamType, text) {
+  if (!text || !outputTerminal) return;
+  const cls = streamType === 'stderr' ? 'stderr-block' : 'stdout-line';
+  let last = outputTerminal.lastElementChild;
+  if (last && last.dataset && last.dataset.stream === streamType) {
+    last.textContent += text;
+  } else {
+    const el = document.createElement('div');
+    el.className = cls;
+    el.dataset.stream = streamType;
+    el.textContent = text;
+    outputTerminal.appendChild(el);
+  }
+  if (streamType === 'stderr') interactiveStderrBuffer += text;
+  outputTerminal.scrollTop = outputTerminal.scrollHeight;
+}
+
+function flushOutputItems(items) {
+  let curType = null;
+  let buf = '';
+  for (const item of items) {
+    const type = item[0];
+    const ch = item[1];
+    if (type !== curType) {
+      appendStreamChunk(curType, buf);
+      curType = type;
+      buf = '';
+    }
+    buf += ch;
+  }
+  appendStreamChunk(curType, buf);
+}
+
+/** Render images the running script saved (matplotlib savefig, PIL, ...). */
+function renderOutputImages(images) {
+  if (!outputTerminal || !images) return;
+  for (const img of images) {
+    if (!img || typeof img.data_uri !== 'string') continue;
+    // Only ever render data: URIs we produced ourselves — never inject a
+    // remote src, which would breach the offline-first guarantee and the CSP.
+    if (!img.data_uri.startsWith('data:image/')) continue;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'output-image';
+
+    const caption = document.createElement('div');
+    caption.className = 'output-image-name';
+    caption.textContent = '🖼 ' + (img.name || 'image');
+
+    const el = document.createElement('img');
+    el.src = img.data_uri;
+    el.alt = img.name || 'generated image';
+    el.loading = 'lazy';
+    // Tap to toggle full width for inspecting a dense chart on a small screen.
+    el.onclick = () => el.classList.toggle('expanded');
+
+    wrap.appendChild(caption);
+    wrap.appendChild(el);
+    outputTerminal.appendChild(wrap);
+    outputTerminal.scrollTop = outputTerminal.scrollHeight;
+  }
+}
+
+function finishInteractiveSession(exitCode, note) {
+  interactiveActive = false;
+  if (interactivePollTimer) { clearInterval(interactivePollTimer); interactivePollTimer = null; }
+
+  const runBtn = document.getElementById('run-btn');
+  const t = TRANSLATIONS[currentLang] || TRANSLATIONS['id'];
+  if (runBtn) {
+    runBtn.textContent = t.exec_btn || '▶ RUN';
+    runBtn.disabled = false;
+  }
+
+  const stdinInput = document.getElementById('stdin-input');
+  const stdinSendBtn = document.getElementById('stdin-send-btn');
+  if (stdinInput) {
+    stdinInput.value = '';
+    stdinInput.disabled = true;
+    stdinInput.placeholder = t.stdin_placeholder_idle;
+  }
+  if (stdinSendBtn) {
+    stdinSendBtn.disabled = true;
+  }
+
+  // --- Zaba Oracle: explain the crash locally, before any network call ---
+  if (interactiveStderrBuffer.trim() && outputTerminal) {
+    renderOracleExplanation(interactiveStderrBuffer, outputTerminal);
+  }
+
+
+
+  const ok = exitCode === 0;
+  if (outputTerminal) {
+    const exit = document.createElement('div');
+    exit.className = 'exit-line ' + (ok ? 'ok' : 'err');
+    exit.textContent = note || ('[process finished \u2014 exit ' + exitCode + ']');
+    outputTerminal.appendChild(exit);
+    outputTerminal.scrollTop = outputTerminal.scrollHeight;
+  }
+
+  if (statusDot) statusDot.className = ok ? 'ok' : 'err';
+  if (outputStatusDot) outputStatusDot.style.background = ok ? 'var(--text-bright)' : 'var(--err)';
+}
+
+async function pollInteractiveOutput() {
+  if (!interactiveActive) return;
+  try {
+    const res = await fetchApi('/api/run/interactive/output');
+    const data = await res.json();
+    if (data.output && data.output.length > 0) flushOutputItems(data.output);
+    // Charts saved by the script (plt.savefig) appear inline as they are
+    // produced. Android has no display, so savefig is the only way to see a
+    // plot at all — the Oracle tells users this works, so it must.
+    if (data.images && data.images.length > 0) renderOutputImages(data.images);
+    if (data.done) {
+      finishInteractiveSession(typeof data.exit_code === 'number' ? data.exit_code : 1);
+    }
+  } catch (e) {
+    appendStreamChunk('stderr', '\nFailed to read output: ' + e + '\n');
+    finishInteractiveSession(1, '[connection lost]');
+  }
+}
+
+async function stopInteractiveSession() {
+  try { await fetchApi('/api/run/interactive/stop', { method: 'POST' }); } catch (e) { /* noop */ }
+  await pollInteractiveOutput();
+  if (interactiveActive) finishInteractiveSession(1, '[process killed by user]');
+}
+
+const runBtnEl = document.getElementById('run-btn');
+if (runBtnEl) {
+  runBtnEl.onclick = async () => {
+    const runBtn = document.getElementById('run-btn');
+
+    if (interactiveActive) {
+      runBtn.disabled = true;
+      await stopInteractiveSession();
+      return;
+    }
+
+    let code = getEditorValue();
+    let syntaxGuardIssues = null;
+
+    if (installedPlugins['syntax_linter']) {
+      // Counting raw "(" vs ")" also counts the ones inside strings and
+      // comments, so `print('a smiley :)')` was refused outright — valid code
+      // the user could not run at all. /api/check already strips strings and
+      // comments before balancing, so defer to it instead of guessing here.
+      //
+      // The guard is WARN-ONLY: it reports, it never blocks. It used to call
+      // the native confirm() dialog, which never renders in the p4a/Kivy
+      // WebView — it silently returned false, so the run handler aborted and
+      // the RUN button looked dead whenever the code had a syntax error.
+      try {
+        const chk = await fetchApi('/api/check', {
+          method: 'POST',
+          body: JSON.stringify({ code: code })
+        });
+        const chkData = await chk.json();
+        if (chkData.ok && chkData.valid === false && chkData.issues && chkData.issues.length) {
+          syntaxGuardIssues = chkData.issues.slice(0, 5);
+        }
+      } catch (e) {
+        // The guard must never be the reason you cannot run your code.
+        console.log('Syntax Guard check skipped:', e);
+      }
+    }
+
+    if (installedPlugins['auto_formatter']) {
+      code = code.split('\n').map(line => line.trimEnd()).join('\n');
+      setEditorValue(code);
+    }
+
+    runBtn.disabled = true;
+    if (statusDot) statusDot.className = 'running';
+    if (outputStatusDot) outputStatusDot.style.background = 'var(--ai)';
+    if (outputTerminal) {
+      outputTerminal.innerHTML = '<div class="prompt-line"><span class="user">zaba@zabacode:~$</span> python3 main.py</div>';
+      if (syntaxGuardIssues) {
+        // Warn-only notice in the terminal — the interpreter itself will
+        // report the traceback, this just gives the user an early heads-up.
+        const warn = document.createElement('div');
+        warn.className = 'stderr-block';
+        warn.textContent = '⚠ Syntax Guard (warn-only, execution not blocked):\n' +
+          syntaxGuardIssues.map(i => '  • ' + i).join('\n') +
+          '\n  → running anyway…\n';
+        outputTerminal.appendChild(warn);
+      }
+    }
+    if (syntaxGuardIssues) {
+      showToast('⚠ Syntax Guard: ' + syntaxGuardIssues.length + ' issue(s) found — running anyway', 'error');
+    }
+    interactiveStderrBuffer = '';
+    goToOutput();
+
+    try {
+      const res = await fetchApi('/api/run/interactive/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        appendStreamChunk('stderr', data.message || 'Failed to start interactive session.');
+        finishInteractiveSession(1, '[failed to start]');
+        return;
+      }
+
+      interactiveActive = true;
+      const t = TRANSLATIONS[currentLang] || TRANSLATIONS['id'];
+      runBtn.textContent = t.stop_btn || '⏹ STOP';
+      runBtn.disabled = false;
+
+      const stdinInput = document.getElementById('stdin-input');
+      const stdinSendBtn = document.getElementById('stdin-send-btn');
+      if (stdinInput) {
+        stdinInput.disabled = false;
+        stdinInput.placeholder = t.stdin_placeholder_active;
+      }
+      if (stdinSendBtn) {
+        stdinSendBtn.disabled = false;
+      }
+
+      if (stdinInput) {
+        stdinInput.focus();
+      }
+
+      interactivePollTimer = setInterval(pollInteractiveOutput, 150);
+    } catch (e) {
+      if (outputTerminal) {
+        outputTerminal.innerHTML += '<div class="stderr-block">Failed to connect to backend server: ' + escapeHtml(String(e)) + '</div>';
+      }
+      if (statusDot) statusDot.className = 'err';
+      if (outputStatusDot) outputStatusDot.style.background = 'var(--err)';
+      runBtn.disabled = false;
+    }
+  };
+}
+
+async function sendTerminalInput() {
+  const input = document.getElementById('stdin-input');
+  const sendBtn = document.getElementById('stdin-send-btn');
+  if (!interactiveActive || !input || input.disabled) return;
+
+  const text = input.value;
+  input.value = '';
+
+  input.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
+
+  try {
+    const res = await fetchApi('/api/run/interactive/input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text + '\n' }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || 'Input ditolak oleh proses.');
+    appendStreamChunk('stdout', text + '\n');
+  } catch (err) {
+    appendStreamChunk('stderr', 'Failed to send input: ' + err + '\n');
+  } finally {
+    if (interactiveActive) {
+      const t = TRANSLATIONS[currentLang] || TRANSLATIONS['id'];
+      if (input) {
+        input.disabled = false;
+        input.placeholder = t.stdin_placeholder_active;
+        input.focus();
+      }
+      if (sendBtn) {
+        sendBtn.disabled = false;
+      }
+    }
+  }
+}
+
+// Bind stdin input and send button events to remain responsive
+const stdinInputEl = document.getElementById('stdin-input');
+if (stdinInputEl) {
+  stdinInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      sendTerminalInput();
+    }
+  });
+}
+const stdinSendBtnEl = document.getElementById('stdin-send-btn');
+if (stdinSendBtnEl) {
+  stdinSendBtnEl.onclick = sendTerminalInput;
+}
+
+// ---------- Sidebar Navigation ----------
+const sidebar = document.getElementById('sidebar');
+const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+const hamburgerBtn = document.getElementById('hamburger');
+if (hamburgerBtn) {
+  hamburgerBtn.onclick = () => {
+    if (sidebar) sidebar.classList.add('open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.add('open');
+  };
+}
+if (sidebarBackdrop) {
+  sidebarBackdrop.onclick = () => {
+    if (sidebar) sidebar.classList.remove('open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.remove('open');
+  };
+}
+
+// ---------- DEDICATED LIBRARY MANAGER (zabapip) ----------
+const libModalBackdrop = document.getElementById('lib-modal-backdrop');
+const libGridContainer = document.getElementById('lib-grid-container');
+const libSearchInput = document.getElementById('lib-search');
+let allLibraries = {};
+let activeCategory = 'all';
+
+function openLibraryManager() {
+  if (sidebar) sidebar.classList.remove('open');
+  if (sidebarBackdrop) sidebarBackdrop.classList.remove('open');
+  if (libModalBackdrop) libModalBackdrop.classList.add('open');
+  fetchAndRenderLibraries();
+}
+
+const sidebarLibBtn = document.getElementById('sidebar-lib-btn');
+if (sidebarLibBtn) sidebarLibBtn.onclick = openLibraryManager;
+
+const libModalClose = document.getElementById('lib-modal-close');
+if (libModalClose) libModalClose.onclick = () => { if (libModalBackdrop) libModalBackdrop.classList.remove('open'); };
+
+document.querySelectorAll('.lib-cat-pill').forEach(pill => {
+  pill.onclick = () => {
+    document.querySelectorAll('.lib-cat-pill').forEach(p => p.classList.remove('active'));
+    pill.classList.add('active');
+    activeCategory = pill.dataset.cat;
+    renderLibraryGrid();
+  };
+});
+
+if (libSearchInput) {
+  libSearchInput.addEventListener('input', renderLibraryGrid);
+}
+
+async function fetchAndRenderLibraries() {
+  try {
+    const res = await fetchApi('/api/libraries');
+    allLibraries = await res.json();
+    renderLibraryGrid();
+  } catch (e) {
+    if (libGridContainer) {
+      libGridContainer.innerHTML = '<div style="grid-column:1/-1;color:var(--err);">Failed to load libraries list from backend.</div>';
+    }
+  }
+}
+
+function renderLibraryGrid() {
+  if (!libGridContainer) return;
+  const query = libSearchInput ? libSearchInput.value.toLowerCase().trim() : '';
+  libGridContainer.innerHTML = '';
+
+  let entries = Object.entries(allLibraries);
+  
+  if (activeCategory !== 'all') {
+    entries = entries.filter(([_, info]) => info.category === activeCategory);
+  }
+
+  if (query) {
+    entries = entries.filter(([name, info]) => name.toLowerCase().includes(query) || (info.reason && info.reason.toLowerCase().includes(query)));
+  }
+
+  if (entries.length === 0) {
+    libGridContainer.innerHTML = '<div style="grid-column:1/-1;color:var(--text-dim);text-align:center;padding:20px;">Library not found. Use the Custom PyPI input below to install your package of choice!</div>';
+    return;
+  }
+
+  entries.forEach(([name, info]) => {
+    const card = document.createElement('div');
+    card.className = 'lib-card';
+    const isInstalled = info.installed;
+    const isBuildtime = info.tier === 'buildtime';
+
+    card.innerHTML = `
+      <div>
+        <div class="lib-card-top">
+          <span class="lib-card-name">${escapeHtml(name)}</span>
+          <span class="tag ${escapeHtml(info.tier)}">${escapeHtml(info.tier)}</span>
+        </div>
+        <div class="lib-card-desc">${escapeHtml(info.reason || '')}</div>
+      </div>
+      <div class="lib-card-footer">
+        <span style="font-size:10px;color:var(--text-dim);">${escapeHtml(info.category || 'General')}</span>
+        <button class="mini-btn install-lib-btn" data-name="${escapeHtml(name)}" ${isInstalled ? 'style="color:var(--text-bright);border-color:var(--border-bright);"' : ''}>
+          ${isInstalled ? 'ready ✓' : (isBuildtime ? 'buildtime ⚠' : 'install')}
+        </button>
+      </div>
+    `;
+
+    card.querySelector('.install-lib-btn').onclick = () => handleInstallLibrary(name);
+    libGridContainer.appendChild(card);
+  });
+}
+
+async function handleInstallLibrary(name) {
+  showToast(`Memproses Direct Extractor ${name}...`, 'loading');
+  try {
+    const res = await fetchApi('/api/libraries/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`✓ ${data.message}`, 'success');
+      fetchAndRenderLibraries();
+    } else if (data.needs_rebuild) {
+      appAlert(`⚠ ${data.message}`, '> rebuild required _');
+    } else {
+      showToast(`✗ ${data.message}`, 'error');
+    }
+  } catch (e) {
+    showToast(`✗ Error: ${e}`, 'error');
+  }
+}
+
+const customPipBtn = document.getElementById('custom-pip-btn');
+if (customPipBtn) {
+  customPipBtn.onclick = () => {
+    const customPipInput = document.getElementById('custom-pip-input');
+    const customName = customPipInput ? customPipInput.value.trim() : '';
+    if (customName) {
+      handleInstallLibrary(customName);
+      customPipInput.value = '';
+    }
+  };
+}
+
+// ---------- ADDON & THEME MARKETPLACE MODAL ----------
+const marketModalBackdrop = document.getElementById('market-modal-backdrop');
+const marketGridContainer = document.getElementById('market-grid-container');
+let currentMarketTab = 'plugins';
+
+const sidebarMarketBtn = document.getElementById('sidebar-market-btn');
+if (sidebarMarketBtn) {
+  sidebarMarketBtn.onclick = () => {
+    if (sidebar) sidebar.classList.remove('open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.remove('open');
+    if (marketModalBackdrop) marketModalBackdrop.classList.add('open');
+    loadMarketplace();
+  };
+}
+const marketModalClose = document.getElementById('market-modal-close');
+if (marketModalClose) marketModalClose.onclick = () => { if (marketModalBackdrop) marketModalBackdrop.classList.remove('open'); };
+
+const marketTabPlugins = document.getElementById('market-tab-plugins');
+if (marketTabPlugins) {
+  marketTabPlugins.onclick = () => {
+    marketTabPlugins.classList.add('active');
+    const marketTabThemes = document.getElementById('market-tab-themes');
+    if (marketTabThemes) marketTabThemes.classList.remove('active');
+    currentMarketTab = 'plugins';
+    loadMarketplace();
+  };
+}
+
+const marketTabThemes = document.getElementById('market-tab-themes');
+if (marketTabThemes) {
+  marketTabThemes.onclick = () => {
+    marketTabThemes.classList.add('active');
+    const marketTabPluginsEl = document.getElementById('market-tab-plugins');
+    if (marketTabPluginsEl) marketTabPluginsEl.classList.remove('active');
+    currentMarketTab = 'themes';
+    loadMarketplace();
+  };
+}
+
+async function loadMarketplace() {
+  if (!marketGridContainer) return;
+  marketGridContainer.innerHTML = '';
+  if (currentMarketTab === 'plugins') {
+    const res = await fetchApi('/api/marketplace/plugins');
+    const data = await res.json();
+    if (data.ok) {
+      Object.values(data.plugins).forEach(plugin => {
+        const card = document.createElement('div');
+        card.className = 'market-card';
+        const isActive = Boolean(installedPlugins[plugin.id]);
+        
+        card.innerHTML = `
+          <div>
+            <div style="font-weight:bold;font-size:13px;color:var(--text-bright);margin-bottom:4px;">${escapeHtml(plugin.name)}</div>
+            <div style="font-size:10px;color:var(--text-dim);margin-bottom:8px;">by ${escapeHtml(plugin.author)} • v${escapeHtml(plugin.version)}</div>
+            <div style="font-size:11px;color:var(--text);line-height:1.4;margin-bottom:10px;">${escapeHtml(plugin.description)}</div>
+          </div>
+          <button class="mini-btn toggle-plugin-btn" style="${isActive ? 'background:var(--border-bright);color:#00190A;border:none;' : 'background:var(--text-bright);color:#00190A;border:none;'}font-weight:bold;">
+            ${isActive ? 'DEACTIVATE ✕' : 'ACTIVATE ADDON ✓'}
+          </button>
+        `;
+
+        card.querySelector('.toggle-plugin-btn').onclick = async () => {
+          const isActivating = !installedPlugins[plugin.id];
+
+          if (installedPlugins[plugin.id]) {
+            delete installedPlugins[plugin.id];
+            showToast(`Plugin ${plugin.name} deactivated.`, 'error');
+          } else {
+            installedPlugins[plugin.id] = true;
+            showToast(`✓ Plugin ${plugin.name} successfully activated!`, 'success');
+          }
+          localStorage.setItem('zabacode-active-plugins', JSON.stringify(installedPlugins));
+          
+          if (plugin.id === 'symbol_bar' && symbolBar) {
+            symbolBar.classList.toggle('active', Boolean(installedPlugins['symbol_bar']));
+          }
+
+          // Auto-implement transform plugins upon activation
+          const transformPlugins = [
+            "auto_import_optimizer",
+            "duplicate_line_detector",
+            "smart_comment_generator",
+            "code_beautifier_pro",
+            "variable_type_hint_generator"
+          ];
+          if (isActivating && transformPlugins.includes(plugin.id)) {
+            showToast(`Running ${plugin.name}...`, 'loading');
+            try {
+              const currentCode = getEditorValue();
+              const executeRes = await fetchApi('/api/plugins/execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ plugin_id: plugin.id, code: currentCode })
+              });
+              const result = await executeRes.json();
+              if (result.ok) {
+                setEditorValue(result.code);
+                triggerAutoSave();
+                if (result.report) {
+                  showToast(`✓ Terimplementasi:\n${result.report}`, 'success');
+                } else {
+                  showToast(`✓ Plugin ${plugin.name} successfully applied!`, 'success');
+                }
+              } else {
+                showToast(`✗ Failed to apply plugin: ${result.message}`, 'error');
+              }
+            } catch (err) {
+              showToast(`✗ Error eksekusi: ${err.message}`, 'error');
+            }
+          }
+
+          loadMarketplace();
+        };
+
+        marketGridContainer.appendChild(card);
+      });
+    }
+  } else {
+    const res = await fetchApi('/api/themes');
+    const data = await res.json();
+    for (const [key, name] of Object.entries(data.themes)) {
+      const card = document.createElement('div');
+      card.className = 'market-card';
+      card.innerHTML = `
+        <div>
+          <div style="font-weight:bold;font-size:13px;color:var(--text-bright);margin-bottom:4px;">🎨 ${escapeHtml(name)}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">Community Theme Preset for ZMUX.</div>
+        </div>
+        <button class="mini-btn" style="background:var(--border-bright);color:#00190A;border:none;font-weight:bold;">PAKAI TEMA INI</button>
+      `;
+      card.querySelector('button').onclick = () => applyTheme(key);
+      marketGridContainer.appendChild(card);
+    }
+  }
+}
+
+// ---------- IN-APP DOCS MODAL ----------
+const docsModalBackdrop = document.getElementById('docs-modal-backdrop');
+const sidebarDocsBtn = document.getElementById('sidebar-docs-btn');
+if (sidebarDocsBtn) {
+  sidebarDocsBtn.onclick = () => {
+    if (sidebar) sidebar.classList.remove('open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.remove('open');
+    if (docsModalBackdrop) docsModalBackdrop.classList.add('open');
+  };
+}
+const docsModalClose = document.getElementById('docs-modal-close');
+if (docsModalClose) docsModalClose.onclick = () => { if (docsModalBackdrop) docsModalBackdrop.classList.remove('open'); };
+
+// ---------- AI Chat & Floating FAB ----------
+const aiFab = document.getElementById('ai-fab');
+const aiPanel = document.getElementById('ai-panel');
+const aiCloseBtn = document.getElementById('ai-close');
+if (aiCloseBtn) aiCloseBtn.onclick = () => { if (aiPanel) aiPanel.classList.remove('open'); };
+
+let dragging = false, moved = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+const FAB_SIZE = 48;
+
+if (aiFab) {
+  aiFab.addEventListener('pointerdown', e => {
+    dragging = true; moved = false;
+    startX = e.clientX; startY = e.clientY;
+    const rect = aiFab.getBoundingClientRect();
+    startLeft = rect.left; startTop = rect.top;
+    aiFab.setPointerCapture(e.pointerId);
+  });
+
+  aiFab.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) moved = true;
+    if (moved) {
+      aiFab.style.left = `${Math.max(4, Math.min(window.innerWidth - FAB_SIZE - 4, startLeft + dx))}px`;
+      aiFab.style.top = `${Math.max(4, Math.min(window.innerHeight - FAB_SIZE - 4, startTop + dy))}px`;
+    }
+  });
+
+  aiFab.addEventListener('pointerup', () => {
+    dragging = false;
+    if (!moved && aiPanel) aiPanel.classList.add('open');
+  });
+}
+
+const aiMessages = document.getElementById('ai-messages');
+function addMsg(text, cls) {
+  if (!aiMessages) return;
+  const div = document.createElement('div');
+  div.className = `msg ${cls}`;
+  div.textContent = text;
+
+
+
+  aiMessages.appendChild(div);
+  aiMessages.scrollTop = aiMessages.scrollHeight;
+}
+
+// ---------- Key Dialog Handlers ----------
+const keyDialogBackdrop = document.getElementById('key-dialog-backdrop');
+const keyDialogProvider = document.getElementById('key-dialog-provider');
+const keyDialogInput = document.getElementById('key-dialog-input');
+let pendingProvider = null;
+
+function openKeyDialog(provider) {
+  pendingProvider = provider;
+  if (keyDialogProvider) keyDialogProvider.textContent = provider;
+  if (keyDialogInput) keyDialogInput.value = '';
+  if (keyDialogBackdrop) keyDialogBackdrop.classList.add('open');
+}
+const keyDialogCancel = document.getElementById('key-dialog-cancel');
+if (keyDialogCancel) keyDialogCancel.onclick = () => { if (keyDialogBackdrop) keyDialogBackdrop.classList.remove('open'); };
+
+const keyDialogSave = document.getElementById('key-dialog-save');
+if (keyDialogSave) {
+  keyDialogSave.onclick = async () => {
+    if (!keyDialogInput || !keyDialogInput.value) return;
+    await fetchApi('/api/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: pendingProvider, api_key: keyDialogInput.value }),
+    });
+    if (keyDialogBackdrop) keyDialogBackdrop.classList.remove('open');
+    addMsg(`API Key for ${pendingProvider} successfully saved.`, 'system-hint');
+  };
+}
+
+const PROVIDER_MODELS = {
+  custom: [
+    { id: "custom-default", name: "🔧 Custom Endpoint — Default" },
+    { id: "custom-openai-compatible", name: "OpenAI Compatible (e.g. /v1/chat/completions)" },
+    { id: "custom-ollama-compatible", name: "Ollama Compatible (e.g. http://192.168.1.10:11434/v1)" }
+  ],
+  openrouter: [
+    { id: "qwen/qwen-2.5-coder-32b-instruct:free", name: "Qwen 2.5 Coder 32B [FREE]" },
+    { id: "meta-llama/llama-3.3-70b-instruct:free", name: "Llama 3.3 70B [FREE]" },
+    { id: "google/gemini-2.5-flash:free", name: "Gemini 2.5 Flash [FREE]" },
+    { id: "deepseek/deepseek-chat:free", name: "DeepSeek Chat [FREE]" },
+    { id: "microsoft/phi-3-medium-128k-instruct:free", name: "Phi-3 Medium 128K [FREE]" },
+    { id: "qwen/qwen-2.5-72b-instruct", name: "Qwen 2.5 72B (Paid)" },
+    { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet (Paid)" }
+  ],
+  gemini: [
+    { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash [FREE Tier]" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro" }
+  ],
+  groq: [
+    { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B Versatile" },
+    { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B Instant" },
+    { id: "mixtral-8x7b-32768", name: "Mixtral 8x7B MoE" },
+    { id: "gemma2-9b-it", name: "Gemma 2 9B IT" }
+  ],
+  mistral: [
+    { id: "codestral-latest", name: "Codestral Latest" },
+    { id: "mistral-large-latest", name: "Mistral Large Latest" },
+    { id: "open-codestral-7b", name: "Codestral 7B (Open)" }
+  ],
+  deepseek: [
+    { id: "deepseek-coder", name: "DeepSeek Coder" },
+    { id: "deepseek-chat", name: "DeepSeek Chat" }
+  ],
+  ollama: [
+    { id: "codellama", name: "CodeLlama [FREE/Local]" },
+    { id: "llama3", name: "Llama 3 [FREE/Local]" },
+    { id: "qwen2.5-coder", name: "Qwen 2.5 Coder [FREE/Local]" },
+    { id: "mistral", name: "Mistral 7B [FREE/Local]" }
+  ]
+};
+
+const aiProviderEl = document.getElementById('ai-provider');
+const aiModelEl = document.getElementById('ai-model');
+const billingDialogBackdrop = document.getElementById('billing-dialog-backdrop');
+const billingDialogBack = document.getElementById('billing-dialog-back');
+
+if (billingDialogBack) {
+  billingDialogBack.onclick = () => {
+    if (billingDialogBackdrop) billingDialogBackdrop.classList.remove('open');
+  };
+}
+
+function updateModelDropdown() {
+  if (!aiProviderEl || !aiModelEl) return;
+  const provider = aiProviderEl.value;
+  const models = PROVIDER_MODELS[provider] || [];
+  aiModelEl.innerHTML = '';
+  models.forEach(model => {
+    const opt = document.createElement('option');
+    opt.value = model.id;
+    opt.textContent = model.name;
+    aiModelEl.appendChild(opt);
+  });
+}
+
+if (aiProviderEl) {
+  aiProviderEl.addEventListener('change', updateModelDropdown);
+}
+// Run initially to populate
+updateModelDropdown();
+
+async function callAiWithFallback(message, originalProvider, originalModel) {
+  let keysStatus = {};
+  try {
+    const statusRes = await fetchApi('/api/keys/status');
+    keysStatus = await statusRes.json();
+  } catch (err) {
+    console.error("Failed to fetch keys status", err);
+  }
+
+  const provider = originalProvider;
+
+  // Track if key missing — we still want Oracle fallback as savior for boncos users
+  const hasNoKey = (provider !== 'ollama' && !keysStatus[provider]);
+  if (hasNoKey) {
+    console.log(`No key for ${provider}, will try Oracle fallback first`);
+    // Don't return null — let server try Oracle fallback
+    // Show hint toast instead of blocking dialog
+    // We open key dialog as non-blocking hint after a short delay
+    setTimeout(() => {
+      // Only open dialog if user is on an online provider that truly needs key
+      // Custom endpoint needs URL, but Oracle fallback still works
+      if (provider !== 'custom' || !keysStatus[provider]) {
+        // Optional: show dialog as hint, but don't block Oracle
+        // openKeyDialog(provider);
+        showToast(`No key for ${provider} — using Oracle fallback (savior for boncos)`, 'loading');
+      }
+    }, 100);
+  }
+
+  const model = originalModel;
+
+  try {
+    const res = await fetchApi('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, provider, model, code: getEditorValue() }),
+    });
+    const data = await res.json();
+
+    if (res.status === 401 && data.needs_key) {
+      openKeyDialog(provider);
+      return null;
+    }
+
+    const isRateLimit = !data.ok && (
+      res.status === 429 || res.status === 402 || data.is_rate_limit ||
+      (data.message && (
+        data.message.toLowerCase().includes('billing') ||
+        data.message.toLowerCase().includes('credit') ||
+        data.message.toLowerCase().includes('quota') ||
+        data.message.toLowerCase().includes('rate limit') ||
+        data.message.toLowerCase().includes('rate_limit') ||
+        data.message.toLowerCase().includes('balance') ||
+        data.message.toLowerCase().includes('limit exceeded') ||
+        data.message.toLowerCase().includes('insufficient') ||
+        data.message.toLowerCase().includes('exhausted')
+      ))
+    );
+
+    if (isRateLimit) {
+      showToast("Provider limit — Oracle fallback (savior for boncos)", "loading");
+      if (billingDialogBackdrop) {
+        const billingMsg = document.getElementById('billing-dialog-message');
+        if (billingMsg && data.message) {
+          billingMsg.textContent = data.message.toUpperCase();
+        }
+        billingDialogBackdrop.classList.add('open');
+      }
+      // Try Oracle savior via server fallback (allow_offline=true)
+      try {
+        const fallbackRes = await fetchApi('/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: 'custom', message: message, model: originalModel, code: getEditorValue(), allow_offline: true })
+        });
+        const fallbackData = await fallbackRes.json();
+        if (fallbackData.ok && fallbackData.reply) {
+          return fallbackData.reply;
+        }
+      } catch (e) {
+        console.log("Oracle fallback attempt failed", e);
+      }
+      // If still failing, try direct oracle explain if message contains traceback
+      try {
+        if (message && message.length > 30) {
+          const expRes = await fetchApi('/api/oracle/explain', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stderr: message })
+          });
+          const expData = await expRes.json();
+          if (expData.ok) {
+            return `🔮 Zaba Oracle (offline savior — boncos mode)\n\n**${expData.title}** (line ${expData.line || '?'})\n\n${expData.what}\n\n**Fix:** ${expData.fix}\n\n_Provider limit reached, but I'm here — no key, no quota._`;
+          }
+        }
+      } catch {}
+      // Last resort: rather than reciting a canned example about a mistake
+      // the user may not even have made, actually analyse their buffer.
+      try {
+        const anaRes = await fetchApi('/api/oracle/analyze', {
+          method: 'POST',
+          body: JSON.stringify({ code: getEditorValue() })
+        });
+        const ana = await anaRes.json();
+        const head = `🔮 Zaba Oracle (offline savior)\n\nProvider ${provider} limit/quota reached (boncos). I'm taking over!\n\n`;
+        if (ana.ok === false && ana.message) {
+          const at = ana.line ? ` (line ${ana.line})` : '';
+          return head + `**Your editor doesn't parse:** ${ana.message}${at}\n\nType "fix my code" and I'll try to patch it for you.`;
+        }
+        if (ana.ok && ana.notes && ana.notes.length) {
+          const total = ana.note_count || ana.notes.length;
+          const more = total > ana.notes.length ? ` (${total} total, showing ${ana.notes.length})` : '';
+          return head + `**I reviewed your ${ana.lines} line(s)${more}:**\n` + ana.notes.map(n => `- ${n}`).join('\n');
+        }
+        if (ana.ok) {
+          return head + `I checked your ${ana.lines} line(s): no syntax error, no obvious smells.\n\nIf it crashed, paste the traceback and I'll pinpoint the line — no key, no quota.`;
+        }
+      } catch {}
+      return `🔮 Zaba Oracle (offline savior)\n\nProvider ${provider} limit/quota reached (boncos). I'm taking over!\n\nType "fix my code" or "review my code" and I'll read your editor directly.`;
+    }
+
+    if (!data.ok) {
+      // If not ok but we have offline fallback reason, try Oracle
+      if (data.fallback_reason || !data.needs_key) {
+        try {
+          const fbRes = await fetchApi('/api/ai/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'custom', message: message, model: originalModel, code: getEditorValue(), allow_offline: true })
+          });
+          const fbData = await fbRes.json();
+          if (fbData.ok) return fbData.reply;
+        } catch {}
+      }
+      showToast(data.message || "Failed to get AI response — trying Oracle", "error");
+      // Try Oracle as last resort
+      try {
+        const oracleRes = await fetchApi('/api/oracle/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: getEditorValue() })
+        });
+        const oracleData = await oracleRes.json();
+        if (oracleData.ok === false && oracleData.message) {
+          // Report the parser's actual complaint. This used to append a
+          // hardcoded 'there is no "" at column, add ""' to *every* syntax
+          // error, which is only true for one specific mistake.
+          const at = oracleData.line ? ` (line ${oracleData.line})` : '';
+          return `🔮 Oracle says: ${oracleData.message}${at}`;
+        }
+        if (oracleData.ok && oracleData.notes && oracleData.notes.length > 0) {
+          // analyze_buffer caps the list for small screens; note_count is the
+          // true total, so say how many were held back instead of implying
+          // the shown list is everything.
+          const total = oracleData.note_count || oracleData.notes.length;
+          const header = total > oracleData.notes.length
+            ? `🔮 Oracle review (savior mode) — ${total} issues, showing first ${oracleData.notes.length}:`
+            : `🔮 Oracle review (savior mode):`;
+          return header + `\n` + oracleData.notes.map(n => `- ${n}`).join('\n');
+        }
+      } catch {}
+      addMsg("Error: " + (data.message || "Unknown error") + " — Oracle tried but no code in editor?", "system-hint");
+      return null;
+    }
+
+    return data.reply;
+
+  } catch (err) {
+    console.error(`Request to ${provider} failed:`, err);
+    showToast(`Connection to ${provider} failed.`, "error");
+    addMsg(`Error: Connection to ${provider} failed. ${err.message || err}`, "system-hint");
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Zaba Oracle — offline traceback explanation (no API key, no network)
+// ---------------------------------------------------------------------------
+function renderOracleCard(exp, container) {
+  if (!exp || !container) return;
+  if (!exp.ok) {
+    // Show fallback card for unrecognized errors
+    const card = document.createElement('div');
+    card.className = 'oracle-card';
+    card.style.borderLeftColor = 'var(--text-dim)';
+    card.innerHTML =
+      '<div class="oracle-head">\uD83D\uDD2E Zaba Oracle <span class="oracle-badge">OFFLINE</span></div>' +
+      '<div class="oracle-what">I detected an error in your code. While I could not auto-diagnose it precisely, I can still attempt to patch common syntax issues.</div>' +
+      '<div class="oracle-fix"><b>Tip:</b> Click "\u2699\uFE0F Auto-Fix with Oracle" below to try automatic repair of missing quotes, brackets, colons, and other typical mistakes.</div>';
+    container.appendChild(card);
+    return;
+  }
+  const card = document.createElement('div');
+  card.className = 'oracle-card';
+
+  // The Oracle now resolves the line in the *user's* buffer (skipping stdlib
+  // frames and digits that only appear in the exception message), so it is
+  // worth showing the offending source line rather than a bare number.
+  let where = '';
+  if (exp.line) {
+    const srcLines = getEditorValue().split('\n');
+    const src = srcLines[exp.line - 1];
+    if (typeof src === 'string' && src.trim()) {
+      where =
+        '<div class="oracle-line">Line ' + exp.line +
+          ' <span class="oracle-jump" role="button" tabindex="0">tap to jump</span></div>' +
+        '<pre class="oracle-src">' + escapeHtml(src.replace(/\t/g, '    ')) + '</pre>';
+    } else {
+      where = '<div class="oracle-line">Line ' + exp.line + '</div>';
+    }
+  }
+
+  card.innerHTML =
+    '<div class="oracle-head">\uD83D\uDD2E ' + escapeHtml(exp.title) +
+      '<span class="oracle-badge">OFFLINE</span></div>' +
+    '<div class="oracle-what">' + escapeHtml(exp.what) + '</div>' +
+    '<div class="oracle-fix"><b>Fix:</b> ' + escapeHtml(exp.fix) + '</div>' + where;
+
+  const jump = card.querySelector('.oracle-jump');
+  if (jump) {
+    const goToLine = () => focusEditorLine(exp.line);
+    jump.onclick = goToLine;
+    jump.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToLine(); } };
+  }
+  container.appendChild(card);
+}
+
+/** Scroll the editor to a 1-based line and put the caret on it. */
+function focusEditorLine(lineNo) {
+  if (!lineNo) return;
+  try {
+    if (activeEditorMode === 'ace' && editor) {
+      editor.gotoLine(lineNo, 0, true);
+      editor.focus();
+      return;
+    }
+    if (nativeCodeArea) {
+      const lines = nativeCodeArea.value.split('\n');
+      if (lineNo > lines.length) return;
+      const start = lines.slice(0, lineNo - 1).join('\n').length + (lineNo > 1 ? 1 : 0);
+      nativeCodeArea.focus();
+      nativeCodeArea.setSelectionRange(start, start + lines[lineNo - 1].length);
+    }
+  } catch (e) {
+    console.log('focusEditorLine failed', e);
+  }
+}
+
+async function renderOracleExplanation(stderrText, container) {
+  try {
+    const res = await fetchApi('/api/oracle/explain', {
+      method: 'POST',
+      body: JSON.stringify({ stderr: stderrText })
+    });
+    const data = await res.json();
+    renderOracleCard(data, container);
+  } catch (e) {
+    // Show fallback card if API call fails
+    renderOracleCard({ ok: false }, container);
+  }
+  // ALWAYS show auto-fix button, regardless of whether oracle explanation succeeded
+  renderAutoFixButton(stderrText, container);
+}
+
+async function renderAutoFixButton(stderrText, container) {
+  const btn = document.createElement('button');
+  btn.className = 'mini-btn';
+  btn.style.cssText = 'background:var(--ai);color:#1A0F00;border:none;font-weight:bold;margin-top:8px;padding:6px 12px;cursor:pointer;margin-right:8px;';
+  btn.innerHTML = '⚙️ Auto-Fix with Oracle';
+
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.innerHTML = 'Analyzing...';
+    try {
+      const res = await fetchApi('/api/oracle/fix', {
+        method: 'POST',
+        body: JSON.stringify({ code: getEditorValue(), stderr: stderrText })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        renderAutoFixResult(data, container);
+        btn.remove();
+      } else if (data.runtime_error) {
+        // Syntax is fine — this is a logic bug. Say so plainly instead of
+        // implying the Oracle failed, and never rewrite valid source.
+        renderAutoFixRefusal(data, container);
+        btn.remove();
+      } else if (data.explanation) {
+        // No confident patch, but the Oracle still knows the exact line,
+        // column and parser complaint. A toast would throw all of that away.
+        renderAutoFixRefusal(data, container, 'NO SAFE PATCH');
+        btn.remove();
+      } else {
+        // Surface the server's actual reason rather than a generic line.
+        showToast(data.message || 'Oracle could not automatically fix this error safely.', 'info');
+        btn.innerHTML = 'Auto-Fix (Unavailable)';
+      }
+    } catch (e) {
+      showToast('Error trying to auto-fix: ' + e.message, 'error');
+      btn.disabled = false;
+      btn.innerHTML = '⚙️ Auto-Fix with Oracle';
+    }
+  };
+  container.appendChild(btn);
+}
+
+function renderAutoFixRefusal(data, container, badge) {
+  const card = document.createElement('div');
+  card.className = 'oracle-card';
+  card.style.borderLeftColor = 'var(--ai)';
+  // Fenced blocks hold the caret pointer at the failing column, so they must
+  // keep their whitespace — extract them before the <br> conversion.
+  const raw = data.explanation || data.message || '';
+  const blocks = [];
+  const withPlaceholders = raw.replace(/```\n?([\s\S]*?)```/g, (m, body) => {
+    blocks.push(body.replace(/\n$/, ''));
+    return '\u0000BLOCK' + (blocks.length - 1) + '\u0000';
+  });
+  let text = escapeHtml(withPlaceholders)
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.1); padding:2px 4px; border-radius:2px; font-family:monospace;">$1</code>')
+    .replace(/\n/g, '<br>');
+  text = text.replace(/\u0000BLOCK(\d+)\u0000/g, (m, i) =>
+    '<pre style="background:rgba(0,0,0,0.3); border:1px solid var(--border); padding:8px; border-radius:4px; margin:8px 0; overflow-x:auto; font-family:monospace; font-size:12px; white-space:pre;">' +
+    escapeHtml(blocks[Number(i)]) + '</pre>');
+  card.innerHTML =
+    '<div class="oracle-head">\uD83D\uDD2E Zaba Oracle ' +
+      '<span class="oracle-badge">' + escapeHtml(badge || 'RUNTIME ERROR') + '</span></div>' +
+    '<div class="oracle-what">' + text + '</div>';
+  container.appendChild(card);
+}
+
+function renderDiffView(originalCode, fixedCode) {
+  const origLines = originalCode.split('\n');
+  const fixedLines = fixedCode.split('\n');
+  let html = '<div class="diff-view" style="font-family:monospace; font-size:12px; background:rgba(0,0,0,0.25); border:1px solid var(--border); padding:8px; border-radius:4px; margin-top:8px; overflow-x:auto;">';
+  const maxLen = Math.max(origLines.length, fixedLines.length);
+  for (let i = 0; i < maxLen; i++) {
+    const oLine = origLines[i];
+    const fLine = fixedLines[i];
+    if (oLine !== fLine) {
+      if (oLine !== undefined) {
+        html += `<div style="background:rgba(255,0,0,0.15); color:#ff6666; padding:2px 4px; display:flex;"><span style="user-select:none; width:24px; color:rgba(255,0,0,0.4); text-align:right; margin-right:8px;">${i+1} -</span>${escapeHtml(oLine)}</div>`;
+      }
+      if (fLine !== undefined) {
+        html += `<div style="background:rgba(0,255,0,0.15); color:#66ff66; padding:2px 4px; display:flex;"><span style="user-select:none; width:24px; color:rgba(0,255,0,0.4); text-align:right; margin-right:8px;">${i+1} +</span>${escapeHtml(fLine)}</div>`;
+      }
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderAutoFixResult(data, container) {
+  const resultCard = document.createElement('div');
+  resultCard.className = 'oracle-card';
+  resultCard.style.borderLeftColor = '#66ff66';
+  resultCard.style.background = 'rgba(0,255,0,0.02)';
+
+  const originalCode = getEditorValue();
+  const diffHtml = renderDiffView(originalCode, data.fixed_code);
+
+  let formattedExplanation = escapeHtml(data.explanation)
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/\*([^*]+)\*/g, '<i>$1</i>')
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.1); padding:2px 4px; border-radius:2px; font-family:monospace;">$1</code>')
+    .replace(/\n/g, '<br>');
+
+  resultCard.innerHTML = `
+    <div class="oracle-head" style="color:#66ff66;">
+      🔮 Zaba Oracle Auto-Fix Response
+      <span class="oracle-badge" style="background:#66ff66; color:#000;">PATCH READY</span>
+    </div>
+    <div class="oracle-what" style="margin-bottom:8px;">${formattedExplanation}</div>
+    <div style="font-weight:bold; font-size:11px; margin-top:12px; color:var(--text-bright);">PROPOSED CHANGES:</div>
+    ${diffHtml}
+  `;
+
+  const applyBtn = document.createElement('button');
+  applyBtn.className = 'mini-btn';
+  applyBtn.style.cssText = 'background:#66ff66;color:#1A0F00;border:none;font-weight:bold;margin-top:12px;padding:8px 16px;cursor:pointer;';
+  applyBtn.innerHTML = '✔️ Apply Fix';
+
+  applyBtn.onclick = () => {
+    setEditorValue(data.fixed_code);
+    saveActiveTab();
+    showToast('Oracle fix applied and saved successfully!', 'success');
+    resultCard.remove();
+  };
+
+  resultCard.appendChild(applyBtn);
+  container.appendChild(resultCard);
+}
+
+async function sendAiMessage() {
+  const input = document.getElementById('ai-input');
+  const message = input ? input.value.trim() : '';
+  if (!message) return;
+  const aiProviderEl = document.getElementById('ai-provider');
+  const provider = aiProviderEl ? aiProviderEl.value : 'openrouter';
+  const aiModelEl = document.getElementById('ai-model');
+  const model = aiModelEl ? aiModelEl.value : '';
+  const sendBtn = document.getElementById('ai-send');
+  
+  addMsg(message, 'user');
+  if (input) input.value = '';
+  if (sendBtn) sendBtn.disabled = true;
+
+  try {
+    const reply = await callAiWithFallback(message, provider, model);
+    if (reply) {
+      addMsg(reply, 'ai');
+    }
+  } finally {
+    if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
+const aiSendBtn = document.getElementById('ai-send');
+if (aiSendBtn) aiSendBtn.onclick = sendAiMessage;
+
+const aiInputEl = document.getElementById('ai-input');
+if (aiInputEl) {
+  aiInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') sendAiMessage(); });
+}
+
+// ---------- File Manager Modal ----------
+const fileDialogBackdrop = document.getElementById('file-dialog-backdrop');
+const fileListContainer = document.getElementById('file-list-container');
+const fileSaveInput = document.getElementById('file-save-input');
+
+function openFileManager(isSave) {
+  if (sidebar) sidebar.classList.remove('open');
+  if (sidebarBackdrop) sidebarBackdrop.classList.remove('open');
+  if (fileDialogBackdrop) fileDialogBackdrop.classList.add('open');
+  loadFileList();
+  if (isSave && fileSaveInput) fileSaveInput.focus();
+}
+
+const sidebarOpenBtn = document.getElementById('sidebar-open-btn');
+if (sidebarOpenBtn) sidebarOpenBtn.onclick = () => openFileManager(false);
+
+const sidebarSaveBtn = document.getElementById('sidebar-save-btn');
+if (sidebarSaveBtn) sidebarSaveBtn.onclick = () => openFileManager(true);
+
+const fileDialogCancel = document.getElementById('file-dialog-cancel');
+if (fileDialogCancel) fileDialogCancel.onclick = () => { if (fileDialogBackdrop) fileDialogBackdrop.classList.remove('open'); };
+
+const fileDialogSave = document.getElementById('file-dialog-save');
+if (fileDialogSave) {
+  fileDialogSave.onclick = async () => {
+    const filename = fileSaveInput ? fileSaveInput.value.trim() : '';
+    if (!filename) return;
+
+    const res = await fetchApi(`/api/files/${filename}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: getEditorValue() }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`✓ ${data.message}`, 'success');
+      if (fileSaveInput) fileSaveInput.value = '';
+      loadFileList();
+    }
+  };
+}
+
+async function loadFileList() {
+  if (!fileListContainer) return;
+  const res = await fetchApi('/api/files');
+  const data = await res.json();
+  fileListContainer.innerHTML = '';
+  if (data.files && data.files.length > 0) {
+    data.files.forEach(f => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-panel-2);border:1px solid var(--border);';
+      
+      const fileNameSpan = document.createElement('span');
+      fileNameSpan.style.fontSize = '12px';
+      fileNameSpan.textContent = f.name;
+
+      const actionsDiv = document.createElement('div');
+      const openBtn = document.createElement('button');
+      openBtn.className = 'mini-btn';
+      openBtn.textContent = 'Open';
+      
+      const delBtn = document.createElement('button');
+      delBtn.className = 'mini-btn';
+      delBtn.style.cssText = 'border-color:var(--err-dim);color:var(--err);margin-left:4px;';
+      delBtn.textContent = 'Delete';
+
+      actionsDiv.appendChild(openBtn);
+      actionsDiv.appendChild(delBtn);
+      row.appendChild(fileNameSpan);
+      row.appendChild(actionsDiv);
+
+      openBtn.onclick = async () => {
+        const fileRes = await fetchApi(`/api/files/${f.name}`);
+        const fileData = await fileRes.json();
+        if (fileData.ok) {
+          let existingTab = tabs.find(t => t.name === f.name);
+          if (existingTab) {
+            existingTab.content = fileData.content;
+            switchTab(existingTab.id);
+          } else {
+            const newId = 'tab-' + Date.now();
+            tabs.push({ id: newId, name: f.name, content: fileData.content });
+            switchTab(newId);
+          }
+          if (fileDialogBackdrop) fileDialogBackdrop.classList.remove('open');
+        }
+      };
+
+      delBtn.onclick = async () => {
+        const ok = await appConfirm(`Delete file ${f.name}?`, {
+          title: '> file manager _', okLabel: 'delete', cancelLabel: 'keep', danger: true,
+        });
+        if (ok) {
+          await fetchApi(`/api/files/${f.name}`, { method: 'DELETE' });
+          loadFileList();
+        }
+      };
+
+      fileListContainer.appendChild(row);
+    });
+  } else {
+    fileListContainer.innerHTML = '<div style="font-size:11px;color:var(--text-dim);">No saved files found.</div>';
+  }
+}
+
+// ---------- Theme Dialog Handlers ----------
+const themeDialogBackdrop = document.getElementById('theme-dialog-backdrop');
+const themeList = document.getElementById('theme-list');
+
+const sidebarThemeBtn = document.getElementById('sidebar-theme-btn');
+if (sidebarThemeBtn) {
+  sidebarThemeBtn.onclick = () => {
+    if (sidebar) sidebar.classList.remove('open');
+    if (sidebarBackdrop) sidebarBackdrop.classList.remove('open');
+    if (themeDialogBackdrop) themeDialogBackdrop.classList.add('open');
+    loadThemes();
+  };
+}
+const themeDialogCancel = document.getElementById('theme-dialog-cancel');
+if (themeDialogCancel) themeDialogCancel.onclick = () => { if (themeDialogBackdrop) themeDialogBackdrop.classList.remove('open'); };
+
+async function loadThemes() {
+  if (!themeList) return;
+  const res = await fetchApi('/api/themes');
+  const data = await res.json();
+  themeList.innerHTML = '';
+  for (const [k, name] of Object.entries(data.themes)) {
+    const btn = document.createElement('button');
+    btn.className = 'mini-btn';
+    btn.style.cssText = 'padding:10px;text-align:center;font-size:12px;';
+    btn.textContent = name;
+    btn.onclick = () => applyTheme(k);
+    themeList.appendChild(btn);
+  }
+}
+
+async function applyTheme(name) {
+  const res = await fetchApi(`/api/themes/${name}`);
+  const data = await res.json();
+  if (data.ok) {
+    const t = data.theme;
+    currentThemeData = t;
+    localStorage.setItem('zabacode-active-theme', name);
+
+    document.documentElement.style.setProperty('--bg', rgbaToCss(t.bg));
+    document.documentElement.style.setProperty('--bg-panel', rgbaToCss(t.bg_panel));
+    document.documentElement.style.setProperty('--bg-panel-2', rgbaToCss(t.bg_panel_2));
+    document.documentElement.style.setProperty('--border', rgbaToCss(t.border));
+    document.documentElement.style.setProperty('--border-bright', rgbaToCss(t.border_bright));
+    document.documentElement.style.setProperty('--text', rgbaToCss(t.text));
+    document.documentElement.style.setProperty('--text-bright', rgbaToCss(t.text_bright));
+    document.documentElement.style.setProperty('--text-dim', rgbaToCss(t.text_dim));
+    document.documentElement.style.setProperty('--err', rgbaToCss(t.err));
+    document.documentElement.style.setProperty('--ai', rgbaToCss(t.ai));
+
+    if (t.err) {
+      const errDim = [t.err[0] * 0.48, t.err[1] * 0.14, t.err[2] * 0.14, t.err[3]];
+      document.documentElement.style.setProperty('--err-dim', rgbaToCss(errDim));
+    }
+    if (t.ai) {
+      const aiDim = [t.ai[0] * 0.48, t.ai[1] * 0.35, t.ai[2], t.ai[3]];
+      document.documentElement.style.setProperty('--ai-dim', rgbaToCss(aiDim));
+    }
+    
+    registerCustomMonacoTheme(t);
+    if (themeDialogBackdrop) themeDialogBackdrop.classList.remove('open');
+    if (marketModalBackdrop) marketModalBackdrop.classList.remove('open');
+  }
+}
+
+function showToast(msg, type) {
+  const toast = document.createElement('div');
+  toast.className = `install-toast ${type}`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+</script>
+</body>
+</html>

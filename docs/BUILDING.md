@@ -1,95 +1,74 @@
-# Building Packages
+# Building ZMUX and package artifacts
 
-> **Status:** Pre-Alpha (M0) — actual cross-compilation not yet enabled
+## GitHub APK build
 
-## Overview
+The supported APK build is `.github/workflows/build-zmux-apk.yml`. It uses the
+contract in `toolchain/runtime-lock.json` and emits an artifact named **zmux**.
+Every Action is pinned to a full commit SHA.
 
-ZABAWHEELS builds native Python wheels for Android using GitHub Actions CI. The build process is designed to be reproducible, auditable, and secure.
-
-## Current State (M0)
-
-Cross-compilation is **not yet enabled**. The current infrastructure provides:
-- ✅ Build scripts (placeholder/dry-run mode)
-- ✅ Wheel inspection scripts
-- ✅ ELF inspection scripts
-- ✅ Manifest generation scripts
-- ✅ Index generation scripts
-- ✅ CI workflow definitions (pinned SHA)
-
-Missing (requires M1):
-- ⬜ Pinned NDK and toolchain
-- ⬜ Runtime fingerprint from APK
-- ⬜ python-for-Android build environment
-- ⬜ Actual cross-compilation capability
-
-## Build Process (Future)
-
-```text
-validate recipe
-    ↓
-download pinned source
-    ↓
-verify source SHA-256
-    ↓
-prepare exact toolchain (Docker image matching runtime-lock.json)
-    ↓
-cross-compile for target ABI
-    ↓
-build wheel
-    ↓
-inspect ELF (architecture, DT_NEEDED, text relocation)
-    ↓
-validate wheel metadata
-    ↓
-generate manifest
-    ↓
-upload workflow artifact
-```
-
-## Triggering a Build
+Trigger it from GitHub Actions or with:
 
 ```sh
-# Via GitHub Actions workflow_dispatch
-gh workflow run build-package.yml \
-  -f package=zaba-native-smoke \
-  -f version=0.1.0 \
-  -f abi=armeabi-v7a \
-  -f channel=experimental
-
-# Or locally (dry-run only)
-python scripts/build.py \
-  --package zaba-native-smoke \
-  --version 0.1.0 \
-  --abi armeabi-v7a \
-  --channel experimental \
-  --dry-run
+gh workflow run build-zmux-apk.yml --ref arena/019faae9-zabawheels
 ```
 
-## Build Security Rules
+On success, download:
 
-- ✅ GitHub Actions pinned with commit SHA
-- ✅ Pull requests from forks CANNOT publish releases
-- ✅ Publishing only from protected workflows
-- ✅ Package recipes must be in allowlist
-- ✅ No raw shell command as workflow input
-- ✅ Source must have version and SHA-256
-- ✅ No PAT in application or workflow
-- ✅ Cache keys include p4a, Python, NDK, ABI, and package version
-- ✅ Build logs and manifests saved as artifacts
+```sh
+gh run download <run-id> -n zmux
+sha256sum -c SHA256SUMS
+```
 
-## Package Allowlist
+Artifact contents:
 
 ```text
-zaba-native-smoke
-xxhash
-ujson
-regex
+zmux-1.0.0-universal-debug.apk
+SHA256SUMS
+build-contract.json
 ```
 
-New packages must be added to the allowlist via pull request.
+The debug APK uses Android's generated debug signing key and is intended for
+testing. A production release must use a protected signing secret and must not
+store the keystore in Git.
 
-## Reproducibility
+## Local APK build
 
-Goal: Two builds from the same source and toolchain produce functionally identical artifacts.
+A Linux host with Java 17 and Android build prerequisites is required:
 
-If hash differs due to timestamps or metadata, the cause must be known and documented.
+```sh
+cd app
+python3.10 -m pip install \
+  buildozer==1.5.0 Cython==0.29.33 \
+  setuptools==68.2.2 wheel==0.41.2
+buildozer -v android debug
+```
+
+Do not change p4a, NDK, Python, API, or architecture independently. Such a
+change creates a new runtime generation and invalidates native-wheel matching.
+
+## Validation
+
+```sh
+python scripts/validate_recipes.py
+python scripts/verify_source_lock.py
+python -m pytest tests app/tests -q
+```
+
+## Native package gate
+
+The native package process remains truth-first:
+
+```text
+recipe + pinned source
+  -> cross-build
+  -> wheel/ELF inspection
+  -> experimental artifact
+  -> install/import/restart/uninstall on Android
+  -> device report
+  -> candidate/stable promotion
+```
+
+A successful APK build proves the application and embedded runtime build. It
+does **not** by itself prove that a separately downloaded native wheel can be
+loaded. `zaba-native-smoke` therefore remains `recipe-ready` until a real-device
+report completes M2.

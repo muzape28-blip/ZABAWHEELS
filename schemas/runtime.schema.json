@@ -14,7 +14,7 @@
     },
     "runtime_id": {
       "type": "string",
-      "pattern": "^zabacode-py[0-9]+-api[0-9]+-p4a[0-9a-z]+-r[0-9]+$|^PENDING_RUNTIME_PROBE$",
+      "pattern": "^(zabacode|zmux)-py[0-9]+-api[0-9]+-p4a[0-9a-z]+-r[0-9]+$|^PENDING_RUNTIME_PROBE$",
       "description": "Unique runtime identifier, e.g. zabacode-py312-api26-p4aXXX-r1. PENDING_RUNTIME_PROBE only allowed in M0."
     },
     "python": {
@@ -105,7 +105,7 @@
     },
     "status": {
       "type": "string",
-      "enum": ["M0_PLACEHOLDER", "fingerprinted", "frozen", "stable"],
+      "enum": ["M0_PLACEHOLDER", "fingerprinted", "frozen", "locked-build-contract", "stable"],
       "description": "Runtime lock status"
     },
     "created_at": {

@@ -34,31 +34,22 @@ def _get_runtime_info_dict():
     }
 
 
-# Try to import the native extension
-try:
-    from zaba_native_smoke._smoke import add, native_runtime_info
-    _native_available = True
-except ImportError:
-    _native_available = False
+# A feasibility probe must never silently fall back to Python: importing this
+# package is itself proof that the compiled extension was loaded.
+from zaba_native_smoke._smoke import add as _native_add
+from zaba_native_smoke._smoke import native_runtime_info
 
 
 def add(a: int, b: int) -> int:
-    """Add two integers. Uses native C implementation if available."""
-    if _native_available:
-        return add(a, b)  # type: ignore[no-redef]
-    # Fallback for pure Python testing
-    return a + b
+    """Add two integers through the compiled extension."""
+    return _native_add(a, b)
 
 
 def runtime_info() -> dict:
-    """Return runtime information dict. Uses native info if available."""
+    """Return runtime information and explicit native-loading evidence."""
     base = _get_runtime_info_dict()
-    if _native_available:
-        native_info = native_runtime_info()  # type: ignore[no-redef]
-        base.update(native_info)
-        base["native_loaded"] = True
-    else:
-        base["native_loaded"] = False
+    base.update(native_runtime_info())
+    base["native_loaded"] = True
     return base
 
 

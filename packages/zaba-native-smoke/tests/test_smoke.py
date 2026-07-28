@@ -26,12 +26,11 @@ def test_runtime_info():
 
 
 def test_native_loaded():
-    """Test that native extension reports as loaded (on device) or not (on desktop CI)."""
+    """Import success must be evidence of the compiled extension; no fallback exists."""
     import zaba_native_smoke
     info = zaba_native_smoke.runtime_info()
-    # On desktop CI, native may not be available (that's OK for CI)
-    # On Android device, native MUST be available
-    assert isinstance(info["native_loaded"], bool)
+    assert info["native_loaded"] is True
+    assert info["native_extension_loaded"] is True
 
 
 def test_version():

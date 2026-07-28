@@ -1,7 +1,7 @@
 # ZABAWHEELS — Architecture & Development Roadmap
 
-> **Status:** Planning / Pre-Alpha  
-> **Dokumen:** Roadmap utama ZABAWHEELS  
+> **Status:** Engineering implementation delivered; device gates pending
+> **Dokumen:** Roadmap arsitektur asli (status pelaksanaan: [ROADMAP_STATUS.md](ROADMAP_STATUS.md))
 > **Tanggal:** 29 Juli 2026  
 > **Target utama:** Zabacode pada Android ARMv7 dan ARM64  
 > **Perangkat verifikasi awal:** Infinix Smart 9 HD, ARMv7, Android 14 Go

@@ -6,7 +6,7 @@
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel", "Cython>=3.0"]
-build-backend = "setuptools.build_ext"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "zaba-native-smoke"

@@ -1,118 +1,70 @@
-# Compatibility Contract
+# ZMUX compatibility contract
 
-> **Status:** Pre-Alpha (M0) — runtime fingerprint pending
-
-## Runtime ID
-
-Every Zabacode runtime generation has a unique identifier:
+## Active runtime generation
 
 ```text
-zabacode-py<python>-api<minapi>-p4a<revision>-r<generation>
+zmux-py314-api26-p4a5c192d7b7308-r1
 ```
 
-Example: `zabacode-py312-api26-p4aXXX-r1`
+The build inputs are locked in `toolchain/runtime-lock.json` and enforced by
+`app/buildozer.spec` and the APK workflow:
 
-⚠️ The actual values are **PENDING** until M1 runtime fingerprint is completed.
+- CPython recipe: 3.14.2
+- python-for-Android: `5c192d7b7308487c2d3e3fcae63deba3131e7cb2`
+- Android NDK: 28c; NDK API: 26
+- target/minimum API: 34/26
+- ABIs: armeabi-v7a and arm64-v8a
+- Buildozer: 1.5.0
 
-## Runtime Manifest
+SOABI and extension suffix are ABI-specific at runtime. The lock records the
+contract family; ZMUX's authenticated `GET /api/runtime` endpoint exports the
+exact values from the installed APK. Native package selection uses that live
+fingerprint and never ABI guessing.
 
-The full runtime contract is defined in `toolchain/runtime-lock.json`:
+## Runtime report
+
+The endpoint reports:
 
 ```json
 {
-  "runtime_id": "zabacode-pyXXX-api26-p4aXXX-r1",
+  "runtime_id": "zmux-py314-api26-p4a5c192d7b7308-r1",
   "python": {
     "implementation": "CPython",
-    "version": "...",
-    "soabi": "...",
-    "ext_suffix": "..."
+    "version": "3.14.2",
+    "soabi": "<value reported by sysconfig>",
+    "ext_suffix": "<value reported by sysconfig>"
   },
   "android": {
-    "min_api": 26,
-    "target_api": 34,
-    "abis": ["armeabi-v7a", "arm64-v8a"]
-  },
-  "toolchain": {
-    "p4a_commit": "...",
-    "ndk_version": "...",
-    "ndk_api": 26,
-    "clang_version": "..."
+    "abi": "armeabi-v7a or arm64-v8a",
+    "api": 34,
+    "pointer_bits": 32
   }
 }
 ```
 
-**No placeholder values allowed in stable manifests.**
+A device report, not CI alone, is required before setting `device-verified`.
 
-## Runtime Fingerprint (Required)
+## Strict matching
 
-Before M1, the following must be collected from the Zabacode APK:
+A native wheel is compatible only if all of these agree:
 
-```python
-import os, platform, struct, sys, sysconfig
-
-report = {
-    "python_version": sys.version,
-    "implementation": platform.python_implementation(),
-    "machine": platform.machine(),
-    "pointer_bits": struct.calcsize("P") * 8,
-    "platform": sysconfig.get_platform(),
-    "soabi": sysconfig.get_config_var("SOABI"),
-    "ext_suffix": sysconfig.get_config_var("EXT_SUFFIX"),
-    "executable": sys.executable,
-    "android_api": os.environ.get("ANDROID_API"),
-}
+```text
+runtime_id + CPython ABI/SOABI + Android ABI + minimum API
 ```
 
-Additional required data:
-- Device ABI list
-- Android release and API level
-- App version
-- Page size
-- Location of `user_packages`
-- Accepted extension suffixes
-- Runtime library path
-- Filesystem and dynamic loading capability
+Universal `py3-none-any` wheels follow a separate pure-Python path. A Linux,
+wrong-ABI, or wrong-runtime wheel is never renamed or silently attempted.
 
-## Generation Changes
+## Generation changes
 
-A new runtime generation (r2, r3, etc.) is required when:
+Create a new generation (`-r2`, `-r3`, …) when CPython, SOABI, p4a, NDK,
+minimum API, native library layout, dynamic loader policy, or ABI-affecting
+compiler flags change. Existing artifacts remain immutable.
 
-1. CPython minor version upgrade
-2. SOABI or extension suffix changes
-3. p4a commit that affects ABI
-4. Major NDK version change
-5. Minimum NDK/API level change
-6. Native library structure change
-7. Dynamic loading mechanism change
-8. Build flag changes affecting ABI or CPU requirements
+## Verification status
 
-**Old wheels must NOT be overwritten with binary from new contract.**
+- **armeabi-v7a:** APK build target; physical Infinix verification pending.
+- **arm64-v8a:** APK build target; physical community verification pending.
 
-## ABI Compatibility
-
-### armeabi-v7a (ARMv7, 32-bit)
-
-- Primary device: Infinix Smart 9 HD (Android 14 Go)
-- Not a primary target of PEP 738
-- Build path: Zabacode/p4a-specific
-- Status: device-verified (after M2 gate)
-
-### arm64-v8a (ARM64, 64-bit)
-
-- Built via CI (no physical device yet)
-- Status: build-only / unverified
-- Can be promoted to verified only after receiving valid device test report
-- PEP 738 focuses on arm64_v8a as official Android target
-
-## Version Decision Process
-
-Do NOT assume Python version. Follow this order:
-
-1. Inspect current APK runtime version
-2. Check ARMv7 build stability
-3. Check package recipe availability
-4. Choose ONE minor Python version
-5. Pin version and toolchain
-6. Rebuild APK
-7. Verify fingerprint unchanged
-8. Start producing native wheels
+Neither is described as device-verified until its report is committed and
+validated against `schemas/device-report.schema.json`.
