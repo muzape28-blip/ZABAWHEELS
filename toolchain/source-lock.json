@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "note": "M0 — Source lock for packages tracked by ZABAWHEELS. Every package must have source URL, version, and SHA-256 pinned.",
+  "packages": {
+    "zaba-native-smoke": {
+      "version": "0.1.0",
+      "source": "local",
+      "source_url": "packages/zaba-native-smoke/",
+      "sha256": "PENDING_BUILD",
+      "license": "AGPL-3.0",
+      "status": "planned"
+    }
+  },
+  "status": "M0_PLACEHOLDER",
+  "created_at": "2026-07-29",
+  "updated_at": "2026-07-29"
+}

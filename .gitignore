@@ -1,0 +1,95 @@
+# =============================================================================
+# ZABAWHEELS .gitignore
+# =============================================================================
+# Binary wheel dan build output TIDAK BOLEH masuk Git history.
+# Wheel dihosting melalui GitHub Releases, bukan Git LFS atau commit.
+# =============================================================================
+
+# --- Wheel & binary artifacts ---
+*.whl
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.a
+*.o
+*.pyc
+*.pyo
+
+# --- Build output ---
+build/
+dist/
+*.egg-info/
+*.eggs/
+wheels/
+output/
+staging/
+
+# --- Debug symbols ---
+*.dSYM/
+*.debug
+*.map
+
+# --- Download cache ---
+cache/
+downloads/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+.eggs/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+.Python
+develop-eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+ENV/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Testing ---
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.nox/
+.tox/
+
+# --- Secrets ---
+# NEVER commit credentials
+.env
+.env.*
+*.pem
+*.key
+*.token
+.netrc
+.git-credentials
+credentials.json
+
+# --- NDK / SDK ---
+ndk/
+sdk/
+android-ndk-*/
+
+# --- Docker ---
+# Dockerfile is tracked, but build context is not
+.docker/
+
+# --- OS ---
+Thumbs.db
+Desktop.ini

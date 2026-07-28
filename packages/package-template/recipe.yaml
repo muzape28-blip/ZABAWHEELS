@@ -1,0 +1,55 @@
+# =============================================================================
+# ZABAWHEELS Package Recipe Template
+# =============================================================================
+# Copy this template when creating a new package recipe.
+# Fill in all fields — no placeholder values in stable recipes.
+
+# Package identity
+package: PACKAGE_NAME              # e.g. numpy
+version: PACKAGE_VERSION           # e.g. 1.26.4
+upstream_url: UPSTREAM_URL         # e.g. https://github.com/numpy/numpy
+upstream_license: LICENSE_NAME     # e.g. BSD-3-Clause
+
+# Source
+source_url: SOURCE_URL             # e.g. https://pypi.org/packages/source/n/numpy/numpy-1.26.4.tar.gz
+source_sha256: SHA256_HASH         # e.g. abc123...  (REQUIRED — no source without hash)
+
+# Build
+build_system: BUILD_SYSTEM         # e.g. setuptools, meson-python, maturin
+native: true/false                 # Does this package contain C/C++/Fortran extensions?
+cython: true/false                 # Does it use Cython?
+fortran: true/false                # Does it require Fortran?
+cmake: true/false                  # Does it use CMake?
+
+# Native dependencies (if native: true)
+native_dependencies: []            # e.g. [libjpeg, libpng, zlib]
+required_shared_libs: []           # e.g. [libc.so, libm.so, libpythonX.Y.so]
+
+# Python dependencies
+python_dependencies: []            # e.g. [setuptools, cython]
+runtime_dependencies: []           # Packages needed at import time (resolved by ZabaPip)
+
+# Compatibility
+target_runtime_id: RUNTIME_ID      # e.g. zabacode-py312-api26-p4aXXX-r1
+target_abis: []                    # e.g. [armeabi-v7a, arm64-v8a]
+min_android_api: 26                # Minimum Android API level
+max_android_api: null              # Maximum Android API level (null = unlimited)
+
+# Build configuration
+build_flags: {}                    # e.g. {CFLAGS: "-O2", LDFLAGS: "-lm"}
+patches: []                        # e.g. [patches/armv7-fix.patch]
+extra_build_args: []               # Additional build arguments
+
+# Testing
+smoke_test: |                      # Minimal Python test to verify functionality
+  import PACKAGE_NAME
+  # assert PACKAGE_NAME.some_function() == expected_result
+
+# Package status (must match lifecycle states from ZABAWHEELS.md)
+status: planned                    # planned → researching → recipe-ready → building → ...
+
+# Metadata
+recipe_author: AUTHOR_NAME
+recipe_created: YYYY-MM-DD
+recipe_updated: YYYY-MM-DD
+notes: ""                          # Any special notes about this package on Android

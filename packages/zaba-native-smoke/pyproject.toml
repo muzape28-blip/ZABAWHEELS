@@ -1,0 +1,44 @@
+# =============================================================================
+# zaba-native-smoke — pyproject.toml
+# =============================================================================
+# Minimal native extension package for Zabacode Android feasibility testing.
+# Uses Cython to create a simple C extension that proves .so loading works.
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel", "Cython>=3.0"]
+build-backend = "setuptools.build_ext"
+
+[project]
+name = "zaba-native-smoke"
+version = "0.1.0"
+description = "Minimal native extension package to prove Android .so loading works in Zabacode"
+readme = "README.md"
+license = {text = "AGPL-3.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "muzape28"},
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: Android",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Cython",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/muzape28-blip/ZABAWHEELS"
+
+[tool.setuptools]
+ext-modules = [
+    {name = "zaba_native_smoke._smoke", sources = ["src/zaba_native_smoke/_smoke.pyx"]},
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.cython]
+language_level = 3

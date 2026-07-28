@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "runtime_id": "PENDING_RUNTIME_PROBE",
+  "abis": ["armeabi-v7a", "arm64-v8a"],
+  "min_api": 26,
+  "packages": {},
+  "note": "M0 placeholder — no packages built yet. Index will be populated after M1+."
+}

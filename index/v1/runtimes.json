@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "runtimes": [
+    {
+      "runtime_id": "PENDING_RUNTIME_PROBE",
+      "python_version": "PENDING",
+      "abis": [
+        "armeabi-v7a",
+        "arm64-v8a"
+      ],
+      "min_api": 26,
+      "status": "M0_PLACEHOLDER"
+    }
+  ]
+}

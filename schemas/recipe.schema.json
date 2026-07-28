@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/muzape28-blip/ZABAWHEELS/main/schemas/recipe.schema.json",
+  "title": "ZABAWHEELS Package Recipe",
+  "description": "Schema for recipe.yaml — defines how to build a package for Zabacode Android",
+  "type": "object",
+  "required": [
+    "package", "version", "upstream_url", "upstream_license",
+    "source_url", "build_system", "native", "smoke_test",
+    "status", "target_abis", "min_android_api"
+  ],
+  "properties": {
+    "package": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$",
+      "description": "Package name (PyPI canonical name)"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+.*$",
+      "description": "Package version"
+    },
+    "upstream_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Link to upstream project homepage or repository"
+    },
+    "upstream_license": {
+      "type": "string",
+      "description": "License of the upstream package"
+    },
+    "source_url": {
+      "type": "string",
+      "description": "Source download URL or 'local' for in-repo packages"
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$|^PENDING_BUILD$",
+      "description": "SHA-256 hash of source archive. Required for non-local packages."
+    },
+    "build_system": {
+      "type": "string",
+      "enum": ["setuptools", "meson-python", "maturin", "cmake", "flit", "hatch", "poetry", "setuptools-cython", "setuptools-cmake", "other"],
+      "description": "Build system used by the package"
+    },
+    "native": {
+      "type": "boolean",
+      "description": "Whether the package contains native C/C++/Fortran extensions"
+    },
+    "cython": {
+      "type": "boolean",
+      "description": "Whether the package uses Cython"
+    },
+    "fortran": {
+      "type": "boolean",
+      "description": "Whether the package requires Fortran"
+    },
+    "cmake": {
+      "type": "boolean",
+      "description": "Whether the package uses CMake"
+    },
+    "native_dependencies": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Native C/C++ dependencies required for build"
+    },
+    "required_shared_libs": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Shared libraries the built .so files will link against"
+    },
+    "python_dependencies": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Python packages needed for building"
+    },
+    "runtime_dependencies": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Python packages needed at runtime (resolved by ZabaPip)"
+    },
+    "target_runtime_id": {
+      "type": "string",
+      "description": "Runtime ID this package targets"
+    },
+    "target_abis": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["armeabi-v7a", "arm64-v8a"]
+      },
+      "minItems": 1,
+      "description": "Target Android ABIs"
+    },
+    "min_android_api": {
+      "type": "integer",
+      "minimum": 21,
+      "description": "Minimum Android API level"
+    },
+    "max_android_api": {
+      "type": ["integer", "null"],
+      "description": "Maximum Android API level (null = unlimited)"
+    },
+    "build_flags": {
+      "type": "object",
+      "additionalProperties": {"type": "string"},
+      "description": "Build flags (CFLAGS, LDFLAGS, etc.)"
+    },
+    "patches": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Patch files to apply (relative to package patches/ directory)"
+    },
+    "extra_build_args": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Additional build arguments"
+    },
+    "smoke_test": {
+      "type": "string",
+      "description": "Minimal Python test to verify package functionality"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "planned", "researching", "recipe-ready", "building", "built",
+        "inspected", "installable", "imported", "smoke-passed",
+        "device-verified", "stable", "broken", "blocked", "deprecated", "revoked"
+      ],
+      "description": "Package lifecycle status"
+    },
+    "recipe_author": {
+      "type": "string",
+      "description": "Author of this recipe"
+    },
+    "recipe_created": {
+      "type": "string",
+      "format": "date",
+      "description": "Date recipe was created"
+    },
+    "recipe_updated": {
+      "type": "string",
+      "format": "date",
+      "description": "Date recipe was last updated"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Special notes about this package on Android"
+    }
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/muzape28-blip/ZABAWHEELS/main/schemas/package-manifest.schema.json",
+  "title": "ZABAWHEELS Package Manifest",
+  "description": "Schema for package manifest JSON — describes a wheel artifact and its compatibility",
+  "type": "object",
+  "required": [
+    "schema_version", "name", "version", "runtime_id",
+    "abi", "android_min_api", "channel", "artifact",
+    "dependencies", "native", "source", "verification"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+.*$"
+    },
+    "runtime_id": {
+      "type": "string",
+      "description": "Runtime ID this wheel is compatible with"
+    },
+    "python_tag": {
+      "type": "string",
+      "description": "Python compatibility tag, e.g. cp312"
+    },
+    "abi": {
+      "type": "string",
+      "enum": ["armeabi-v7a", "arm64-v8a"]
+    },
+    "android_min_api": {
+      "type": "integer",
+      "minimum": 21
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["experimental", "candidate", "stable"]
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["filename", "url", "size", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "filename": {
+          "type": "string",
+          "description": "Wheel filename"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Download URL (GitHub Releases)"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "File size in bytes"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$|^$",
+          "description": "SHA-256 hash of the wheel file"
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Runtime Python dependencies"
+    },
+    "native": {
+      "type": "object",
+      "required": ["has_extensions"],
+      "additionalProperties": false,
+      "properties": {
+        "has_extensions": {
+          "type": "boolean",
+          "description": "Whether the package contains native extensions"
+        },
+        "needed_libraries": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "DT_NEEDED libraries in .so files"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["url", "sha256", "license"],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Source archive URL"
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Source archive SHA-256"
+        },
+        "license": {
+          "type": "string",
+          "description": "Upstream package license"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["build_passed", "elf_inspected", "device_tested"],
+      "additionalProperties": false,
+      "properties": {
+        "build_passed": {
+          "type": "boolean"
+        },
+        "elf_inspected": {
+          "type": "boolean"
+        },
+        "device_tested": {
+          "type": "boolean"
+        },
+        "tested_devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["model", "abi", "android", "result"],
+            "properties": {
+              "model": {"type": "string"},
+              "abi": {"type": "string"},
+              "android": {"type": "string"},
+              "result": {"type": "string", "enum": ["pass", "fail", "partial"]}
+            }
+          }
+        }
+      }
+    }
+  }
+}

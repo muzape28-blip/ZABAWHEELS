@@ -1,0 +1,71 @@
+# =============================================================================
+# zaba-native-smoke — Native feasibility spike package
+# =============================================================================
+# This is the FIRST native package for ZABAWHEELS.
+# Purpose: prove that native extension loading works on Zabacode/Android.
+#
+# API minimal:
+#   import zaba_native_smoke
+#   assert zaba_native_smoke.add(20, 22) == 42
+#   assert zaba_native_smoke.runtime_info()["abi"] == "armeabi-v7a"
+
+package: zaba-native-smoke
+version: 0.1.0
+upstream_url: https://github.com/muzape28-blip/ZABAWHEELS/tree/main/packages/zaba-native-smoke
+upstream_license: AGPL-3.0
+
+# Source (local — this package lives in ZABAWHEELS itself)
+source_url: local
+source_sha256: PENDING_BUILD  # Will be computed after first build
+
+# Build
+build_system: setuptools
+native: true
+cython: true
+fortran: false
+cmake: false
+
+# Native dependencies — minimal, no external dependencies
+native_dependencies: []
+required_shared_libs:
+  - libc.so
+  - libm.so
+  - libpython3.so
+
+# Python dependencies
+python_dependencies:
+  - setuptools
+  - cython
+runtime_dependencies: []
+
+# Compatibility — will be filled after M1 runtime fingerprint
+target_runtime_id: PENDING_RUNTIME_PROBE
+target_abis:
+  - armeabi-v7a
+  - arm64-v8a
+min_android_api: 26
+max_android_api: null
+
+# Build configuration
+build_flags:
+  CFLAGS: "-O2"
+patches: []
+extra_build_args: []
+
+# Smoke test
+smoke_test: |
+  import zaba_native_smoke
+  assert zaba_native_smoke.add(20, 22) == 42
+  info = zaba_native_smoke.runtime_info()
+  assert info["abi"] in ("armeabi-v7a", "arm64-v8a")
+  assert info["platform"] != ""
+  assert info["pointer_bits"] in (32, 64)
+
+# Status
+status: planned
+
+# Metadata
+recipe_author: muzape28
+recipe_created: 2026-07-29
+recipe_updated: 2026-07-29
+notes: "First native package — feasibility spike for M2 gate. No external dependencies. Must prove .so loading works on Android ARMv7."

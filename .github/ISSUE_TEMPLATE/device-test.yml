@@ -1,0 +1,99 @@
+name: Device Test Report
+description: Submit a device test result for a ZABAWHEELS package
+labels: ["device-test"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Submit a device test report for a ZABAWHEELS package.
+        This is how we verify that packages actually work on real Android devices.
+        Be honest — a "fail" result is more valuable than a false "pass".
+
+  - type: input
+    id: package-name
+    attributes:
+      label: Package name
+      description: The package you tested
+      placeholder: e.g. numpy
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      description: The version you tested
+      placeholder: e.g. 1.26.4
+    validations:
+      required: true
+
+  - type: input
+    id: runtime-id
+    attributes:
+      label: Runtime ID
+      description: The runtime ID of your Zabacode installation
+      placeholder: e.g. zabacode-py312-api26-p4aXXX-r1
+    validations:
+      required: true
+
+  - type: input
+    id: device-model
+    attributes:
+      label: Device model
+      description: Your Android device model
+      placeholder: e.g. Infinix Smart 9 HD
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device-abi
+    attributes:
+      label: Device ABI
+      options:
+        - armeabi-v7a
+        - arm64-v8a
+    validations:
+      required: true
+
+  - type: input
+    id: android-version
+    attributes:
+      label: Android version
+      description: Your Android version
+      placeholder: e.g. 14
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: test-results
+    attributes:
+      label: Test results
+      description: Check each test that PASSED. Leave unchecked if it FAILED.
+      options:
+        - label: Install succeeded
+        - label: Import succeeded
+        - label: Smoke test passed
+        - label: Interpreter restart — still works
+        - label: App restart — still works
+        - label: Uninstall succeeded
+        - label: Reinstall succeeded
+
+  - type: textarea
+    id: smoke-output
+    attributes:
+      label: Smoke test output
+      description: Paste the output of the smoke test
+      render: shell
+
+  - type: textarea
+    id: errors
+    attributes:
+      label: Errors observed
+      description: Describe any errors, crashes, or unexpected behavior
+      placeholder: e.g. ImportError: dlopen failed: library not found
+
+  - type: textarea
+    id: additional-notes
+    attributes:
+      label: Additional notes
+      description: Any other observations about the package on this device
