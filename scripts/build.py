@@ -3,7 +3,9 @@
 ZABAWHEELS build.py — Cross-compile package into Android wheel.
 
 This script orchestrates the cross-compilation build process.
-Currently in M0 placeholder state — actual build requires M1 toolchain freeze.
+The runtime contract is locked. Android wheel builds remain gated by the
+package-specific cross compiler; this command fails rather than producing a
+host wheel mislabeled as Android.
 
 Usage:
     python scripts/build.py --package numpy --version 1.26.4 --abi armeabi-v7a --channel experimental
@@ -154,9 +156,10 @@ def run_build(package: str, version: str, abi: str, channel: str, dry_run: bool)
         print("    9. Upload artifact")
         return True
 
-    print("\n  ⚠️  Actual cross-compilation requires M1 gate completion.")
-    print("  Toolchain, NDK, and p4a must be pinned with real values.")
-    return True
+    print("\n  ❌ No package-specific Android cross-build adapter is configured.")
+    print("  Refusing to emit a host wheel or claim an Android build.")
+    print("  Use --dry-run for recipe checks; use the ZMUX APK workflow for the app.")
+    return False
 
 
 def main():

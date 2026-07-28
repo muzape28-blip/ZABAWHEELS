@@ -16,7 +16,7 @@ upstream_license: AGPL-3.0
 
 # Source (local — this package lives in ZABAWHEELS itself)
 source_url: local
-source_sha256: PENDING_BUILD  # Will be computed after first build
+source_sha256: 66f248e6493bbfd4c3cf78b5374502ffb81f1f1bf99f1fa6a861d813daa2b9d5
 
 # Build
 build_system: setuptools
@@ -39,7 +39,7 @@ python_dependencies:
 runtime_dependencies: []
 
 # Compatibility — will be filled after M1 runtime fingerprint
-target_runtime_id: PENDING_RUNTIME_PROBE
+target_runtime_id: zmux-py314-api26-p4a5c192d7b7308-r1
 target_abis:
   - armeabi-v7a
   - arm64-v8a
@@ -62,7 +62,7 @@ smoke_test: |
   assert info["pointer_bits"] in (32, 64)
 
 # Status
-status: planned
+status: recipe-ready
 
 # Metadata
 recipe_author: muzape28

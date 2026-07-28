@@ -1,0 +1,107 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Buildozer
+.buildozer/
+bin/
+
+# Android
+.gradle/
+.android/
+
+# Zabacode specific — runtime files must never appear in git status by default
+# Project root runtime dirs (desktop fallback: APP_DIR = project root)
+files/
+cache/
+logs/
+user_packages/
+user_files/
+
+# Package-local runtime dirs (old fallback zabacode/ and Android double nesting files/files)
+zabacode/files/
+zabacode/cache/
+zabacode/logs/
+zabacode/user_packages/
+zabacode/user_files/
+
+# Active run script (runtime) — both locations
+**/_active_run.py
+
+# Generated images in runtime dirs only (not assets)
+files/*.png
+files/*.jpg
+files/*.jpeg
+zabacode/files/*.png
+zabacode/files/*.jpg
+zabacode/files/*.jpeg
+
+# Keys, tokens, master keys
+.zabacode_keys*.json
+.zabacode_keys_encrypted.json
+.zabacode_auth_token
+.zabacode_master_key
+
+# Logs
+zabacode_crash.log
+
+# Old ZMUX bin
+zabacode/zmux_bin/
+
+# OS files
+Thumbs.db

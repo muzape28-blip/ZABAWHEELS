@@ -1,14 +1,14 @@
 # ZABAWHEELS
 
-> **Curated Android wheelhouse for Zabacode**  
-> **Status:** Experimental / Pre-Alpha  
-> **Target:** Zabacode runtime on Android ARMv7 and ARM64
+> **ZMUX Android Python IDE + curated Android wheelhouse**
+> **Status:** APK pipeline implemented; native package verification remains experimental
+> **Target:** Android ARMv7 and ARM64 (API 26+)
 
 ---
 
 ## Apa itu ZABAWHEELS?
 
-ZABAWHEELS adalah repository recipe, build pipeline, manifest, dan artifact wheel Android terkurasi untuk [Zabacode](https://github.com/muzape28-blip/ZABACODE). Package pure Python umumnya dapat dipasang langsung, tetapi package dengan native extension (NumPy, Pillow, Pandas, dll.) harus dikompilasi khusus untuk Android.
+Repository ini sekarang menghasilkan aplikasi Android **ZMUX** sekaligus menyediakan recipe, build contract, manifest, dan index wheel Android terkurasi. ZMUX memuat editor Python offline dan ZabaPip v2 transaksional. Package pure Python universal dapat dipasang setelah verifikasi SHA-256; package native hanya diterima bila runtime ID dan ABI-nya tepat.
 
 ZABAWHEELS bukan mirror PyPI. Ini adalah **curated wheelhouse** — lebih baik menyediakan lima package yang benar-benar stabil daripada lima puluh package dengan status yang tidak jelas.
 
@@ -58,13 +58,11 @@ Install dan import di Android
 | `deprecated` | Tidak lagi direkomendasikan |
 | `revoked` | Artifact ditarik karena masalah keamanan atau kerusakan serius |
 
-## ⚠️ Peringatan Experimental
+## APK ZMUX
 
-Proyek ini berada pada tahap **pre-alpha**. Semua artifact, API, dan status dapat berubah tanpa pemberitahuan. Jangan menggunakannya pada environment produksi.
+Workflow **Build ZMUX APK** membangun APK universal ARMv7 + ARM64 dengan nama artifact `zmux`. Isinya adalah `zmux-1.0.0-universal-debug.apk`, checksum, dan build contract. Lihat [panduan build](docs/BUILDING.md).
 
-- Runtime ID belum dipin (menunggu fingerprint APK nyata).
-- Tidak ada package native yang sudah stabil.
-- Build pipeline masih dalam pengembangan.
+> APK debug belum merupakan rilis produksi. Runtime/toolchain sudah dipin, tetapi package native belum boleh disebut stabil sebelum ada device report nyata. Lihat [status roadmap yang jujur](ROADMAP_STATUS.md).
 
 ## Struktur Repository
 
@@ -86,14 +84,14 @@ Lihat [ZABAWHEELS.md](ZABAWHEELS.md) untuk roadmap lengkap.
 
 | Milestone | Tujuan | Status |
 |---|---|---|
-| M0 | Membentuk Repository | 🟡 In Progress |
-| M1 | Runtime Fingerprint & Toolchain Freeze | ⬜ Planned |
-| M2 | Native Feasibility Spike | ⬜ Planned |
-| M3 | Build Factory di GitHub Actions | ⬜ Planned |
-| M4 | Package Manifest & Index | ⬜ Planned |
-| M5 | ZabaPip v2 | ⬜ Planned |
-| M6 | Package Native Pihak Ketiga Pertama | ⬜ Planned |
-| M7–M12 | Package Ladder → Stable v1 | ⬜ Planned |
+| M0 | Membentuk Repository | ✅ Implemented |
+| M1 | Runtime Fingerprint & Toolchain Freeze | ✅ Build contract locked |
+| M2 | Native Feasibility Spike | 🟡 Recipe ready; device test required |
+| M3 | Build Factory di GitHub Actions | ✅ ZMUX APK pipeline |
+| M4 | Package Manifest & Index | ✅ Implemented |
+| M5 | ZabaPip v2 | ✅ Implemented + tested |
+| M6 | Package Native Pihak Ketiga Pertama | 🟡 Blocked by honest M2 device gate |
+| M7–M12 | Package Ladder → Stable v1 | 🟡 Engineering delivered; external device/release evidence pending |
 
 ## Perangkat Verifikasi
 

@@ -2,14 +2,11 @@
   "schema_version": 1,
   "runtimes": [
     {
-      "runtime_id": "PENDING_RUNTIME_PROBE",
-      "python_version": "PENDING",
-      "abis": [
-        "armeabi-v7a",
-        "arm64-v8a"
-      ],
+      "runtime_id": "zmux-py314-api26-p4a5c192d7b7308-r1",
+      "python_version": "3.14.2",
+      "abis": ["armeabi-v7a", "arm64-v8a"],
       "min_api": 26,
-      "status": "M0_PLACEHOLDER"
+      "status": "locked-build-contract"
     }
   ]
 }

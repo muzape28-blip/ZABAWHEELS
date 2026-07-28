@@ -1,29 +1,30 @@
-# Toolchain Directory
+# Toolchain contract
 
-This directory contains the **toolchain lock files** that define the exact build environment for ZABAWHEELS native wheels.
-
-## Files
+This directory defines the reproducible ZMUX Android runtime and package source
+inputs.
 
 | File | Purpose |
 |---|---|
-| `runtime-lock.json` | Pins the exact Python version, ABI, NDK version, p4a commit, and all toolchain components |
-| `source-lock.json` | Pins the exact source version and SHA-256 for every tracked package |
-| `Dockerfile` | Defines the cross-compilation build environment (CI) |
+| `runtime-lock.json` | CPython 3.14.2, p4a commit, NDK 28c, API levels, Buildozer and host tools |
+| `source-lock.json` | Version, source location, deterministic SHA-256 and license for each package |
+| `Dockerfile` | Package cross-compilation environment |
 
-## Status
+The active runtime generation is:
 
-⚠️ **M0 — Placeholder state.** All toolchain values are marked as `PENDING` and must be replaced with real values from the APK runtime fingerprint before M1 gate.
+```text
+zmux-py314-api26-p4a5c192d7b7308-r1
+```
 
-## Process
-
-1. **M1**: Export runtime fingerprint from Zabacode APK → fill `runtime-lock.json` with real values
-2. **M1**: Pin NDK, p4a, CPython, and all build tool versions
-3. **M1**: Freeze `source-lock.json` with exact source hashes
-4. After M1: No placeholder values allowed in stable manifests
+`app/buildozer.spec` is the executable source of this APK contract. The app's
+`GET /api/runtime` endpoint reports values observed while running. Before a
+native wheel is promoted, the device report must agree with this lock; a
+mismatch creates a new runtime generation instead of weakening matching.
 
 ## Rules
 
-- Every native wheel depends on an exact `runtime_id`
-- Runtime ID changes require a new generation (`-r2`, `-r3`, etc.)
-- Old wheels must NOT be overwritten with binary from a new contract
-- Build image must match pinned toolchain exactly
+- Every native wheel names one exact `runtime_id` and ABI.
+- Changes to CPython, p4a, NDK, API, SOABI or extension suffix create `-r2`,
+  `-r3`, and so on.
+- Old wheel artifacts are immutable.
+- No placeholder, floating dependency or guessed ABI is accepted for a
+  candidate/stable native wheel.

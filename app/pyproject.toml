@@ -1,0 +1,34 @@
+# ZABACODE — tooling configuration
+#
+# Scope note: this file configures linters only. Packaging/build metadata is
+# intentionally omitted because the Android APK is produced by buildozer.spec,
+# not by a PEP 517 build.
+
+[tool.ruff]
+# The codebase is written to a wider margin than ruff's 88-char default; the
+# previous 350 E501 hits were pure noise that buried real findings.
+line-length = 120
+target-version = "py310"
+
+exclude = [
+    ".venv",
+    ".buildozer",
+    "bin",
+    "assets/vendor",
+    "files",
+    "cache",
+    "logs",
+    "user_packages",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally re-import inside test methods to keep each case
+# self-contained and to exercise import-time behaviour.
+"test_main.py" = ["F811", "E741"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]

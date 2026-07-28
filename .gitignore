@@ -93,3 +93,11 @@ android-ndk-*/
 # --- OS ---
 Thumbs.db
 Desktop.ini
+
+# ZMUX app build/runtime
+app/.buildozer/
+app/bin/
+app/cache/
+app/logs/
+app/user_packages/
+app/.zmux_*
