@@ -1,0 +1,80 @@
+name: Build Failure
+description: Report a build failure for a package in ZABAWHEELS
+labels: ["build-failure", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report a build failure for a ZABAWHEELS package.
+        Please provide as much detail as possible so the issue can be reproduced.
+
+  - type: input
+    id: package-name
+    attributes:
+      label: Package name
+      description: The package that failed to build
+      placeholder: e.g. numpy
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      description: The version that failed to build
+      placeholder: e.g. 1.26.4
+    validations:
+      required: true
+
+  - type: input
+    id: runtime-id
+    attributes:
+      label: Runtime ID
+      description: The runtime ID used for the build
+      placeholder: e.g. zabacode-py312-api26-p4aXXX-r1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: abi
+    attributes:
+      label: Target ABI
+      options:
+        - armeabi-v7a
+        - arm64-v8a
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ci-step
+    attributes:
+      label: CI step that failed
+      options:
+        - validate recipe
+        - download pinned source
+        - verify source SHA-256
+        - prepare exact toolchain
+        - cross-compile
+        - build wheel
+        - inspect ELF
+        - validate metadata
+        - generate manifest
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-log
+    attributes:
+      label: Build error log
+      description: Paste the relevant error output from CI
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Any additional information about the failure
+      placeholder: e.g. This works locally but fails in CI due to...

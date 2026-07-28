@@ -1,0 +1,116 @@
+name: Package Request
+description: Request a new package to be added to ZABAWHEELS
+labels: ["package-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for requesting a package! Please fill out all fields below.
+        Remember: ZABAWHEELS is a curated wheelhouse, not a PyPI mirror.
+        Package requests are evaluated based on build feasibility, ARMv7 compatibility,
+        and community demand.
+
+  - type: input
+    id: package-name
+    attributes:
+      label: Package name
+      description: The exact PyPI package name
+      placeholder: e.g. numpy
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version requested
+      description: The specific version you need (or "latest")
+      placeholder: e.g. 1.26.4
+    validations:
+      required: true
+
+  - type: input
+    id: upstream-url
+    attributes:
+      label: Upstream URL
+      description: Link to the project homepage or repository
+      placeholder: e.g. https://github.com/numpy/numpy
+    validations:
+      required: true
+
+  - type: input
+    id: license
+    attributes:
+      label: License
+      description: The license of the upstream package
+      placeholder: e.g. BSD-3-Clause
+    validations:
+      required: true
+
+  - type: dropdown
+    id: build-system
+    attributes:
+      label: Build system
+      description: What build system does this package use?
+      options:
+        - setuptools
+        - setuptools + Cython
+        - setuptools + CMake
+        - meson-python
+        - maturin (Rust)
+        - flit / hatch / poetry (pure Python)
+        - Other (specify below)
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: native-deps
+    attributes:
+      label: Native dependencies
+      description: Does this package require native C/C++/Fortran dependencies?
+      options:
+        - No native dependencies (pure Python)
+        - Simple C extension only
+        - Requires shared libraries (specify below)
+        - Requires Fortran
+        - Requires BLAS/LAPACK
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: target-abi
+    attributes:
+      label: Target ABI
+      description: Which Android ABI do you need?
+      options:
+        - armeabi-v7a (ARMv7)
+        - arm64-v8a (ARM64)
+        - Both
+    validations:
+      required: true
+
+  - type: textarea
+    id: justification
+    attributes:
+      label: Why is this package needed?
+      description: Explain how this package is important for Zabacode users
+    validations:
+      required: true
+
+  - type: textarea
+    id: known-issues
+    attributes:
+      label: Known Android/ARMv7 issues
+      description: Any known issues building or running this package on Android?
+      placeholder: e.g. Requires NEON instructions not available on all ARMv7 devices
+
+  - type: textarea
+    id: smoke-test
+    attributes:
+      label: Suggested smoke test
+      description: A minimal test to verify the package works
+      placeholder: |
+        import numpy as np
+        a = np.array([1, 2, 3])
+        assert int(a.sum()) == 6

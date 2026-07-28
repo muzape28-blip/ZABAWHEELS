@@ -1,0 +1,8 @@
+# This directory contains patches for the package.
+# Each patch file should be named descriptively, e.g.:
+#   - armv7-compile-fix.patch
+#   - android-api-compat.patch
+#   - remove-glibc-deps.patch
+#
+# All patches must be listed in recipe.yaml under the `patches` field.
+# Patches are applied in order listed.

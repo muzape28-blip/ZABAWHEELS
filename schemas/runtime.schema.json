@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/muzape28-blip/ZABAWHEELS/main/schemas/runtime.schema.json",
+  "title": "ZABAWHEELS Runtime Lock",
+  "description": "Schema for runtime-lock.json — pins the exact build environment and compatibility contract",
+  "type": "object",
+  "required": ["schema_version", "runtime_id", "python", "android", "toolchain"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version — must be 1"
+    },
+    "runtime_id": {
+      "type": "string",
+      "pattern": "^zabacode-py[0-9]+-api[0-9]+-p4a[0-9a-z]+-r[0-9]+$|^PENDING_RUNTIME_PROBE$",
+      "description": "Unique runtime identifier, e.g. zabacode-py312-api26-p4aXXX-r1. PENDING_RUNTIME_PROBE only allowed in M0."
+    },
+    "python": {
+      "type": "object",
+      "required": ["implementation", "version", "soabi", "ext_suffix"],
+      "additionalProperties": false,
+      "properties": {
+        "implementation": {
+          "type": "string",
+          "description": "Python implementation, e.g. CPython"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$|^PENDING$",
+          "description": "Python version, e.g. 3.12.5"
+        },
+        "soabi": {
+          "type": "string",
+          "description": "Python SOABI value, e.g. cpython-312-android-armv7l"
+        },
+        "ext_suffix": {
+          "type": "string",
+          "description": "Python EXT_SUFFIX value, e.g. .cpython-312-android-armv7l.so"
+        }
+      }
+    },
+    "android": {
+      "type": "object",
+      "required": ["min_api", "target_api", "abis"],
+      "additionalProperties": false,
+      "properties": {
+        "min_api": {
+          "type": "integer",
+          "minimum": 21,
+          "description": "Minimum Android API level"
+        },
+        "target_api": {
+          "type": "integer",
+          "minimum": 21,
+          "description": "Target Android API level"
+        },
+        "abis": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["armeabi-v7a", "arm64-v8a"]
+          },
+          "minItems": 1,
+          "description": "Supported Android ABIs"
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "required": ["p4a_commit", "ndk_version", "ndk_api", "clang_version"],
+      "additionalProperties": true,
+      "properties": {
+        "p4a_commit": {
+          "type": "string",
+          "description": "python-for-Android git commit hash"
+        },
+        "ndk_version": {
+          "type": "string",
+          "description": "Android NDK version, e.g. r26d"
+        },
+        "ndk_api": {
+          "type": "integer",
+          "minimum": 21,
+          "description": "NDK API level used for compilation"
+        },
+        "clang_version": {
+          "type": "string",
+          "description": "Clang version from NDK"
+        }
+      }
+    },
+    "buildozer": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "spec_path": {
+          "type": "string"
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["M0_PLACEHOLDER", "fingerprinted", "frozen", "stable"],
+      "description": "Runtime lock status"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date"
+    }
+  }
+}

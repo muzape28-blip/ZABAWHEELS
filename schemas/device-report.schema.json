@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/muzape28-blip/ZABAWHEELS/main/schemas/device-report.schema.json",
+  "title": "ZABAWHEELS Device Test Report",
+  "description": "Schema for device test report — submitted when testing a package on a real Android device",
+  "type": "object",
+  "required": [
+    "package", "version", "runtime_id", "device", "tests"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "package": {
+      "type": "string",
+      "description": "Package name tested"
+    },
+    "version": {
+      "type": "string",
+      "description": "Package version tested"
+    },
+    "runtime_id": {
+      "type": "string",
+      "description": "Runtime ID of the Zabacode installation"
+    },
+    "device": {
+      "type": "object",
+      "required": ["model", "abi", "android"],
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "Device model, e.g. Infinix Smart 9 HD"
+        },
+        "abi": {
+          "type": "string",
+          "enum": ["armeabi-v7a", "arm64-v8a"],
+          "description": "Device primary ABI"
+        },
+        "android": {
+          "type": "string",
+          "description": "Android version, e.g. 14"
+        },
+        "android_api": {
+          "type": "integer",
+          "description": "Android API level"
+        },
+        "ram_mb": {
+          "type": "integer",
+          "description": "Available RAM in MB"
+        },
+        "app_version": {
+          "type": "string",
+          "description": "Zabacode app version"
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "required": ["install", "import", "smoke", "restart", "uninstall"],
+      "additionalProperties": false,
+      "properties": {
+        "install": {
+          "type": "string",
+          "enum": ["pass", "fail", "partial", "skipped"],
+          "description": "Package installation result"
+        },
+        "import": {
+          "type": "string",
+          "enum": ["pass", "fail", "partial", "skipped"],
+          "description": "Import test result"
+        },
+        "smoke": {
+          "type": "string",
+          "enum": ["pass", "fail", "partial", "skipped"],
+          "description": "Smoke test result"
+        },
+        "restart": {
+          "type": "string",
+          "enum": ["pass", "fail", "partial", "skipped"],
+          "description": "Interpreter/app restart still works"
+        },
+        "uninstall": {
+          "type": "string",
+          "enum": ["pass", "fail", "partial", "skipped"],
+          "description": "Uninstall result"
+        }
+      }
+    },
+    "smoke_output": {
+      "type": "string",
+      "description": "Output from the smoke test"
+    },
+    "errors": {
+      "type": "string",
+      "description": "Errors observed during testing"
+    },
+    "additional_notes": {
+      "type": "string",
+      "description": "Additional observations"
+    },
+    "reporter": {
+      "type": "string",
+      "description": "Name or identifier of the tester"
+    },
+    "report_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Date of the test"
+    }
+  }
+}
