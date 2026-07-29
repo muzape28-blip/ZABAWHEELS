@@ -83,75 +83,9 @@ def health_check():
     return jsonify({"ok": True, "version": APP_VERSION, "app": "ZMUX", "type": "terminal", "status": session.status})
 
 
-def _format_zpip_output(command, result):
-    """Turn a structured zpip result into terminal-friendly text."""
-    parts = command.strip().split()
-    action = parts[1] if len(parts) > 1 else ""
-
-    if action == "verify":
-        pkg = result.get("package", parts[2] if len(parts) > 2 else "")
-        if result.get("ok"):
-            return f"{pkg} is installed and verified", 0
-        missing = result.get("missing", [])
-        if missing:
-            return f"{pkg} verification failed: missing files: {', '.join(missing)}", 1
-        error = result.get("error", "unknown error")
-        return f"{pkg} verification failed: {error}", 1
-
-    if action == "doctor" and "runtime" in result:
-        rt = result.get("runtime", {})
-        free = result.get("free_bytes", 0)
-        pkgs = result.get("packages", {})
-        idx = result.get("index", "unknown")
-        lines = [
-            "ZMUX Package Manager",
-            f"Runtime: {rt.get('runtime_id', 'unknown')}",
-            f"Python: {rt.get('python', {}).get('version', 'unknown')}",
-            f"ABI: {rt.get('android', {}).get('abi', 'unknown')}",
-            f"User packages: {rt.get('paths', {}).get('user_packages', 'unknown')}",
-            f"Free storage: {free:,} bytes",
-            f"Index: {idx}",
-        ]
-        if pkgs:
-            lines.extend(("", "Installed packages:"))
-            for name, status in pkgs.items():
-                lines.append(f"  {name}: {'OK' if status.get('ok') else 'FAILED'}")
-        return "\n".join(lines), 0 if result.get("ok") else 1
-
-    if not result.get("ok"):
-        return f"Error: {result.get('error', 'unknown error')}", 1
-
-    if action == "install":
-        pkg = result.get("package", "")
-        ver = result.get("version", "")
-        deps = result.get("dependencies_installed", [])
-        msg = f"Successfully installed {pkg}{f'-{ver}' if ver else ''}"
-        if deps:
-            msg += f"\nAlso installed: {', '.join(deps)}"
-        return msg, 0
-    if action == "list":
-        pkgs = result.get("packages", {})
-        if pkgs:
-            return "\n".join(
-                f"{name} {record.get('version', '')}" for name, record in pkgs.items()
-            ), 0
-        return "No packages installed", 0
-    if action == "search":
-        results = result.get("results", [])
-        return "\n".join(results) if results else "No packages found", 0
-    if action == "info":
-        pkg = result.get("name", "")
-        installed = result.get("installed")
-        available = result.get("available")
-        lines = [f"Package: {pkg}"]
-        if installed:
-            lines.append(f"Installed: {installed.get('version', 'unknown')}")
-        if available:
-            lines.append(f"Available: {available.get('version', 'unknown')}")
-        return "\n".join(lines), 0
-    if action == "uninstall":
-        return f"Successfully uninstalled {result.get('package', '')}", 0
-    return "Command executed successfully", 0
+# Backwards-compatible alias: the formatter now lives in zmux.zpip so the
+# REST server and the CLI (python -m zmux.cli) share one implementation.
+_format_zpip_output = zpip.format_output
 
 
 @app.post("/api/exec")
@@ -178,16 +112,10 @@ def exec_command():
         )
     if command.strip() == "zmux-info":
         fp = zpip.runtime_fingerprint()
-        lines = ["ZMUX Runtime Fingerprint", "=" * 40, f"App version:        {fp['app_version']}", f"Python version:     {fp['python']['version']}", f"Implementation:     {fp['python']['implementation']}", f"SOABI:              {fp['python']['soabi']}", f"EXT_SUFFIX:         {fp['python']['ext_suffix']}", f"Pointer bits:       {fp['python']['pointer_bits']}", f"ABI:                {fp['android']['abi']}", f"Android API:        {fp['android']['api']}", f"Runtime ID:         {fp['runtime_id']}", f"p4a commit:         {fp['build_contract']['p4a_commit']}", f"NDK:                {fp['build_contract']['ndk']}", f"CWD:                {fp['paths']['cwd']}", f"User packages:      {fp['paths']['user_packages']}", f"Free storage:       {fp['storage']['free_bytes']:,} bytes"]
-        installed = fp['installed']
-        if installed:
-            lines.append(f"Installed packages: {', '.join(installed)}")
-        else:
-            lines.append("Installed packages: (none)")
         return jsonify(
             {
                 "ok": True,
-                "stdout": "\n".join(lines) + "\n",
+                "stdout": zpip.format_fingerprint(fp) + "\n",
                 "stderr": "",
                 "exit_code": 0,
                 "status": "idle",
