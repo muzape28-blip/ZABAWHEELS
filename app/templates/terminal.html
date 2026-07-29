@@ -246,9 +246,18 @@ function initTerminal() {
 }
 
 // Connect to secure WebSocket server (port passed dynamically by backend)
+function getWsHost(attempt) {
+  const hosts = [];
+  if (window.location.hostname) hosts.push(window.location.hostname);
+  if (window.location.hostname !== "127.0.0.1") hosts.push("127.0.0.1");
+  if (window.location.hostname !== "localhost") hosts.push("localhost");
+  if (hosts.length === 0) hosts.push("127.0.0.1");
+  return hosts[attempt % hosts.length];
+}
+
 function connectWebSocket() {
-  // Use window.location.hostname to correctly connect in both android emulator and desktop
-  const wsHost = window.location.hostname || "127.0.0.1";
+  // Use candidate hosts to correctly connect across Android ROMs (IPv4 vs IPv6 loopback quirks)
+  const wsHost = getWsHost(reconnectAttempts);
   const wsUrl = `ws://${wsHost}:${WS_PORT}/?token=${AUTH_TOKEN}`;
 
   try {

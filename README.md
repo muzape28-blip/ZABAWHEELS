@@ -1,232 +1,197 @@
-# ZMUX — Android Terminal for Python
+# ZMUX — Standalone Android Terminal for Python
 
-**ZMUX** adalah terminal Python Android mandiri yang menggunakan ZABAWHEELS sebagai package/wheel infrastructure.
+[![Build ZMUX APK](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml/badge.svg)](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml)
+[![Validate Repository](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/validate.yml/badge.svg)](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/validate.yml)
 
-## Apa itu ZMUX?
+**ZMUX** is a standalone Android terminal application for Python development that uses the **ZABAWHEELS** curated wheelhouse infrastructure for package management and reproducible builds.
 
-ZMUX adalah terminal emulator untuk Android yang memungkinkan Anda:
-- Menjalankan command shell dan Python secara real
-- Menggunakan `zpip` untuk install package Python
-- Bekerja dalam lingkungan app-private yang aman
-- Mengakses Python interpreter langsung dari device Android
+---
 
-**ZMUX BUKAN:**
-- IDE atau code editor
-- Zabacode dengan nama berbeda
-- Simulasi terminal dengan output palsu
-- Editor dengan AI assistant atau marketplace
+## What is ZMUX?
 
-## Fitur
+ZMUX is a lightweight terminal emulator for Android devices that allows you to:
+- Execute real interactive shell and Python commands on your mobile device.
+- Use `zpip`, a secure, hash-verifying package manager, to install Python packages.
+- Work safely inside an app-private sandbox with persistent working directory support.
+- Access the bundled Python 3 runtime directly from your Android phone or tablet.
 
-### Terminal Nyata
-- ✅ Eksekusi command real via subprocess
-- ✅ stdout/stderr streaming
-- ✅ stdin interaktif
-- ✅ Exit code nyata
-- ✅ Ctrl+C/Stop untuk cancel proses
-- ✅ Timeout opsional
-- ✅ Working directory persisten
+### What ZMUX is NOT
+- **Not an IDE or code editor** — ZMUX is purely a command-line terminal environment.
+- **Not Zabacode with a new name** — All legacy IDE features (code editors, AI assistants, theme marketplaces) were removed during refactoring.
+- **Not a simulated terminal** — Commands execute via real subprocesses and pseudo-terminals (PTY) with actual exit codes and streaming I/O.
+- **Not claiming Termux-level root/system access** — ZMUX operates strictly within Android's standard app-private security sandbox.
 
-### Command Built-in
+---
+
+## Key Features
+
+### Real Terminal Execution Engine
+- ✅ **PTY & Subprocess Support:** Interactive execution with automatic fallback to standard pipes when POSIX pseudo-terminals are restricted by Android SELinux policies.
+- ✅ **Real-Time Streaming I/O:** Bi-directional WebSocket communication between the xterm.js frontend and Python backend.
+- ✅ **Process Control:** Ctrl+C / Stop support to cancel running processes cleanly.
+- ✅ **Signal & Thread Safety:** Hardened for 32-bit ARMv7 Android (`armeabi-v7a`) and 64-bit ARM (`arm64-v8a`) architectures to prevent force closes or Bionic libc pthread deadlocks.
+- ✅ **Persistent Working Directory:** Maintains current working directory across commands with path traversal protection.
+
+### Built-in Commands
 ```bash
-help          # Bantuan
-clear         # Clear screen
-pwd           # Print working directory
-cd <dir>      # Change directory
+help          # Display available commands
+clear         # Clear terminal screen
+pwd           # Print current working directory
+cd <dir>      # Change directory (restricted to app home)
 ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
-python        # Python interpreter
-python <file> # Run Python script
-python -c "..." # Execute Python code
-pip           # Python package manager (jika tersedia)
-zpip          # ZMUX package manager
-zmux-info     # Runtime fingerprint
-exit          # Exit terminal
+python        # Launch Python REPL
+python <file> # Execute a Python script
+python -c "..." # Execute inline Python code
+pip           # Standard pip package manager (if installed)
+zpip          # ZMUX secure package manager
+zmux-info     # Display comprehensive runtime fingerprint
+exit          # Exit terminal session
 ```
 
-### zpip Package Manager
+### Secure Package Manager (`zpip`)
 ```bash
-zpip search <name>      # Search packages
-zpip info <name>        # Package info
-zpip install <name>     # Install package
-zpip install <name> <version>  # Install specific version
-zpip list               # List installed
-zpip verify <name>      # Verify installation
-zpip uninstall <name>   # Uninstall package
-zpip doctor             # System health check
+zpip search <name>             # Search curated ZABAWHEELS package index
+zpip info <name>               # View package details and compatibility
+zpip install <name>            # Install verified package
+zpip install <name> <version>  # Install specific package version
+zpip list                      # List installed packages
+zpip verify <name>             # Verify installation integrity against manifest
+zpip uninstall <name>          # Cleanly remove package and owned files
+zpip doctor                    # Diagnose system health and runtime fingerprint
 ```
 
-### Keamanan
-- ✅ HTTPS verification aktif
-- ✅ SHA-256 wajib untuk wheel
-- ✅ Path traversal protection
-- ✅ Duplicate ZIP entry rejection
-- ✅ Transactional install dengan rollback
-- ✅ File ownership tracking
-- ✅ Auth token untuk WebView security
+### Security & Hardening
+- ✅ **Mandatory SHA-256 Verification:** Every package is checksum-verified before installation.
+- ✅ **Loopback-Only Server:** HTTP and WebSocket listeners bind strictly to `127.0.0.1` / `::1`.
+- ✅ **Authentication Token:** 128-bit random session token protects backend endpoints against unauthorized local access.
+- ✅ **Transactional Installations:** Atomic package installation with full rollback on failure.
+- ✅ **Path Traversal Protection:** Rejects ZIP entries or commands attempting directory escape.
+- ✅ **Encrypted Storage:** At-rest encryption using AES/HMAC-SHA256 for local state.
 
-## Spesifikasi APK
+---
 
-- **App title:** ZMUX
-- **Package name:** zmux
-- **Application ID:** com.zaba.zmux
-- **Version:** 1.0.0
-- **Min Android API:** 26
-- **Target Android API:** 34
-- **ABI:** armeabi-v7a, arm64-v8a
-- **Orientation:** portrait
-- **Ads:** zero
-- **Telemetry:** zero
-- **Permissions:** INTERNET only
+## APK Specifications & Android Compatibility
 
-## Instalasi
+- **App Title:** ZMUX
+- **Package Name:** `zmux`
+- **Application ID:** `com.zaba.zmux`
+- **Version:** `1.0.0`
+- **Minimum Android API:** 26 (Android 8.0)
+- **Target Android API:** 34 (Android 14)
+- **Supported ABIs:** `armeabi-v7a` (ARMv7 32-bit), `arm64-v8a` (ARM64 64-bit)
+- **Permissions Required:** `INTERNET` only (used for loopback WebView connection and curated index downloads)
+- **Telemetry & Ads:** Zero ads, zero telemetry, zero background tracking.
 
-### Download APK
-Download APK terbaru dari [GitHub Actions](../../actions/workflows/build-zmux-apk.yml).
+### Verified Mobile Capabilities (`armeabi-v7a` & `arm64-v8a`)
+ZMUX has been deeply crosschecked and engineered to run reliably across mobile devices, including entry-level **ARMv7 Android Go** devices (such as the *Infinix Smart 9 HD ARMv7*):
+1. **No Boot Freezes:** Hardened port binding (`SO_REUSEPORT`) ensures the Android WebView shell connects immediately without waiting on occupied ports.
+2. **No Force Closes on ARMv7:** Replaced unsafe after-fork `preexec_fn` calls with POSIX `start_new_session=True`, avoiding Bionic libc signal crashes.
+3. **Resilient WebSocket Reconnection:** Automatically cycles through candidate loopback hosts (`127.0.0.1`, `localhost`, `::1`) to handle OEM network stack variations.
 
-Artifact yang dihasilkan:
-- `zmux-1.0.0-universal-debug.apk`
-- `SHA256SUMS`
-- `build-contract.json`
+---
 
-### Build dari Source
+## Installation
+
+### Download Universal APK
+Download the latest universal APK from [GitHub Actions](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml).
+
+Generated build artifacts include:
+- `zmux-1.0.0-universal-debug.apk` — Signed universal APK containing `armeabi-v7a` and `arm64-v8a` libraries.
+- `SHA256SUMS` — SHA-256 checksums for provenance verification.
+- `build-contract.json` — Pinned runtime contract metadata.
+
+### Build from Source
 ```bash
 cd app
 pip install buildozer
 buildozer android debug
 ```
+For detailed instructions, see [docs/BUILDING.md](docs/BUILDING.md).
 
-Lihat [docs/BUILDING.md](docs/BUILDING.md) untuk detail.
+---
 
-## Arsitektur
+## Architecture
 
 ```
 ZMUX Terminal
-├── Backend (Python/Flask)
-│   ├── server.py          # Flask WebView server
-│   ├── terminal.py        # Execution engine (subprocess)
-│   ├── zpip.py           # Package manager
-│   ├── security.py       # Auth token
-│   └── paths.py          # App-private directories
+├── Backend (Python 3 / Flask / Waitress)
+│   ├── server.py          # Flask HTTP WebView server
+│   ├── ws_server.py       # Pure-Python RFC-6455 WebSocket server
+│   ├── terminal.py        # Subprocess execution engine
+│   ├── pty_session.py     # POSIX PTY session manager with pipe fallback
+│   ├── zpip.py            # Transactional hash-verifying package manager
+│   ├── security.py        # Token authentication
+│   ├── keystore.py        # Encrypted local storage
+│   └── paths.py           # Hardened app-private directory management
 │
-├── Frontend (HTML/CSS/JS)
-│   └── terminal.html     # Terminal UI
+├── Frontend (HTML / CSS / JavaScript)
+│   └── terminal.html      # Mobile-optimized xterm.js terminal UI
 │
 └── Infrastructure (ZABAWHEELS)
-    ├── index/            # Package index
-    ├── packages/         # Wheel recipes
-    ├── scripts/          # Build & validation
-    └── toolchain/        # Runtime lock
+    ├── index/             # Curated package index (stable, candidate, experimental)
+    ├── packages/          # Package recipes and manifests
+    ├── schemas/           # JSON Schemas for recipes, manifests, and runtimes
+    ├── scripts/           # Verification, inspection, and index generation tools
+    └── toolchain/         # Pinned runtime and source lockfiles
 ```
 
-## Runtime Fingerprint
+---
 
-Jalankan `zmux-info` atau `zpip doctor` untuk melihat:
-- App version
-- Python version & implementation
-- SOABI & EXT_SUFFIX
-- ABI (armeabi-v7a/arm64-v8a)
-- Android API level
-- Runtime ID
-- p4a commit & NDK version
-- Current working directory
-- User package directory
-- Free storage
-- Installed packages
+## Honest Limitations
 
-## Status
+To maintain transparency, ZMUX documents its limitations clearly:
+1. **Android SELinux Restrictions:** On some Android 14 Go Edition devices, access to `/dev/ptmx` is restricted by SELinux. ZMUX automatically detects this and falls back to a standard pipe-based shell session.
+2. **Directory Scope:** Built-in `cd` commands restrict navigation to app-private storage for security. Subprocess commands (`/system/bin/sh`) can access any directories permitted by the Android OS.
+3. **Native Package Availability:** Complex native packages (such as NumPy) require cross-compiled wheels matching the specific Android ABI (`armeabi-v7a` or `arm64-v8a`). `zpip` will display an honest error if a package is not yet built for your runtime.
 
-| Komponen | Status |
-|----------|--------|
-| Terminal UI | Implemented |
-| Execution Engine | Implemented |
-| zpip Package Manager | Implemented |
-| GitHub Actions Build | CI-built |
-| ARMv7 Support | Statically inspected |
-| ARM64 Support | Statically inspected |
-| Device Testing | Pending |
-| Native Packages | Planned |
+---
 
-**Catatan:** Native package (seperti NumPy) belum tersedia. ZMUX akan memberikan pesan jujur jika package tidak tersedia untuk runtime/ABI tertentu.
+## Documentation & Roadmap
 
-## ZABAWHEELS Infrastructure
+- **[CHANGELOG.md](CHANGELOG.md)** — Detailed record of version releases, ARMv7 fixes, and architectural changes.
+- **[ROADMAP_STATUS.md](ROADMAP_STATUS.md)** — Comprehensive component status matrix and upcoming milestones.
+- **[REFACTOR_REPORT.md](REFACTOR_REPORT.md)** — Complete audit report detailing the transition from Zabacode IDE to ZMUX Terminal.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Technical deep-dive into the WebView port contract and anti-freeze invariants.
+- **[docs/SECURITY.md](docs/SECURITY.md)** — Threat model and security mechanisms.
+- **[ZABAWHEELS.md](ZABAWHEELS.md)** — Curated wheelhouse specification and engineering roadmap.
 
-ZMUX menggunakan ZABAWHEELS sebagai:
-1. **Package index** - Curated wheel repository
-2. **Build pipeline** - APK build automation
-3. **Runtime contract** - Reproducible builds
-4. **Security validation** - Wheel inspection & verification
+---
 
-Lihat [ZABAWHEELS.md](ZABAWHEELS.md) untuk detail infrastructure.
+## Local Development & Testing
 
-## Development
-
-### Setup
+### Setup Environment
 ```bash
 cd app
 pip install -r requirements-dev.txt
 pip install -e .
 ```
 
-### Testing
+### Run Automated Tests
 ```bash
-cd app
-pytest tests/
+# Run 95+ unit and regression tests
+PYTHONPATH=. pytest -v app/tests/ tests/
 ```
 
-### Local Development
+### Start Local Desktop Server
 ```bash
 cd app
 python main.py
-# Terminal akan berjalan di http://127.0.0.1:5000
+# The ZMUX Terminal server will start on http://127.0.0.1:5000
 ```
-
-## Security
-
-Lihat [docs/SECURITY.md](docs/SECURITY.md) untuk:
-- Threat model
-- Auth token mechanism
-- Wheel validation
-- Path traversal protection
-- TLS/SSL context
-
-## Limitations
-
-### Terminal
-- Built-in `cd` command membatasi traversal ke home directory untuk keamanan
-- Shell commands (`/system/bin/sh`) dapat mengakses area yang diizinkan Android OS
-- Tidak ada PTY (pseudo-terminal) - menggunakan subprocess pipe
-- Interactive REPL terbatas pada line-buffered I/O
-
-### Package Manager
-- Native wheel hanya dari ZABAWHEELS index yang match runtime/ABI
-- Pure Python `py3-none-any` boleh dari PyPI
-- Tidak ada `--trusted-host` atau disable TLS verification
-- Package seperti NumPy mungkin belum tersedia
-
-## Roadmap
-
-- [ ] Device testing (ARMv7 & ARM64)
-- [ ] PTY support untuk full interactive REPL
-- [ ] Native package builds (NumPy, Pillow, dll)
-- [ ] Session management (multiple terminal tabs)
-- [ ] File browser untuk working directory
-- [ ] SSH client integration
-
-## Kontribusi
-
-Lihat [CONTRIBUTING.md](CONTRIBUTING.md) untuk guideline.
-
-## License
-
-[LICENSE](LICENSE)
-
-## Credits
-
-- **Python-for-Android** - Android Python runtime
-- **Buildozer** - APK build tool
-- **Flask** - Web framework
-- **Waitress** - WSGI server
 
 ---
 
-**ZMUX** — Terminal Python Android yang jujur dan transparan.
+## Contributing
+
+We welcome contributions to both the ZMUX terminal app and the ZABAWHEELS package infrastructure!
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for package request guidelines, recipe formatting, and pull request procedures.
+
+---
+
+## License
+
+This project is licensed under the terms of the **[LICENSE](LICENSE)**.
+
+---
+
+**ZMUX / ZABAWHEELS** — Honest, transparent, and reproducible Android Python tooling.

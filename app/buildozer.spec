@@ -19,7 +19,7 @@ p4a.bootstrap = webview
 p4a.port = 5000
 
 # Core requirements - minimal for terminal
-requirements = python3,flask,waitress,packaging,certifi
+requirements = python3,flask,waitress,packaging,certifi,werkzeug,jinja2,itsdangerous,click,blinker,MarkupSafe
 
 orientation = portrait
 fullscreen = 0
@@ -31,6 +31,7 @@ android.api = 34
 android.minapi = 26
 android.ndk_api = 26
 android.permissions = INTERNET
+android.uses_cleartext_traffic = True
 android.allow_backup = False
 android.orientation = portrait
 

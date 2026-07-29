@@ -6,12 +6,23 @@ from pathlib import Path
 
 
 def _write_crash_log() -> None:
-    app_dir = Path(os.environ.get("ANDROID_PRIVATE", Path(__file__).parent))
-    try:
-        app_dir.mkdir(parents=True, exist_ok=True)
-        (app_dir / "zmux_crash.log").write_text(traceback.format_exc(), encoding="utf-8")
-    except Exception:
-        pass
+    exc_text = traceback.format_exc()
+    candidates = [
+        os.environ.get("ANDROID_PRIVATE"),
+        os.environ.get("ANDROID_ARGUMENT"),
+        os.environ.get("ANDROID_APP_PATH"),
+        str(Path(__file__).resolve().parent),
+        "/data/local/tmp",
+    ]
+    for c in candidates:
+        if not c:
+            continue
+        try:
+            p = Path(c)
+            p.mkdir(parents=True, exist_ok=True)
+            (p / "zmux_crash.log").write_text(exc_text, encoding="utf-8")
+        except Exception:
+            continue
 
 
 if __name__ == "__main__":

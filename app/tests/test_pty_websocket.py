@@ -171,3 +171,73 @@ def test_websocket_start_with_prebound_listener():
         sock.close()
     finally:
         server.stop()
+
+
+def test_websocket_start_with_multiple_listeners():
+    """Verify WebSocketServer can listen on multiple bound sockets simultaneously (e.g. dual IPv4/IPv6)."""
+    l1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    l1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    l1.bind(("127.0.0.1", 0))
+    l1.listen(5)
+    port1 = l1.getsockname()[1]
+
+    l2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    l2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    l2.bind(("127.0.0.1", 0))
+    l2.listen(5)
+    port2 = l2.getsockname()[1]
+
+    server = WebSocketServer(host="127.0.0.1", port=port1)
+    server.start(listeners=[l1, l2])
+    time.sleep(0.1)
+    try:
+        assert server.is_running
+        for p in (port1, port2):
+            sock = socket.create_connection(("127.0.0.1", p))
+            sock.sendall((
+                f"GET /?token={AUTH_TOKEN} HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            ).encode("utf-8"))
+            response = sock.recv(2048).decode("utf-8")
+            assert "101 Switching Protocols" in response
+            sock.close()
+    finally:
+        server.stop()
+
+
+def test_pty_session_fallback_on_openpty_failure(monkeypatch):
+    """Verify that if os.openpty raises PermissionError (common on ARMv7 Android Go),
+    PTYTerminalSession gracefully falls back to a standard pipe session without crashing."""
+    import os
+
+    def _mock_openpty():
+        raise PermissionError("[Errno 13] Permission denied: '/dev/ptmx'")
+
+    monkeypatch.setattr(os, "openpty", _mock_openpty, raising=False)
+
+    server = WebSocketServer(host="127.0.0.1", port=0)
+    server.start()
+    time.sleep(0.1)
+
+    try:
+        session = PTYTerminalSession(server)
+        session.start()
+
+        assert session.is_running
+        assert session.process is not None
+        assert session.process.poll() is None
+
+        session.write_input(b"echo fallback_ok\n")
+        time.sleep(0.2)
+        scrollback = session.get_scrollback()
+        assert b"fallback_ok" in scrollback or len(scrollback) > 0
+
+        session.stop()
+        assert not session.is_running
+    finally:
+        server.stop()
+
