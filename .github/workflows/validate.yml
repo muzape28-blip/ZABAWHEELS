@@ -1,0 +1,75 @@
+name: Validate Repository
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: YAML, source locks, and tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: app/requirements.lock
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r app/requirements-dev.txt PyYAML==6.0.3 jsonschema==4.26.0 Cython==3.2.9
+          python -m pip install --no-deps -e app
+          python -m pip install packages/zaba-native-smoke
+
+      - name: Validate YAML and JSON syntax
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+
+          for path in sorted(Path('.').rglob('*')):
+              if not path.is_file() or '.git' in path.parts:
+                  continue
+              if path.suffix in {'.yml', '.yaml'}:
+                  yaml.safe_load(path.read_text(encoding='utf-8'))
+              elif path.suffix == '.json':
+                  json.loads(path.read_text(encoding='utf-8'))
+          PY
+          cmp workflow-templates/build-package.yml .github/workflows/build-package.yml
+          cmp workflow-templates/build-zmux-apk.yml .github/workflows/build-zmux-apk.yml
+          cmp workflow-templates/validate.yml .github/workflows/validate.yml
+
+      - name: Validate source and build contracts
+        run: |
+          python scripts/validate_recipes.py --all
+          python scripts/verify_source_lock.py
+          python scripts/build.py \
+            --package zaba-native-smoke \
+            --version 0.1.0 \
+            --abi armeabi-v7a \
+            --channel experimental \
+            --dry-run
+
+      - name: Compile and test all Python code
+        run: |
+          python -m compileall -q app packages scripts tests
+          python -m pytest -q tests app/tests packages/zaba-native-smoke/tests
+
+      - name: Check patch whitespace
+        run: git diff --check
