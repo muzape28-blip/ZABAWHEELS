@@ -4,7 +4,7 @@ title = ZMUX
 package.name = zmux
 package.domain = com.zaba
 source.dir = .
-source.include_exts = py,png,jpg,html,css,json
+source.include_exts = py,png,jpg,html,css,json,js
 version = 1.0.0
 
 # Icon
