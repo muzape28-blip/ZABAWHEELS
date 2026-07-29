@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "runtime_id": "zmux-py314-api26-p4a5c192d7b7308-r1",
+  "generated_at": "2026-07-29T13:00:00Z",
+  "packages": {
+    "numpy": {
+      "name": "numpy",
+      "versions": [
+        "2.0.0"
+      ],
+      "description": "Numerical computing library",
+      "abis": [
+        "armeabi-v7a",
+        "arm64-v8a"
+      ],
+      "status": "planned",
+      "tags": [
+        "math",
+        "array",
+        "scientific"
+      ],
+      "dependencies": [],
+      "last_updated": "2026-07-29"
+    },
+    "pillow": {
+      "name": "pillow",
+      "versions": [
+        "10.2.0"
+      ],
+      "description": "Python Imaging Library",
+      "abis": [
+        "armeabi-v7a",
+        "arm64-v8a"
+      ],
+      "status": "planned",
+      "tags": [
+        "image",
+        "graphics",
+        "pillow"
+      ],
+      "dependencies": [],
+      "last_updated": "2026-07-29"
+    },
+    "cryptography": {
+      "name": "cryptography",
+      "versions": [
+        "42.0.0"
+      ],
+      "description": "Cryptographic recipes and primitives",
+      "abis": [
+        "armeabi-v7a",
+        "arm64-v8a"
+      ],
+      "status": "planned",
+      "tags": [
+        "security",
+        "crypto",
+        "encryption"
+      ],
+      "dependencies": [],
+      "last_updated": "2026-07-29"
+    }
+  }
+}
