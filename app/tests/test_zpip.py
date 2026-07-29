@@ -112,7 +112,8 @@ class TestZpipWheelSecurity:
         with tempfile.NamedTemporaryFile(suffix=".whl", delete=False) as f:
             with zipfile.ZipFile(f.name, "w") as zf:
                 zf.writestr("test/__init__.py", "first")
-                zf.writestr("test/__init__.py", "duplicate")  # Duplicate
+                with pytest.warns(UserWarning, match="Duplicate name"):
+                    zf.writestr("test/__init__.py", "duplicate")
                 zf.writestr("test-1.0.dist-info/WHEEL", "Wheel-Version: 1.0")
                 zf.writestr("test-1.0.dist-info/RECORD", "")
             

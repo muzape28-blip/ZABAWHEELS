@@ -7,37 +7,41 @@ These tests verify the repository does not contain:
 - Ambiguous artifacts
 """
 
-import os
+import subprocess
 from pathlib import Path
-
-import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INDEX_DIR = REPO_ROOT / "index"
 
 
+def tracked_files(pattern: str) -> list[str]:
+    """Return matching Git-tracked paths, ignoring local build environments."""
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", pattern],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    )
+    return [item.decode() for item in result.stdout.split(b"\0") if item]
+
+
 def test_no_tracked_wheel_files():
     """No .whl files should be tracked in Git."""
-    # Check filesystem (not just git-tracked)
-    wheel_files = list(REPO_ROOT.rglob("*.whl"))
-    assert len(wheel_files) == 0, \
-        f"Wheel files found in repo: {[str(w) for w in wheel_files]}"
+    wheel_files = tracked_files("*.whl")
+    assert not wheel_files, f"Tracked wheel files found: {wheel_files}"
 
 
 def test_no_tracked_so_files():
     """No .so files should be tracked in Git."""
-    so_files = list(REPO_ROOT.rglob("*.so"))
-    # Allow .pyx source files but not .so binaries
-    assert len(so_files) == 0, \
-        f"Shared object files found in repo: {[str(s) for s in so_files]}"
+    so_files = tracked_files("*.so")
+    assert not so_files, f"Tracked shared objects found: {so_files}"
 
 
 def test_no_tracked_dll_files():
     """No .dll files should be tracked in Git."""
-    dll_files = list(REPO_ROOT.rglob("*.dll"))
-    assert len(dll_files) == 0, \
-        f"DLL files found in repo: {[str(d) for d in dll_files]}"
+    dll_files = tracked_files("*.dll")
+    assert not dll_files, f"Tracked DLL files found: {dll_files}"
 
 
 def test_gitignore_blocks_wheels():

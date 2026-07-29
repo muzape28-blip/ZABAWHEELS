@@ -1,11 +1,13 @@
 """ZABAWHEELS — Recipe validation tests."""
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
+
+from scripts.verify_source_lock import local_source_hash
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +36,18 @@ def test_all_recipes_are_valid_yaml():
             recipe = yaml.safe_load(f)
         assert recipe is not None, f"Empty recipe: {recipe_path}"
         assert isinstance(recipe, dict), f"Recipe must be dict: {recipe_path}"
+
+
+def test_recipes_conform_to_json_schema():
+    """Every non-template recipe must conform to recipe.schema.json."""
+    schema = json.loads((SCHEMA_DIR / "recipe.schema.json").read_text("utf-8"))
+    validator = Draft202012Validator(schema)
+    for recipe_path in PACKAGES_DIR.glob("*/recipe.yaml"):
+        if recipe_path.parent.name == "package-template":
+            continue
+        recipe = yaml.safe_load(recipe_path.read_text("utf-8"))
+        errors = sorted(validator.iter_errors(recipe), key=lambda item: list(item.path))
+        assert not errors, f"Schema errors in {recipe_path}: {[e.message for e in errors]}"
 
 
 def test_recipes_have_required_fields():
@@ -123,3 +137,16 @@ def test_zaba_native_smoke_recipe_exists():
     assert recipe["package"] == "zaba-native-smoke"
     assert recipe["native"] is True
     assert recipe["smoke_test"] != ""
+
+
+def test_local_sources_match_source_lock():
+    """Every local package must match both the recipe and source lock hashes."""
+    lock = json.loads((TOOLCHAIN_DIR / "source-lock.json").read_text("utf-8"))
+    for name, record in lock.get("packages", {}).items():
+        if record.get("source") != "local":
+            continue
+        package_dir = REPO_ROOT / record["source_url"]
+        actual = local_source_hash(package_dir)
+        recipe = yaml.safe_load((package_dir / "recipe.yaml").read_text("utf-8"))
+        assert record["sha256"] == actual, f"Stale source lock for {name}"
+        assert recipe["source_sha256"] == actual, f"Stale recipe hash for {name}"
