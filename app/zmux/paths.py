@@ -7,6 +7,7 @@ All runtime directories are app-private and gitignored.
 
 import os
 import shlex
+import stat
 from pathlib import Path
 
 
@@ -70,7 +71,9 @@ INSTALLED_DIR = APP_DIR / "installed"
 LOG_DIR = APP_DIR / "logs"
 BIN_DIR = APP_DIR / "bin"
 
-# Ensure all directories exist
+# Ensure all directories exist with restricted permissions (owner-only).
+# On Android this keeps app-private data inaccessible to other apps and
+# prevents accidental exposure via shared storage providers.
 for directory in [
     HOME_DIR,
     PROJECTS_DIR,
@@ -83,6 +86,10 @@ for directory in [
     BIN_DIR,
 ]:
     directory.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(directory, stat.S_IRWXU)  # 0o700
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
