@@ -140,12 +140,19 @@ body {
   letter-spacing: 0.1em; margin-bottom: 20px;
   text-shadow: 0 0 20px rgba(63,185,80,0.5);
 }
+#boot .logo-img {
+  width: 96px; height: 96px;
+  border-radius: 22%;
+  margin-bottom: 16px;
+  box-shadow: 0 0 24px rgba(63,185,80,0.35);
+}
 #boot .status { color: var(--text-dim); font-size: 12px; }
 </style>
 </head>
 <body>
 
 <div id="boot">
+  <img class="logo-img" src="/static/logo.png" alt="ZMUX logo">
   <div class="logo">ZMUX</div>
   <div class="status" id="boot-status">Starting secure interactive terminal...</div>
 </div>
@@ -189,6 +196,14 @@ let ws = null;
 let term = null;
 let resizeTimeout = null;
 
+// Reconnection state: retry automatically for a while, then surface a
+// visible, tappable error instead of silently spinning forever.
+let reconnectAttempts = 0;
+let everConnected = false;
+let manualRetryHandler = null;
+const MAX_AUTO_RECONNECT = 10;
+const RECONNECT_DELAY_MS = 1500;
+
 // Initialize xterm.js
 function initTerminal() {
   term = new Terminal({
@@ -230,13 +245,19 @@ function initTerminal() {
   });
 }
 
-// Connect to secure WebSocket server on port 5001 (or dynamically passed port)
+// Connect to secure WebSocket server (port passed dynamically by backend)
 function connectWebSocket() {
   // Use window.location.hostname to correctly connect in both android emulator and desktop
   const wsHost = window.location.hostname || "127.0.0.1";
   const wsUrl = `ws://${wsHost}:${WS_PORT}/?token=${AUTH_TOKEN}`;
-  
-  ws = new WebSocket(wsUrl);
+
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch (e) {
+    console.error("WebSocket constructor failed:", e);
+    scheduleReconnect();
+    return;
+  }
 
   // Handle binary messages from Python server cleanly
   ws.binaryType = "blob";
@@ -245,7 +266,10 @@ function connectWebSocket() {
     console.log("WebSocket connected to ZMUX PTY session");
     statusDot.className = "idle";
     statusText.textContent = "connected";
-    
+    reconnectAttempts = 0;
+    everConnected = true;
+    bootScreen.onclick = null;
+
     // Hide boot screen on first successful connection
     setTimeout(() => {
       bootScreen.classList.add('hide');
@@ -255,6 +279,7 @@ function connectWebSocket() {
   };
 
   ws.onmessage = (event) => {
+    if (!term) return;
     if (event.data instanceof Blob) {
       // Decode raw bytes to term
       event.data.arrayBuffer().then((buf) => {
@@ -267,11 +292,7 @@ function connectWebSocket() {
 
   ws.onclose = () => {
     console.log("WebSocket closed");
-    statusDot.className = "stopped";
-    statusText.textContent = "disconnected";
-
-    // Attempt automatic reconnect in 1.5 seconds if server is temporarily reloading/rotating
-    setTimeout(connectWebSocket, 1500);
+    scheduleReconnect();
   };
 
   ws.onerror = (err) => {
@@ -279,6 +300,47 @@ function connectWebSocket() {
     statusDot.className = "failed";
     statusText.textContent = "error";
   };
+}
+
+// Retry automatically for a while, then give the user an explicit,
+// tappable failure state instead of an infinite silent spinner.
+function scheduleReconnect() {
+  reconnectAttempts++;
+  if (reconnectAttempts <= MAX_AUTO_RECONNECT) {
+    statusDot.className = "stopped";
+    statusText.textContent = `reconnecting (${reconnectAttempts}/${MAX_AUTO_RECONNECT})`;
+    if (!everConnected) {
+      bootStatus.textContent = `Waiting for backend shell... (attempt ${reconnectAttempts}/${MAX_AUTO_RECONNECT})`;
+    }
+    setTimeout(connectWebSocket, RECONNECT_DELAY_MS);
+    return;
+  }
+
+  statusDot.className = "failed";
+  statusText.textContent = "connection failed — tap to retry";
+  if (!everConnected) {
+    bootStatus.innerHTML =
+      '<span style="color:#f85149;font-weight:bold">Could not reach the terminal backend.</span>' +
+      '<br><span style="font-size:11px;color:#8b949e">Tap anywhere to try again</span>';
+  } else if (term) {
+    term.write("\r\n\x1b[31m[connection lost — tap terminal to reconnect]\x1b[0m\r\n");
+  }
+  enableManualRetry();
+}
+
+function enableManualRetry() {
+  const retry = () => {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    reconnectAttempts = 0;
+    bootScreen.onclick = null;
+    if (!everConnected) {
+      bootStatus.textContent = "Reconnecting to secure backend shell...";
+    }
+    connectWebSocket();
+    if (term) term.focus();
+  };
+  bootScreen.onclick = retry;
+  manualRetryHandler = retry;
 }
 
 // Send raw characters/actions over WebSocket
@@ -338,9 +400,13 @@ window.addEventListener('resize', () => {
   resizeTimeout = setTimeout(fitTerminal, 150);
 });
 
-// Force focus back to terminal on container click
+// Force focus back to terminal on container click; if the connection failed
+// permanently, a tap also triggers a manual reconnect.
 document.getElementById('terminal-container').addEventListener('click', () => {
   if (term) term.focus();
+  if (manualRetryHandler && (!ws || ws.readyState !== WebSocket.OPEN)) {
+    manualRetryHandler();
+  }
 });
 
 // Start application

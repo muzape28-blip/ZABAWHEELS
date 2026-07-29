@@ -33,6 +33,10 @@ class PTYTerminalSession:
         self.reader_thread: Optional[threading.Thread] = None
         self.is_running = False
         self.lock = threading.Lock()
+        # True only when the child was spawned in its own session/group
+        # (os.setsid). killpg() is unsafe otherwise — the child would share
+        # *our* process group and SIGKILL would take the whole app down.
+        self._own_process_group = False
 
         # Ring buffer for recent terminal output (scrollback replay on reload)
         self.scrollback_buffer = bytearray()
@@ -69,6 +73,7 @@ class PTYTerminalSession:
                 from zmux.terminal import get_session
                 session_env = get_session()._build_env()
 
+                use_setsid = hasattr(os, "setsid")
                 self.process = subprocess.Popen(
                     [shell],
                     stdin=self.slave_fd,
@@ -76,9 +81,10 @@ class PTYTerminalSession:
                     stderr=self.slave_fd,
                     cwd=str(get_session().cwd),
                     env=session_env,
-                    preexec_fn=os.setsid,
+                    preexec_fn=os.setsid if use_setsid else None,
                     close_fds=True,
                 )
+                self._own_process_group = use_setsid
 
                 # Close slave_fd in parent process as it is owned by the child
                 os.close(self.slave_fd)
@@ -114,6 +120,7 @@ class PTYTerminalSession:
             from zmux.terminal import get_session
             session_env = get_session()._build_env()
 
+            use_setsid = hasattr(os, "setsid")
             self.process = subprocess.Popen(
                 [shell],
                 stdin=subprocess.PIPE,
@@ -123,7 +130,9 @@ class PTYTerminalSession:
                 env=session_env,
                 text=False,
                 bufsize=0,
+                preexec_fn=os.setsid if use_setsid else None,
             )
+            self._own_process_group = use_setsid
             self.is_running = True
 
             # Clear old scrollback
@@ -236,8 +245,10 @@ class PTYTerminalSession:
 
         if self.process:
             try:
-                # Terminate shell process group
-                if HAS_PTY and hasattr(os, "killpg"):
+                # Terminate the shell's process group — but only if the child
+                # actually has its own group. Otherwise killpg() would target
+                # our own process group and kill the whole app.
+                if self._own_process_group and hasattr(os, "killpg"):
                     try:
                         os.killpg(os.getpgid(self.process.pid), 9)
                     except Exception:
@@ -250,6 +261,7 @@ class PTYTerminalSession:
                 except Exception:
                     pass
             self.process = None
+        self._own_process_group = False
 
         if self.master_fd is not None:
             try:
