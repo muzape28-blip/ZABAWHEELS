@@ -1,38 +1,12 @@
-# ZABACODE Locked Dependencies — v1.2.0
-# Generated: 2026-07-26, Reviewed
-# Purpose: Reproducible builds, supply-chain trust (Fix #26)
-# Usage: pip install -r requirements.lock
-# To update: pip-compile requirements-dev.txt --generate-hashes -o requirements.lock
-# Hashes omitted for brevity in this snapshot, but production should include --generate-hashes
-
-# Core WebView shell
-Flask==2.3.3
-  # via requirements-dev.txt
+# ZMUX runtime dependencies (pinned for reproducibility)
+flask==2.3.3
 waitress==2.1.2
-
-# Core Dependencies
-certifi==2024.2.2
-requests==2.31.0
-tinydb==4.8.0
-beautifulsoup4==4.12.2
-python-dotenv==1.0.0
-
-# Testing
-pytest==7.4.0
-pytest-cov==4.1.0
-
-# Android / Pyjnius Integration (optional in dev, active on Android)
-pyjnius==1.7.0
-
-# Code Quality (CI)
-ruff==0.6.9
-mypy==1.11.1
-buildozer==1.5.0
-cython==0.29.33
-
-# Notes:
-# - All versions pinned to exact, no floating >=
-# - For full hash-locked file, run: pip-compile --generate-hashes
-# - CI uses this file + pinned GitHub Actions SHAs
-
-packaging==24.2
+packaging==23.2
+certifi==2023.11.17
+# Flask dependencies
+werkzeug==2.3.7
+jinja2==3.1.2
+itsdangerous==2.1.2
+click==8.1.7
+blinker==1.6.3
+MarkupSafe==2.1.3

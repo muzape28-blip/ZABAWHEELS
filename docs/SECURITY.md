@@ -1,77 +1,84 @@
-# Security and Supply Chain
-
-> **Status:** Pre-Alpha (M0)
-
-## Mandatory Security Measures (Since M0)
-
-- ✅ **HTTPS only** — all download URLs use HTTPS
-- ✅ **SHA-256 for source** — every pinned source has a hash
-- ✅ **SHA-256 for wheel** — every artifact has a hash
-- ✅ **Pinned GitHub Actions** — all actions pinned with commit SHA
-- ✅ **No untrusted shell input** — workflow inputs validated
-- ✅ **No arbitrary package build** — package allowlist enforced
-- ✅ **ZIP traversal protection** — inspect_wheel.py checks paths
-- ✅ **Staging directory** — wheels extracted to staging before commit
-- ✅ **Atomic installation** — transactional install with rollback
-- ✅ **License record** — every package records upstream license
-- ✅ **Exact source URL** — no ambiguous source references
-- ✅ **Patch storage** — all patches stored in repository
-- ✅ **Build log availability** — CI logs preserved as artifacts
-- ✅ **Wrong ABI rejection** — ZabaPip rejects mismatched ABI before extraction
-- ✅ **Wrong runtime rejection** — ZabaPip rejects mismatched runtime_id
-- ✅ **Hash mismatch rejection** — ZabaPip rejects hash mismatch
-- ✅ **No credentials in repo** — .gitignore blocks credential files
-
-## Future Security Measures
-
-- ⬜ **Sigstore keyless signing** — artifact signing
-- ⬜ **GitHub artifact attestations** — provenance
-- ⬜ **SBOM (SPDX or CycloneDX)** — software bill of materials
-- ⬜ **Reproducible build comparison** — deterministic builds
-- ⬜ **Vulnerability advisory** — CVE tracking
-- ⬜ **Revocation list** — revoked artifacts indexed
-- ⬜ **Dependency vulnerability scanning** — upstream CVEs
+# ZMUX Security
 
 ## Threat Model
 
-| Threat | Mitigation |
-|---|---|
-| Source upstream replaced | Source SHA-256 pinning |
-| Release artifact tampered | Artifact SHA-256 + (future: Sigstore) |
-| Hash mismatch | ZabaPip rejects mismatched hash |
-| Wheel path traversal | inspect_wheel.py path check |
-| Wrong-ABI wheel causes crash | ELF inspection + ABI check |
-| Native library links to private API | DT_NEEDED inspection |
-| Malicious package writes outside install root | Staging + atomic commit |
-| Workflow injection | Pinned actions + validated inputs |
-| Compromised GitHub Action | SHA pinning + allowlist |
-| Dependency confusion | ZABAWHEELS index + priority |
-| Rollback to vulnerable package | Revocation + replacement metadata |
+### 1. WebView Origin Isolation
+**Risk:** Third-party content injected into WebView.
+**Mitigation:**
+- Content-Security-Policy restricts to `'self'` only
+- No `frame-ancestors` (no embedding)
+- Loopback-only server (127.0.0.1)
+- Auth token on all sensitive endpoints
 
-## Installer Security Policy
+### 2. Auth Token
+**Risk:** Unauthorized API access.
+**Mitigation:**
+- 128-bit random hex token per installation
+- Constant-time comparison (`hmac.compare_digest`)
+- Embedded in HTML template (WebView-only access)
+- Required header `X-ZMUX-Token` on sensitive routes
 
-ZabaPip MUST NOT:
-- Run `setup.py` from arbitrary packages on device
-- Compile sdist on phone
-- Execute uncontrolled post-install scripts
-- Disable TLS verification
-- Ignore hash mismatch
-- Overwrite old package before verifying candidate
+### 3. Command Injection
+**Risk:** Malicious command execution.
+**Mitigation:**
+- Built-in commands (cd, pwd) handled without shell
+- shell=True used only for general commands (documented)
+- User is explicitly in a terminal environment
+- Path traversal blocked for built-in cd
 
-## No Silent Fallback
+### 4. Package Supply Chain
+**Risk:** Malicious wheel package.
+**Mitigation:**
+- HTTPS-only for metadata and downloads
+- SHA-256 mandatory and verified
+- ZIP path traversal rejection
+- Duplicate member rejection
+- Size limits enforced
+- Smoke-import before commit
+- Transactional install with rollback
+- File ownership tracking
 
-If a package is unavailable or fails, ZabaPip must show the real reason:
+### 5. File System Access
+**Risk:** Unauthorized file access.
+**Mitigation:**
+- App-private storage for all ZMUX directories
+- Built-in cd restricts to HOME_DIR
+- Shell commands can access OS-permitted areas (documented risk)
+- Uninstall only removes owned files
 
-```text
-Package numpy 2.x not available for:
-  Runtime : zabacode-pyXXX-api26-p4aXXX-r1
-  ABI     : armeabi-v7a
-  Status  : planned
+### 6. Key Storage
+**Risk:** API key theft from device.
+**Mitigation:**
+- Android Keystore preferred (hardware-backed)
+- Fallback: PBKDF2-derived encryption with random master key
+- Encrypt-then-MAC with HMAC-SHA256
+- Constant-time tag verification
+- 0600 permissions on key files
+
+### 7. TLS/SSL
+**Risk:** MITM attacks on package downloads.
+**Mitigation:**
+- certifi CA bundle shipped in APK
+- No `--trusted-host` or TLS bypass
+- No HTTP fallback for package operations
+- Verified SSL context shared across modules
+
+## Security Headers
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; ...
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
 ```
 
-Never silently:
-- Install wrong version
-- Use wrong ABI wheel
-- Assume import succeeds without test
-- Show fake progress
-- Claim permissions or dependencies exist
+## Permissions
+
+ZMUX requests minimum permissions:
+- `INTERNET` — for package downloads
+- No `READ_EXTERNAL_STORAGE` or `WRITE_EXTERNAL_STORAGE`
+
+## Limitations
+
+- Shell commands (`/system/bin/sh`) can access areas permitted by Android OS
+- On rooted devices, app-private storage may be readable
+- WebView cannot fully isolate from the host process

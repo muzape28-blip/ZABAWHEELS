@@ -25,7 +25,7 @@ TLS_HELP_MESSAGE = (
 
 
 @lru_cache(maxsize=1)
-def _resolve_context() -> tuple[ssl.SSLContext, bool]:
+def _resolve_context() -> tuple:
     """Build an SSL context, preferring certifi's CA bundle. Cached per process."""
     # 1. Preferred: certifi bundle shipped inside the APK.
     try:

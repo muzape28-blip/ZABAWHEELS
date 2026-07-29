@@ -1,22 +1,46 @@
-# ZMUX Android application
+# ZMUX Terminal App
 
-ZMUX is the installable Android deliverable in this repository. It is based on
-the modular WebView/Python core from the owner's ZABACODE project and is now
-integrated with this repository's runtime contract and transactional ZabaPip.
+Android terminal application for Python development.
 
-Key properties:
+## Structure
 
-- application title: `ZMUX`
-- Android application id: `ai.arena.zmux`
-- version: `1.0.0`
-- minimum/target API: 26/34
-- ABIs: `armeabi-v7a`, `arm64-v8a`
-- offline Ace editor and Python execution
-- zero telemetry
-- runtime fingerprint endpoint: `GET /api/runtime`
-- allowlisted package command endpoint: `POST /api/zpip`
-- package commands: `search`, `info`, `install`, `list`, `verify`, `uninstall`, `doctor`
+```
+app/
+├── main.py              # Entry point
+├── buildozer.spec       # APK build configuration
+├── zmux/                # Core package
+│   ├── __init__.py
+│   ├── server.py        # Flask WebView server
+│   ├── terminal.py      # Execution engine
+│   ├── zpip.py          # Package manager
+│   ├── security.py      # Auth token
+│   ├── net.py           # TLS/SSL context
+│   ├── keystore.py      # Encrypted storage
+│   └── paths.py         # Directory management
+├── templates/
+│   └── terminal.html    # Terminal UI
+├── assets/
+│   ├── icon.png
+│   ├── logo.png
+│   └── presplash.png
+└── tests/
+    ├── conftest.py
+    ├── test_terminal.py
+    ├── test_zpip.py
+    └── test_security.py
+```
 
-The package module remains named `zabacode` internally for compatibility with
-existing imports. This does not affect the APK label, application id, artifact
-name, or UI branding.
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+python main.py  # Start terminal server
+```
+
+## Build APK
+
+```bash
+pip install buildozer
+buildozer android debug
+```

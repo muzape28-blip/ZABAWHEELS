@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ZMUX Terminal</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-input: #161b22;
+  --text: #c9d1d9;
+  --text-bright: #58a6ff;
+  --text-dim: #484f58;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; width: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Top Bar */
+#topbar {
+  height: 40px;
+  background: var(--bg-input);
+  border-bottom: 1px solid #30363d;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+#topbar .title {
+  font-weight: 700;
+  color: var(--green);
+  font-size: 14px;
+  letter-spacing: 0.05em;
+}
+#topbar .title::before { content: '> '; }
+#status {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+#status-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+#status-dot.idle { background: var(--green); }
+#status-dot.running { background: var(--yellow); animation: blink 0.6s infinite; }
+#status-dot.failed { background: var(--red); }
+#status-dot.stopped { background: var(--text-dim); }
+@keyframes blink { 50% { opacity: 0.3; } }
+
+/* Terminal Output */
+#terminal {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+#terminal .line { margin: 0; }
+#terminal .prompt-line { color: var(--green); }
+#terminal .stdout { color: var(--text); }
+#terminal .stderr { color: var(--red); }
+#terminal .info { color: var(--text-bright); }
+#terminal .dim { color: var(--text-dim); }
+#terminal .exit-ok { color: var(--green); font-size: 11px; }
+#terminal .exit-err { color: var(--red); font-size: 11px; }
+
+/* Input Area */
+#input-area {
+  background: var(--bg-input);
+  border-top: 1px solid #30363d;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+#prompt-label {
+  color: var(--green);
+  white-space: nowrap;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+#cmd-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  outline: none;
+  caret-color: var(--green);
+  min-width: 0;
+}
+#cmd-input::placeholder { color: var(--text-dim); }
+
+/* Bottom toolbar */
+#toolbar {
+  background: var(--bg-input);
+  border-top: 1px solid #30363d;
+  padding: 6px 8px;
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.tool-btn {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: var(--text);
+  padding: 6px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.tool-btn:active { background: #30363d; }
+.tool-btn.stop { color: var(--red); border-color: #f8514933; }
+.tool-btn.stop:active { background: #f8514922; }
+
+/* Scrollbar */
+#terminal::-webkit-scrollbar { width: 6px; }
+#terminal::-webkit-scrollbar-track { background: transparent; }
+#terminal::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+
+/* Boot screen */
+#boot {
+  position: fixed; inset: 0; background: #000;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  z-index: 1000; transition: opacity 0.3s;
+}
+#boot.hide { opacity: 0; pointer-events: none; }
+#boot .logo {
+  font-size: 36px; font-weight: 900; color: var(--green);
+  letter-spacing: 0.1em; margin-bottom: 20px;
+  text-shadow: 0 0 20px rgba(63,185,80,0.5);
+}
+#boot .status { color: var(--text-dim); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="boot">
+  <div class="logo">ZMUX</div>
+  <div class="status" id="boot-status">Starting terminal...</div>
+</div>
+
+<div id="topbar">
+  <span class="title">ZMUX</span>
+  <span id="status"><span id="status-dot" class="idle"></span><span id="status-text">idle</span></span>
+</div>
+
+<div id="terminal"></div>
+
+<div id="input-area">
+  <span id="prompt-label">zmux:~$</span>
+  <input type="text" id="cmd-input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Type a command...">
+</div>
+
+<div id="toolbar">
+  <button class="tool-btn" onclick="sendSpecial('Tab')">Tab</button>
+  <button class="tool-btn" onclick="sendSpecial('Up')">↑</button>
+  <button class="tool-btn" onclick="sendSpecial('Down')">↓</button>
+  <button class="tool-btn" onclick="sendCtrlC()">Ctrl+C</button>
+  <button class="tool-btn" onclick="insertText('/')">/</button>
+  <button class="tool-btn" onclick="insertText('~')">~</button>
+  <button class="tool-btn" onclick="insertText('|')">|</button>
+  <button class="tool-btn" onclick="insertText('>')">&gt;</button>
+  <button class="tool-btn" onclick="insertText('&')">&amp;</button>
+  <button class="tool-btn stop" onclick="doStop()">■ Stop</button>
+</div>
+
+<script>
+const AUTH_TOKEN = "{{ auth_token }}";
+const API_HEADERS = { "Content-Type": "application/json", "X-ZMUX-Token": AUTH_TOKEN };
+
+const terminal = document.getElementById('terminal');
+const cmdInput = document.getElementById('cmd-input');
+const promptLabel = document.getElementById('prompt-label');
+const statusDot = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+const bootScreen = document.getElementById('boot');
+const bootStatus = document.getElementById('boot-status');
+
+let history = [];
+let historyIndex = -1;
+let currentPrompt = 'zmux:~$ ';
+let isRunning = false;
+
+// --- Terminal Output ---
+function appendLine(text, className) {
+  const line = document.createElement('div');
+  line.className = 'line ' + (className || '');
+  line.textContent = text;
+  terminal.appendChild(line);
+  scrollToBottom();
+}
+
+function appendHTML(html, className) {
+  const line = document.createElement('div');
+  line.className = 'line ' + (className || '');
+  line.innerHTML = html;
+  terminal.appendChild(line);
+  scrollToBottom();
+}
+
+function scrollToBottom() {
+  requestAnimationFrame(() => {
+    terminal.scrollTop = terminal.scrollHeight;
+  });
+}
+
+function setStatus(status) {
+  statusDot.className = status;
+  statusText.textContent = status;
+}
+
+// --- API Calls ---
+async function api(endpoint, data) {
+  const resp = await fetch('/api/' + endpoint, {
+    method: 'POST',
+    headers: API_HEADERS,
+    body: JSON.stringify(data),
+  });
+  return resp.json();
+}
+
+async function apiGet(endpoint) {
+  const resp = await fetch('/api/' + endpoint, {
+    method: 'GET',
+    headers: API_HEADERS,
+  });
+  return resp.json();
+}
+
+// --- Command Execution ---
+async function executeCommand(cmd) {
+  // Display the command with prompt
+  appendLine(currentPrompt + cmd, 'prompt-line');
+  
+  if (!cmd.trim()) {
+    appendLine(currentPrompt, 'prompt-line');
+    return;
+  }
+
+  // Add to history
+  if (history.length === 0 || history[history.length - 1] !== cmd) {
+    history.push(cmd);
+  }
+  historyIndex = history.length;
+
+  // Handle client-side commands
+  if (cmd.trim() === 'clear') {
+    terminal.innerHTML = '';
+    return;
+  }
+
+  isRunning = true;
+  setStatus('running');
+  cmdInput.disabled = true;
+
+  try {
+    const result = await api('exec', { command: cmd });
+    
+    // Display stdout
+    if (result.stdout) {
+      const lines = result.stdout.split('\n');
+      for (const line of lines) {
+        if (line) appendLine(line, 'stdout');
+      }
+    }
+    
+    // Display stderr
+    if (result.stderr) {
+      const lines = result.stderr.split('\n');
+      for (const line of lines) {
+        if (line) appendLine(line, 'stderr');
+      }
+    }
+
+    // Exit code
+    if (result.exit_code !== undefined && result.exit_code !== 0) {
+      appendLine('[exit code: ' + result.exit_code + ']', 'exit-err');
+    }
+
+    // Update prompt
+    if (result.prompt) {
+      currentPrompt = result.prompt;
+      promptLabel.textContent = currentPrompt;
+    }
+
+    setStatus(result.status || 'idle');
+  } catch (e) {
+    appendLine('Error: ' + e.message, 'stderr');
+    setStatus('failed');
+  } finally {
+    isRunning = false;
+    cmdInput.disabled = false;
+    cmdInput.focus();
+  }
+}
+
+// --- Input Handling ---
+cmdInput.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const cmd = cmdInput.value;
+    cmdInput.value = '';
+    executeCommand(cmd);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (historyIndex > 0) {
+      historyIndex--;
+      cmdInput.value = history[historyIndex];
+    }
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (historyIndex < history.length - 1) {
+      historyIndex++;
+      cmdInput.value = history[historyIndex];
+    } else {
+      historyIndex = history.length;
+      cmdInput.value = '';
+    }
+  } else if (e.key === 'c' && e.ctrlKey) {
+    e.preventDefault();
+    doStop();
+  }
+});
+
+// --- Toolbar Actions ---
+function sendCtrlC() {
+  if (isRunning) {
+    doStop();
+  } else {
+    appendLine('^C', 'dim');
+  }
+}
+
+async function doStop() {
+  try {
+    const result = await api('stop', {});
+    appendLine('^C [stopped]', 'dim');
+    setStatus('idle');
+    isRunning = false;
+    cmdInput.disabled = false;
+    if (result.prompt) {
+      currentPrompt = result.prompt;
+      promptLabel.textContent = currentPrompt;
+    }
+  } catch (e) {
+    appendLine('Stop error: ' + e.message, 'stderr');
+  }
+}
+
+function insertText(text) {
+  const start = cmdInput.selectionStart;
+  const end = cmdInput.selectionEnd;
+  const val = cmdInput.value;
+  cmdInput.value = val.substring(0, start) + text + val.substring(end);
+  cmdInput.selectionStart = cmdInput.selectionEnd = start + text.length;
+  cmdInput.focus();
+}
+
+function sendSpecial(key) {
+  if (key === 'Up') {
+    if (historyIndex > 0) {
+      historyIndex--;
+      cmdInput.value = history[historyIndex];
+    }
+  } else if (key === 'Down') {
+    if (historyIndex < history.length - 1) {
+      historyIndex++;
+      cmdInput.value = history[historyIndex];
+    } else {
+      historyIndex = history.length;
+      cmdInput.value = '';
+    }
+  } else if (key === 'Tab') {
+    // Basic tab: insert spaces
+    insertText('  ');
+  }
+  cmdInput.focus();
+}
+
+// --- Boot Sequence ---
+async function boot() {
+  try {
+    bootStatus.textContent = 'Checking server...';
+    const health = await fetch('/api/health').then(r => r.json());
+    
+    bootStatus.textContent = 'Server v' + health.version + ' (' + health.type + ')';
+    
+    // Get initial prompt
+    const status = await apiGet('status');
+    if (status.prompt) {
+      currentPrompt = status.prompt;
+      promptLabel.textContent = currentPrompt;
+    }
+
+    // Welcome message
+    appendLine('ZMUX Terminal v' + health.version, 'info');
+    appendLine('Python terminal for Android', 'dim');
+    appendLine('Type "help" for available commands.', 'dim');
+    appendLine('', '');
+
+    // Hide boot screen
+    setTimeout(() => {
+      bootScreen.classList.add('hide');
+      setTimeout(() => { bootScreen.style.display = 'none'; }, 300);
+      cmdInput.focus();
+    }, 500);
+
+    setStatus('idle');
+  } catch (e) {
+    bootStatus.textContent = 'Error: ' + e.message;
+    bootStatus.style.color = 'var(--red)';
+  }
+}
+
+// Focus input on tap
+terminal.addEventListener('click', () => cmdInput.focus());
+
+// Start
+boot();
+</script>
+</body>
+</html>

@@ -1,6 +1,11 @@
+"""Test configuration for ZMUX terminal."""
+import os
 import sys
 from pathlib import Path
 
-APP_ROOT = Path(__file__).resolve().parents[1]
-if str(APP_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP_ROOT))
+# Add app directory to path
+APP_DIR = Path(__file__).parent.parent
+sys.path.insert(0, str(APP_DIR))
+
+# Set test environment
+os.environ.setdefault("ZMUX_TEST", "1")

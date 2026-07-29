@@ -1,115 +1,107 @@
-# ZABAWHEELS Architecture
-
-> **Status:** Pre-Alpha (M0)
+# ZMUX Architecture
 
 ## Overview
 
-ZABAWHEELS is a **curated Android wheelhouse** for Zabacode. It provides the infrastructure for cross-compiling, validating, publishing, and indexing Python native wheels that work on Android ARMv7/ARM64.
+ZMUX adalah terminal Android yang berjalan sebagai WebView app di atas Python backend (Flask + Waitress). Arsitektur ini dipilih karena:
 
-The system follows a strict pipeline:
+1. **Python-for-Android** menyediakan Python runtime di Android
+2. **WebView bootstrap** memungkinkan UI HTML/CSS/JS tanpa Kivy
+3. **Flask** menyediakan REST API untuk terminal operations
+4. **Subprocess** untuk eksekusi command real
 
-```text
-Source package → Recipe → Cross-compile → Inspect → Manifest → Index → ZabaPip → Android runtime
+## Component Diagram
+
+```
+┌─────────────────────────────────────────┐
+│              Android Device              │
+│                                          │
+│  ┌──────────────────────────────────┐   │
+│  │         WebView (UI)              │   │
+│  │  ┌──────────────────────────┐    │   │
+│  │  │   terminal.html          │    │   │
+│  │  │   - Terminal output      │    │   │
+│  │  │   - Command input        │    │   │
+│  │  │   - History navigation   │    │   │
+│  │  │   - Status indicator     │    │   │
+│  │  └──────────┬───────────────┘    │   │
+│  └─────────────┼────────────────────┘   │
+│                │ HTTP (loopback)          │
+│  ┌─────────────▼────────────────────┐   │
+│  │     Flask Server (127.0.0.1)      │   │
+│  │                                    │   │
+│  │  ┌──────────┐  ┌───────────────┐ │   │
+│  │  │  /api/   │  │   Security    │ │   │
+│  │  │  exec    │  │   (Auth)      │ │   │
+│  │  │  input   │  │               │ │   │
+│  │  │  stop    │  └───────────────┘ │   │
+│  │  │  status  │                     │   │
+│  │  └─────┬────┘                     │   │
+│  └────────┼──────────────────────────┘   │
+│           │                               │
+│  ┌────────▼──────────────────────────┐   │
+│  │       Terminal Engine              │   │
+│  │  ┌──────────────────────────────┐ │   │
+│  │  │  subprocess.Popen            │ │   │
+│  │  │  - stdout/stderr streaming   │ │   │
+│  │  │  - stdin handling            │ │   │
+│  │  │  - exit code tracking        │ │   │
+│  │  │  - CWD persistence           │ │   │
+│  │  └──────────────────────────────┘ │   │
+│  │                                    │   │
+│  │  ┌──────────────────────────────┐ │   │
+│  │  │  Built-in Commands           │ │   │
+│  │  │  - cd, pwd, clear, help      │ │   │
+│  │  │  - Path traversal protection │ │   │
+│  │  └──────────────────────────────┘ │   │
+│  └────────────────────────────────────┘   │
+│                                            │
+│  ┌────────────────────────────────────┐   │
+│  │        zpip Package Manager        │   │
+│  │  - HTTPS-only downloads            │   │
+│  │  - SHA-256 verification            │   │
+│  │  - Transactional install           │   │
+│  │  - Dependency resolution           │   │
+│  │  - Cycle detection                 │   │
+│  └────────────────────────────────────┘   │
+│                                            │
+│  ┌────────────────────────────────────┐   │
+│  │        App-Private Storage         │   │
+│  │  home/ projects/ cache/ staging/   │   │
+│  │  user_packages/ installed/ logs/   │   │
+│  └────────────────────────────────────┘   │
+└─────────────────────────────────────────────┘
 ```
 
-## Two-Repository Architecture
+## Data Flow
 
-### ZABAWHEELS (this repository)
+### Command Execution
+1. User types command in WebView input
+2. JavaScript sends POST to `/api/exec` with auth token
+3. Flask validates token, dispatches to terminal engine
+4. Built-in commands handled internally; others spawn subprocess
+5. stdout/stderr captured via pipe reader threads
+6. Result returned as JSON with exit code
+7. JavaScript renders output in terminal area
 
-Responsible for:
-- Build recipes and patches
-- Cross-compilation pipeline (GitHub Actions CI)
-- Wheel validation and ELF inspection
-- Package manifest generation
-- Package index (GitHub Pages)
-- Device test record collection
-- Release artifact publishing (GitHub Releases)
+### Package Installation (zpip)
+1. `zpip install <name>` → dispatches to zpip module
+2. Resolve manifest from ZABAWHEELS index or PyPI
+3. Download wheel over HTTPS with SHA-256 verification
+4. Validate ZIP structure (no traversal, no duplicates)
+5. Extract to staging directory
+6. Smoke-import test
+7. Atomic commit to user_packages/
+8. Record in installed database
+9. On failure: full rollback
 
-### ZABACODE (consumer repository)
+## Security Boundaries
 
-Responsible for:
-- Runtime fingerprint export
-- ZabaPip — transactional package installer
-- Dependency resolution
-- Package download, SHA-256 verification, installation
-- Import smoke test, uninstall, rollback
-- ZMUX command integration
+- **WebView ↔ Server**: Loopback only (127.0.0.1), auth token validated
+- **Server ↔ Subprocess**: App-private CWD, environment control
+- **Built-in cd**: Restricts to HOME_DIR
+- **Shell commands**: Can access OS-permitted areas (documented)
+- **Package installs**: HTTPS-only, hash-verified, path-safe
 
-## Key Principles
+## Threat Model
 
-### Truth-first
-
-Every package status has clear meaning. "Build successful" ≠ "working on Android". Status progression:
-
-```text
-planned → researching → recipe-ready → building → built → inspected
-→ installable → imported → smoke-passed → device-verified → stable
-```
-
-Failure paths: `broken`, `blocked`, `deprecated`, `revoked`.
-
-### Runtime-locked
-
-Each native wheel is compatible with exactly one runtime contract:
-
-```text
-Python version + ABI + SOABI + p4a commit + NDK version + min API + dependencies
-= one compatibility contract (runtime_id)
-```
-
-### ARMv7-first, not ARMv7-only
-
-ARMv7 is the primary device verification target. ARM64 wheels are built via CI but labeled `build-only / unverified` until device-tested.
-
-### CI builds, phone validates
-
-| Component | Role |
-|---|---|
-| GitHub Actions | Cross-compile, lint, inspect, publish |
-| Infinix Smart 9 HD | ARMv7 runtime validation |
-| ZABAWHEELS | Recipes, manifests, index, provenance |
-| ZABACODE | Installer, resolver, runtime diagnostics |
-
-## Repository Structure
-
-```text
-ZABAWHEELS/
-├── .github/           # Issue templates & CI workflows (pinned SHA)
-├── toolchain/         # Runtime lock, source lock, build Dockerfile
-├── packages/          # Package recipes, source, tests
-├── scripts/           # Build, inspect, manifest, index scripts
-├── schemas/           # JSON schema validation
-├── index/             # Package index per release channel
-├── tests/             # Repository validation tests
-└── docs/              # Documentation
-```
-
-## Runtime ID Format
-
-```text
-zabacode-py<python>-api<minapi>-p4a<revision>-r<generation>
-```
-
-Example: `zabacode-py312-api26-p4aXXX-r1`
-
-A new generation is required when:
-- CPython minor version changes
-- SOABI or extension suffix changes
-- p4a ABI changes
-- NDK major version changes
-- Build flags affecting ABI change
-
-## Compatibility Contract
-
-Every wheel artifact must specify:
-- `runtime_id` — exact runtime it targets
-- `abi` — armeabi-v7a or arm64-v8a
-- `android_min_api` — minimum Android API
-- `python_tag` — CPython version tag
-- `sha256` — artifact hash for verification
-
-ZabaPip must reject:
-- Wrong ABI wheel
-- Wrong runtime wheel
-- Hash mismatch
-- Corrupted download
+See [SECURITY.md](SECURITY.md) for detailed threat model.
