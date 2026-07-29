@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "channels": {
+    "stable": "/index/stable/index.json",
+    "candidate": "/index/candidate/index.json",
+    "experimental": "/index/experimental/index.json"
+  },
+  "runtime_id": "zmux-py314-api26-p4a5c192d7b7308-r1",
+  "last_updated": "2026-07-29T13:00:00Z"
+}
