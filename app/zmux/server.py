@@ -6,7 +6,9 @@ Loopback-only: 127.0.0.1 for WebView consumption.
 """
 
 import functools
+import os
 import socket
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -241,48 +243,110 @@ def get_prompt():
     return jsonify({"ok": True, "prompt": session.get_prompt()})
 
 
-def run_server():
-    global ws_port
-    for port in range(5000, 5011):
+#: The p4a webview bootstrap polls *exactly* this port (p4a.port = 5000) and
+#: loads http://127.0.0.1:5000/ once it answers. On Android we must therefore
+#: serve on this port — silently moving to another port leaves the WebView
+#: waiting forever (the "stuck on loading screen" boot freeze).
+P4A_HTTP_PORT = 5000
+#: How long to wait for the p4a port to become free on Android (a zombie
+#: process from a previous launch may hold it briefly).
+P4A_BIND_TIMEOUT_SECONDS = 30.0
+
+
+def _bind_listener(host: str, port: int, family: int = socket.AF_INET) -> socket.socket:
+    """Create, bind and listen on a socket. Raises OSError on failure."""
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(socket.SOMAXCONN)
+    return sock
+
+
+def _bind_ipv6_loopback(port: int):
+    """Best-effort extra listener on ::1 (the p4a bootstrap pings "localhost",
+    which may resolve to IPv6 on some devices). Returns None when unavailable."""
+    try:
+        return _bind_listener("::1", port, family=socket.AF_INET6)
+    except OSError:
+        return None
+
+
+def _is_android() -> bool:
+    return "ANDROID_PRIVATE" in os.environ
+
+
+def _bind_http_socket() -> socket.socket:
+    """Bind the HTTP listener, honouring the Android WebView port contract."""
+    if _is_android():
+        deadline = time.monotonic() + P4A_BIND_TIMEOUT_SECONDS
+        while True:
+            try:
+                return _bind_listener("127.0.0.1", P4A_HTTP_PORT)
+            except OSError as e:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Could not bind 127.0.0.1:{P4A_HTTP_PORT} within "
+                        f"{int(P4A_BIND_TIMEOUT_SECONDS)}s ({e}). The Android WebView "
+                        "shell waits for this exact port, so ZMUX cannot start. "
+                        "Close other ZMUX instances and restart the app."
+                    )
+                print(f"[WARN] Port {P4A_HTTP_PORT} occupied ({e}), retrying...")
+                time.sleep(0.1)
+    for port in range(P4A_HTTP_PORT, P4A_HTTP_PORT + 11):
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind(("127.0.0.1", port))
+            return _bind_listener("127.0.0.1", port)
         except OSError as e:
             print(f"[WARN] Port {port} occupied ({e}), trying next...")
-            continue
+    raise RuntimeError(f"All ports {P4A_HTTP_PORT}-{P4A_HTTP_PORT + 10} occupied.")
+
+
+def _bind_ws_socket(http_port: int) -> socket.socket:
+    """Bind the WebSocket listener on the first free port above http_port."""
+    for port in range(http_port + 1, http_port + 21):
         try:
-            print(f"[INFO] Starting ZMUX Terminal server on 127.0.0.1:{port}")
-
-            # Find a free port for the WebSocket server
-            candidate_ws_port = port + 1
-            while True:
-                try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as ws_s:
-                        ws_s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        ws_s.bind(("127.0.0.1", candidate_ws_port))
-                    break
-                except OSError:
-                    candidate_ws_port += 1
-
-            ws_port = candidate_ws_port
-            print(f"[INFO] Selected WebSocket Port: {ws_port}")
-
-            # Start WebSocket and PTY servers
-            from zmux.ws_server import WebSocketServer
-            from zmux.pty_session import get_pty_session
-
-            ws_server = WebSocketServer(host="127.0.0.1", port=ws_port)
-            ws_server.start()
-
-            pty_sess = get_pty_session(ws_server)
-            pty_sess.start()
-
-            serve(app, host="127.0.0.1", port=port, threads=4)
-            break
-        except OSError as e:
-            print(f"[WARN] Failed to start on port {port}: {e}, trying next...")
-            if port == 5010:
-                print("[ERROR] All ports 5000-5010 occupied.")
-                raise
+            return _bind_listener("127.0.0.1", port)
+        except OSError:
             continue
+    raise RuntimeError(f"Could not find a free WebSocket port above {http_port}.")
+
+
+def run_server():
+    global ws_port
+
+    # Bind real listeners up front (no probe-then-bind race).
+    http_sock = _bind_http_socket()
+    http_port = http_sock.getsockname()[1]
+
+    listeners = [http_sock]
+    ipv6_sock = _bind_ipv6_loopback(http_port)
+    if ipv6_sock is not None:
+        listeners.append(ipv6_sock)
+        print(f"[INFO] Also listening on [::1]:{http_port} (localhost may resolve to IPv6)")
+
+    ws_sock = _bind_ws_socket(http_port)
+    ws_port = ws_sock.getsockname()[1]
+
+    print(f"[INFO] Starting ZMUX Terminal server on 127.0.0.1:{http_port}")
+    print(f"[INFO] Selected WebSocket Port: {ws_port}")
+
+    # Start WebSocket and PTY servers (passing the live listener avoids a
+    # second bind race and guarantees the port advertised to the UI exists).
+    from zmux.ws_server import WebSocketServer
+    from zmux.pty_session import get_pty_session
+
+    ws_server = WebSocketServer(host="127.0.0.1", port=ws_port)
+    ws_server.start(listener=ws_sock)
+
+    pty_sess = get_pty_session(ws_server)
+    pty_sess.start()
+
+    try:
+        serve(app, sockets=listeners, threads=4)
+    finally:
+        for listener in listeners:
+            try:
+                listener.close()
+            except OSError:
+                pass

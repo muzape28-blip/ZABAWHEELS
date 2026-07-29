@@ -94,6 +94,41 @@ ZMUX adalah terminal Android yang berjalan sebagai WebView app di atas Python ba
 8. Record in installed database
 9. On failure: full rollback
 
+## Boot & Port Contract (p4a webview bootstrap)
+
+The pinned p4a webview bootstrap starts `main.py` in a background thread, then
+`WebViewLoader.testConnection()` polls **`localhost:5000`** (the value of
+`p4a.port` in `buildozer.spec`) *forever* until a TCP connect succeeds, and only
+then loads `http://127.0.0.1:5000/` into the WebView. Consequences, enforced in
+`zmux.server.run_server()`:
+
+- **On Android the HTTP server must bind exactly port 5000.** Moving to another
+  port when 5000 is busy leaves the WebView waiting forever (the stuck loading
+  screen). Instead, binding is retried for 30 s (a zombie process from a
+  previous launch may hold the port briefly) and fails loudly into
+  `zmux_crash.log` afterwards.
+- **Listeners are bound before serving** and handed to Waitress
+  (`serve(..., sockets=[...])`) and to the WebSocket server
+  (`start(listener=...)`), eliminating probe-then-bind races.
+- **A best-effort second listener on `::1`** is added because the bootstrap
+  pings the hostname `localhost`, which may resolve to IPv6 on some devices.
+- The terminal UI talks to the PTY over a WebSocket whose port is injected into
+  the page (`WS_PORT`) together with the auth token; the CSP `connect-src`
+  allows exactly that port.
+
+## Freeze-avoidance invariants
+
+- `WebSocketServer.broadcast()` never calls `_unregister_client()` while
+  holding `clients_lock` (that re-entry deadlocked the PTY reader thread
+  permanently after any unclean WebView disconnect, e.g. rotation/reload).
+  Sends run outside the lock; failed clients are removed afterwards.
+- Client sockets get `SO_SNDTIMEO` (best-effort) so a suspended WebView that
+  stops draining its TCP buffer cannot block `sendall()` forever.
+- PTY shells are spawned with `setsid`; `killpg()` is only used when the child
+  actually owns a process group, otherwise it would kill the app itself.
+- The frontend retries WebSocket connections a bounded number of times, then
+  shows a tappable retry state instead of an infinite silent spinner.
+
 ## Security Boundaries
 
 - **WebView ↔ Server**: Loopback only (127.0.0.1), auth token validated

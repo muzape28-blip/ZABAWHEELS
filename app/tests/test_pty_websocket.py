@@ -108,3 +108,66 @@ def test_global_pty_session_singleton():
         assert s1 is s2
     finally:
         server.stop()
+
+
+def test_broadcast_with_dead_client_does_not_deadlock():
+    """Regression: a dead-but-still-registered client (WebView reload/rotation
+    race) must not deadlock broadcast(); previously _unregister_client() was
+    called while already holding clients_lock, freezing the PTY reader thread,
+    every later broadcast, and stop() — the app-wide "stuck" state."""
+    server = WebSocketServer(host="127.0.0.1", port=0)
+    server.start()
+    time.sleep(0.1)
+
+    dead = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    with server.clients_lock:
+        server.clients.add(dead)
+    dead.close()  # sendall() now raises immediately
+
+    finished = threading.Event()
+
+    def _broadcast():
+        server.broadcast(b"pty-output")
+        finished.set()
+
+    t = threading.Thread(target=_broadcast, daemon=True)
+    t.start()
+
+    assert finished.wait(timeout=5.0), "broadcast() deadlocked on dead client"
+
+    # Dead client must have been removed, and the lock must still be usable
+    with server.clients_lock:
+        assert dead not in server.clients
+    server.stop()
+
+
+def test_websocket_start_with_prebound_listener():
+    """run_server() hands a live listener to WebSocketServer to avoid the
+    probe-then-bind race; the server must serve on exactly that socket."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(5)
+    port = listener.getsockname()[1]
+
+    server = WebSocketServer(host="127.0.0.1", port=port)
+    server.start(listener=listener)
+    time.sleep(0.1)
+    try:
+        assert server.is_running
+        assert server.server_socket is listener
+
+        sock = socket.create_connection(("127.0.0.1", port))
+        sock.sendall((
+            f"GET /?token={AUTH_TOKEN} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        ).encode("utf-8"))
+        response = sock.recv(2048).decode("utf-8")
+        assert "101 Switching Protocols" in response
+        sock.close()
+    finally:
+        server.stop()

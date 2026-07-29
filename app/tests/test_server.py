@@ -1,6 +1,12 @@
 """Tests for terminal-facing server response formatting."""
 
-from zmux.server import _format_zpip_output
+import socket
+
+from zmux.server import (
+    _bind_listener,
+    _bind_ws_socket,
+    _format_zpip_output,
+)
 
 
 def test_install_output_uses_real_newlines():
@@ -47,3 +53,33 @@ def test_doctor_reports_failed_packages_with_failure_exit_code():
 
     assert exit_code == 1
     assert "broken: FAILED" in output
+
+
+def test_bind_listener_returns_live_listening_socket():
+    sock = _bind_listener("127.0.0.1", 0)
+    try:
+        host, port = sock.getsockname()[:2]
+        assert host == "127.0.0.1"
+        assert port > 0
+        # Must accept connections immediately (real listener, no probe race)
+        probe = socket.create_connection(("127.0.0.1", port), timeout=2)
+        probe.close()
+    finally:
+        sock.close()
+
+
+def test_bind_ws_socket_skips_occupied_ports():
+    http_sock = _bind_listener("127.0.0.1", 0)
+    try:
+        http_port = http_sock.getsockname()[1]
+        blocker = _bind_listener("127.0.0.1", http_port + 1)
+        try:
+            ws_sock = _bind_ws_socket(http_port)
+            try:
+                assert ws_sock.getsockname()[1] > http_port + 1
+            finally:
+                ws_sock.close()
+        finally:
+            blocker.close()
+    finally:
+        http_sock.close()

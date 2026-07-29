@@ -23,6 +23,9 @@ from zmux.security import AUTH_TOKEN
 class WebSocketServer:
     """A pure-Python WebSocket server running on its own thread."""
 
+    # Max seconds a single client send may block before the client is dropped.
+    SEND_TIMEOUT_SECONDS = 5.0
+
     def __init__(self, host: str = "127.0.0.1", port: int = 5001):
         self.host = host
         self.port = port
@@ -36,8 +39,15 @@ class WebSocketServer:
         self.on_data_callback: Optional[Callable[[bytes], None]] = None
         self.on_resize_callback: Optional[Callable[[int, int], None]] = None
 
-    def start(self) -> None:
-        """Start the WebSocket server on a background thread."""
+    def start(self, listener: Optional[socket.socket] = None) -> None:
+        """Start the WebSocket server on a background thread.
+
+        Optionally takes an already bound+listening socket so callers can
+        eliminate the probe-then-bind race at startup.
+        """
+        if listener is not None:
+            self.server_socket = listener
+            self.port = listener.getsockname()[1]
         self.is_running = True
         self.thread = threading.Thread(target=self._run_server, daemon=True, name="ZMUX-WebSocket-Server")
         self.thread.start()
@@ -64,14 +74,26 @@ class WebSocketServer:
         self.on_resize_callback = on_resize
 
     def broadcast(self, data: bytes) -> None:
-        """Broadcast binary data to all connected and authenticated clients."""
+        """Broadcast binary data to all connected and authenticated clients.
+
+        Sends happen *outside* clients_lock: previously a send failure here
+        called _unregister_client() while already holding clients_lock, which
+        deadlocked the PTY reader thread permanently and froze the terminal
+        (the classic "app stuck" after a WebView reload or screen rotation).
+        """
         with self.clients_lock:
-            for client in list(self.clients):
-                try:
-                    self._send_frame(client, 2, data)  # Binary frame (opcode 2)
-                except Exception:
-                    # Client disconnected or failed
-                    self._unregister_client(client)
+            clients = list(self.clients)
+
+        dead: List[socket.socket] = []
+        for client in clients:
+            try:
+                self._send_frame(client, 2, data)  # Binary frame (opcode 2)
+            except Exception:
+                # Client disconnected, stalled beyond the send timeout, or failed
+                dead.append(client)
+
+        for client in dead:
+            self._unregister_client(client)
 
     def _unregister_client(self, client: socket.socket) -> None:
         with self.clients_lock:
@@ -83,16 +105,18 @@ class WebSocketServer:
                     pass
 
     def _run_server(self) -> None:
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen(5)
-            print(f"[INFO] Secure WebSocket Server listening on {self.host}:{self.port}")
-        except Exception as e:
-            print(f"[ERROR] Failed to bind WebSocket server on {self.host}:{self.port}: {e}")
-            self.is_running = False
-            return
+        if self.server_socket is None:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                self.server_socket.bind((self.host, self.port))
+                self.server_socket.listen(5)
+            except Exception as e:
+                print(f"[ERROR] Failed to bind WebSocket server on {self.host}:{self.port}: {e}")
+                self.is_running = False
+                return
+        self.port = self.server_socket.getsockname()[1]
+        print(f"[INFO] Secure WebSocket Server listening on {self.host}:{self.port}")
 
         while self.is_running:
             try:
@@ -137,6 +161,11 @@ class WebSocketServer:
             )
             sock.sendall(handshake_response.encode("utf-8"))
 
+            # Bound the send wait for this client: a stalled (e.g. suspended
+            # WebView) peer must surface as an exception instead of blocking
+            # sendall() — and with it the whole PTY output pipeline — forever.
+            self._set_send_timeout(sock)
+
             # Register client
             with self.clients_lock:
                 self.clients.add(sock)
@@ -161,8 +190,10 @@ class WebSocketServer:
                 elif opcode in (1, 2):  # Text or Binary data
                     self._handle_client_message(payload)
 
+        except (ConnectionError, OSError):
+            pass  # Normal disconnect (reload, rotation, app backgrounded)
         except Exception as e:
-            pass
+            print(f"[WARN] WebSocket client handler ended with error: {e}")
         finally:
             self._unregister_client(sock)
 
@@ -265,6 +296,27 @@ class WebSocketServer:
             payload = bytes(b ^ masking_key[i % 4] for i, b in enumerate(payload))
 
         return opcode, payload
+
+    def _set_send_timeout(self, sock: socket.socket) -> None:
+        """Bound send() waits via SO_SNDTIMEO (POSIX/Linux/Bionic, best-effort).
+
+        A WebView that is suspended or no longer draining its TCP receive
+        buffer would otherwise let sendall() block indefinitely while the PTY
+        reader thread is broadcasting, freezing all terminal output.
+        """
+        try:
+            if hasattr(socket, "SO_SNDTIMEO"):
+                seconds = int(self.SEND_TIMEOUT_SECONDS)
+                micros = int((self.SEND_TIMEOUT_SECONDS - seconds) * 1_000_000)
+                sock.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_SNDTIMEO,
+                    struct.pack("ll", seconds, micros),
+                )
+        except OSError:
+            # Platform without usable SO_SNDTIMEO (e.g. some 32-bit ABIs):
+            # sends stay blocking, which is the old behaviour — acceptable.
+            pass
 
     def _send_frame(self, sock: socket.socket, opcode: int, payload: bytes) -> None:
         header = bytearray()
