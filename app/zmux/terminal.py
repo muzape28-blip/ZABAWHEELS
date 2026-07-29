@@ -23,7 +23,43 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from zmux.paths import HOME_DIR, LOG_DIR
+from zmux.paths import BIN_DIR, HOME_DIR, LOG_DIR
+
+
+HELP_TEXT = """ZMUX Terminal v1.0.0
+
+Built-in commands:
+  help          Show this help message
+  clear         Clear terminal screen
+  pwd           Print working directory
+  cd <dir>      Change directory
+  exit          Exit terminal session
+
+System commands:
+  ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
+  All standard Android/Linux commands available via /system/bin/sh
+
+Python:
+  python        Start Python interpreter
+  python <file> Run Python script
+  python -c "..."  Execute Python code
+  pip           Python package manager (if available)
+
+ZMUX Package Manager:
+  zpip search <name>      Search for packages
+  zpip info <name>        Show package info
+  zpip install <name>     Install package
+  zpip list               List installed packages
+  zpip verify <name>      Verify package installation
+  zpip uninstall <name>   Uninstall package
+  zpip doctor             Check system health
+
+Runtime Info:
+  zmux-info               Show runtime fingerprint
+
+Note: This terminal executes real system commands within app-private storage.
+Standard shell commands can access areas permitted by Android OS.
+"""
 
 
 class ProcessStatus:
@@ -56,6 +92,11 @@ class TerminalSession:
         env["TERM"] = "xterm-256color"
         env["LANG"] = "C.UTF-8"
         env["LC_ALL"] = "C.UTF-8"
+        # Prepend the ZMUX CLI wrappers so built-in commands (zpip, help,
+        # zmux-info, clear, pip) resolve natively inside real /system/bin/sh
+        # PTY sessions instead of failing with "inaccessible or not found".
+        path = env.get("PATH", "")
+        env["PATH"] = f"{BIN_DIR}{os.pathsep}{path}" if path else str(BIN_DIR)
         # Add user packages to Python path
         from zmux.paths import USER_PACKAGES_DIR
         pythonpath = env.get("PYTHONPATH", "")
@@ -336,43 +377,9 @@ class TerminalSession:
 
     def _builtin_help(self) -> dict:
         """Show help message."""
-        help_text = """ZMUX Terminal v1.0.0
-
-Built-in commands:
-  help          Show this help message
-  clear         Clear terminal screen
-  pwd           Print working directory
-  cd <dir>      Change directory
-  exit          Exit terminal session
-
-System commands:
-  ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
-  All standard Android/Linux commands available via /system/bin/sh
-
-Python:
-  python        Start Python interpreter
-  python <file> Run Python script
-  python -c "..."  Execute Python code
-  pip           Python package manager (if available)
-
-ZMUX Package Manager:
-  zpip search <name>      Search for packages
-  zpip info <name>        Show package info
-  zpip install <name>     Install package
-  zpip list               List installed packages
-  zpip verify <name>      Verify package installation
-  zpip uninstall <name>   Uninstall package
-  zpip doctor             Check system health
-
-Runtime Info:
-  zmux-info               Show runtime fingerprint
-
-Note: This terminal executes real system commands within app-private storage.
-Standard shell commands can access areas permitted by Android OS.
-"""
         return {
             "ok": True,
-            "stdout": help_text,
+            "stdout": HELP_TEXT,
             "stderr": "",
             "exit_code": 0,
             "status": ProcessStatus.IDLE,

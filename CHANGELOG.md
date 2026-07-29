@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Transparent Unix Shell Integration for ZMUX Built-in Commands:** typing `zpip`, `help`, `zmux-info`, `clear`, or `pip` inside the real Android PTY shell no longer fails with `/system/bin/sh: <cmd>: inaccessible or not found`. `/system/bin/sh` only executes binaries and scripts found on `$PATH`, so ZMUX now ships native shell entrypoints:
+  - Added `app/zmux/cli.py`, a CLI entrypoint (`python -m zmux.cli <cmd> [args...]`) that implements the command handlers: `help` prints the formatted ZMUX terminal help text, `clear` emits `\033[H\033[2J\033[3J`, `zmux-info` prints the formatted runtime fingerprint, `zpip` dispatches through the package manager with cleanly formatted output, and `pip` invokes standard pip when a runnable interpreter exists or prints guidance to use `zpip` otherwise.
+  - `app/zmux/paths.py` now defines `BIN_DIR` (`APP_DIR/bin`) and auto-generates executable (`0o755`) `#!/system/bin/sh` wrappers for every command at import time via `ensure_cli_wrappers()`; each wrapper execs `python -m zmux.cli "$0" "$@"` (falling back to `python3`) and `BIN_DIR` is added to `os.environ["PATH"]`.
+  - `TerminalSession._build_env()` in `app/zmux/terminal.py` prepends `BIN_DIR` to the `PATH` handed to child PTY processes, so the wrappers resolve transparently in every interactive `/system/bin/sh` session.
+  - Moved the terminal-friendly zpip result formatter into `zmux.zpip.format_output()` and extracted `zmux.zpip.format_fingerprint()` for `zmux-info`, so the REST server (`app/zmux/server.py`) and the CLI share one implementation.
+
+---
+
 ## [1.0.0] - 2026-07-29
 
 ### Fixed — Deep ARMv7a (Infinix Smart 9 HD) Force-Close & Freeze Elimination
