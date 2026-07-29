@@ -22,3 +22,100 @@ permissions:
 concurrency:
   group: zmux-apk-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  ANDROID_SDK_ROOT: /home/runner/.buildozer/android/platform/android-sdk
+  ANDROID_HOME: /home/runner/.buildozer/android/platform/android-sdk
+  P4A_COMMIT: 5c192d7b7308487c2d3e3fcae63deba3131e7cb2
+
+jobs:
+  apk:
+    name: Universal ARMv7 + ARM64 APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: app/requirements.lock
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git zip unzip tar curl autoconf automake libtool pkg-config zlib1g-dev libncurses5-dev libffi-dev libssl-dev cmake ninja-build
+          python -m pip install --upgrade pip==23.2.1
+          python -m pip install buildozer==1.5.0 Cython==0.29.33 setuptools==68.2.2 wheel==0.41.2
+
+      - name: Verify pinned runtime contract
+        run: |
+          grep -q "p4a.commit = $P4A_COMMIT" buildozer.spec
+          grep -q 'title = ZMUX' buildozer.spec
+          grep -q 'package.name = zmux' buildozer.spec
+          grep -q 'android.archs = armeabi-v7a, arm64-v8a' buildozer.spec
+
+      - uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+
+      - name: Make SDK manager available to Buildozer
+        run: |
+          CMDLINE_TOOLS_DIR=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -maxdepth 1 -mindepth 1 -type d | head -n 1)
+          mkdir -p "$ANDROID_SDK_ROOT/tools/bin"
+          ln -sf "$CMDLINE_TOOLS_DIR/bin/sdkmanager" "$ANDROID_SDK_ROOT/tools/bin/sdkmanager"
+          ln -sf "$CMDLINE_TOOLS_DIR/bin/avdmanager" "$ANDROID_SDK_ROOT/tools/bin/avdmanager" || true
+          yes | "$ANDROID_SDK_ROOT/tools/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_SDK_ROOT/tools/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            app/.buildozer
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-zmux-${{ hashFiles('app/buildozer.spec', 'toolchain/runtime-lock.json') }}
+          restore-keys: ${{ runner.os }}-zmux-
+
+      - name: Build signed-by-debug-key universal APK
+        env:
+          SOURCE_DATE_EPOCH: "1785283200"
+        run: buildozer -v android debug
+
+      - name: Name and checksum APK
+        id: artifact
+        run: |
+          mkdir -p artifacts
+          APK=$(find bin -maxdepth 1 -name '*.apk' -type f | head -n 1)
+          test -n "$APK"
+          cp "$APK" artifacts/zmux-1.0.0-universal-debug.apk
+          sha256sum artifacts/zmux-1.0.0-universal-debug.apk > artifacts/SHA256SUMS
+          python3 - <<'PYEOF'
+          import json, pathlib
+          lock = json.loads(pathlib.Path('../toolchain/runtime-lock.json').read_text())
+          pathlib.Path('artifacts/build-contract.json').write_text(json.dumps(lock, indent=2) + '\n')
+          PYEOF
+          echo "apk=$PWD/artifacts/zmux-1.0.0-universal-debug.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ZMUX APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: zmux
+          path: app/artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attest APK provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: app/artifacts/zmux-1.0.0-universal-debug.apk
