@@ -36,7 +36,7 @@ def _security_headers(resp):
         "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
-        "connect-src 'self'; "
+        f"connect-src 'self' ws://127.0.0.1:{ws_port} ws://localhost:{ws_port}; "
         "font-src 'self' data:; "
         "object-src 'none'; "
         "base-uri 'none'; "
@@ -68,9 +68,11 @@ def _get_json_payload():
     return data, None
 
 
+ws_port = 5001
+
 @app.get("/")
 def index():
-    return render_template("terminal.html", auth_token=AUTH_TOKEN)
+    return render_template("terminal.html", auth_token=AUTH_TOKEN, ws_port=ws_port)
 
 
 @app.get("/api/health")
@@ -240,6 +242,7 @@ def get_prompt():
 
 
 def run_server():
+    global ws_port
     for port in range(5000, 5011):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -250,6 +253,31 @@ def run_server():
             continue
         try:
             print(f"[INFO] Starting ZMUX Terminal server on 127.0.0.1:{port}")
+
+            # Find a free port for the WebSocket server
+            candidate_ws_port = port + 1
+            while True:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as ws_s:
+                        ws_s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        ws_s.bind(("127.0.0.1", candidate_ws_port))
+                    break
+                except OSError:
+                    candidate_ws_port += 1
+
+            ws_port = candidate_ws_port
+            print(f"[INFO] Selected WebSocket Port: {ws_port}")
+
+            # Start WebSocket and PTY servers
+            from zmux.ws_server import WebSocketServer
+            from zmux.pty_session import get_pty_session
+
+            ws_server = WebSocketServer(host="127.0.0.1", port=ws_port)
+            ws_server.start()
+
+            pty_sess = get_pty_session(ws_server)
+            pty_sess.start()
+
             serve(app, host="127.0.0.1", port=port, threads=4)
             break
         except OSError as e:
