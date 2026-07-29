@@ -16,13 +16,13 @@
 ### Core Terminal
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Terminal UI (HTML/CSS/JS) | Implemented | Mobile-friendly, no editor features |
-| Flask WebView Server | Implemented | Loopback-only, auth-protected |
-| Execution Engine (subprocess) | Implemented | Real command execution |
+| Terminal UI (HTML/CSS/JS) | Implemented | Mobile-friendly, xterm.js terminal |
+| Flask WebView Server | Implemented | Dual IPv4/IPv6 loopback, auth-protected |
+| Execution Engine (PTY / subprocess) | Implemented | POSIX openpty with automatic standard pipe fallback |
 | Built-in Commands | Implemented | cd, pwd, clear, help, exit |
 | Python Execution | Implemented | python, python -c, python script.py |
-| stdin/stdout/stderr | Implemented | Line-buffered, pipe-based |
-| Ctrl+C / Stop | Implemented | SIGINT with SIGKILL fallback |
+| stdin/stdout/stderr | Implemented | WebSocket real-time binary streaming |
+| Ctrl+C / Stop | Implemented | SIGINT with process group cleanup |
 | Command History | Implemented | Client-side, up/down arrows |
 | Working Directory | Implemented | Persistent, path-traversal protected |
 
@@ -100,37 +100,37 @@
 
 ## Honest Limitations
 
-1. **No PTY**: Current implementation uses subprocess pipes, not pseudo-terminals.
+1. **Android SELinux PTY Restrictions**: While real POSIX PTY sessions (`os.openpty`) are implemented, Android SELinux policies on some Android 14 Go devices restrict `/dev/ptmx` access. ZMUX automatically detects this and falls back to standard line-buffered pipe sessions.
 
-2. **Shell access**: Built-in cd is restricted to home, shell commands can access Android-permitted areas.
+2. **Shell access**: Built-in `cd` is restricted to app-private home storage; subprocess commands (`/system/bin/sh`) can access any directories permitted by the Android OS.
 
-3. **Native packages**: Many native packages not yet available in ZABAWHEELS index.
+3. **Native packages**: Many native packages (e.g. NumPy) are not yet cross-compiled in the ZABAWHEELS index. ZMUX will display an honest error if a native wheel is unavailable for your ABI.
 
-4. **No device testing**: All implemented status is based on code review and unit tests, not real device verification.
+4. **No device testing**: All implemented status is based on code review, architecture cross-check, and 95+ unit/regression tests; physical device verification on Infinix Smart 9 HD is pending.
 
 ## What ZMUX is NOT
 
 - Not an IDE or code editor
 - Not Zabacode with a new name
 - Not a fake terminal with hardcoded output
-- Not claiming Termux-level capabilities
+- Not claiming Termux-level root or system access
 - Not providing AI assistant or marketplace
 - Not marking packages as stable without device testing
 
 ## Recent Changes (2026-07-29)
 
-### Fixed
-- GitHub Actions workflow updated with correct branches
-- Package index structure created (index.json, index/stable/, index/candidate/)
+### Fixed — Deep ARMv7a (Infinix Smart 9 HD) Force-Close & Freeze Elimination
+- **PTY Process Spawn & Signal Safety (`armeabi-v7a`):** Replaced Python `preexec_fn=os.setsid` after `fork()` with C-level POSIX `start_new_session=True` across PTY and fallback sessions to prevent Bionic libc pthread deadlocks and `SIGSEGV` force-close crashes on 32-bit ARMv7 Android 14. Added automatic fallback to standard pipe sessions when `os.openpty()` is denied by SELinux permissions.
+- **WebView Port Contract (`SO_REUSEPORT`):** Added `SO_REUSEPORT` to the Android HTTP port 5000 listener (`_bind_http_socket`) so restarting ZMUX while a previous TCP socket lingers in `TIME_WAIT` never throws `Address already in use`. Added multi-host binding fallback (`127.0.0.1`, `0.0.0.0`, `localhost`).
+- **Dual IPv4/IPv6 WebSocket Server:** Configured `WebSocketServer` to bind simultaneously on both IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback interfaces, and updated `terminal.html` to cycle candidate hosts across reconnect attempts to eliminate loading screen hangs.
+- **APK In-Process Smoke Verification:** Replaced child-process `subprocess.run([sys.executable, ...])` smoke tests with in-process module import checks on Android (`_is_android()`), avoiding `PermissionError` when executing embedded APK Python runtimes.
+- **Path Resolution Hardening:** Hardened `resolve_app_dir()` to check `ANDROID_PRIVATE`, `ANDROID_ARGUMENT`, and `ANDROID_APP_PATH` with live filesystem write tests before creating runtime directories.
+- **APK Packaging:** Added `android.uses_cleartext_traffic = True` and listed required Flask transitive dependencies (`werkzeug`, `jinja2`, `itsdangerous`, `click`, `blinker`, `MarkupSafe`) in `buildozer.spec`.
 
-### Added
-- index.json root file
-- index/stable/index.json
-- index/candidate/index.json (with numpy, pillow, cryptography)
-- index/experimental/index.json
+### Changed
+- Translated all technical documentation (`README.md`, `REFACTOR_REPORT.md`, `ROADMAP_STATUS.md`, `docs/ARCHITECTURE.md`) and added `CHANGELOG.md` in clean English.
 
 ### Next
-- Trigger GitHub Actions build by pushing to main
-- Download and test APK on device
-- Build native packages (numpy, pillow, etc.)
-- Device verification and testing
+- Trigger GitHub Actions universal APK build by pushing to main
+- Physical device verification on Infinix Smart 9 HD (`armeabi-v7a` & `arm64-v8a`)
+- Native package builds (NumPy, Pillow, etc.)

@@ -253,28 +253,33 @@ P4A_HTTP_PORT = 5000
 P4A_BIND_TIMEOUT_SECONDS = 30.0
 
 
-def _bind_listener(host: str, port: int, family: int = socket.AF_INET) -> socket.socket:
+def _bind_listener(host: str, port: int, family: int = socket.AF_INET, reuse_port: bool = False) -> socket.socket:
     """Create, bind and listen on a socket. Raises OSError on failure."""
     sock = socket.socket(family, socket.SOCK_STREAM)
     if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if reuse_port and hasattr(socket, "SO_REUSEPORT"):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
     sock.bind((host, port))
-    sock.listen(socket.SOMAXCONN)
+    sock.listen(min(socket.SOMAXCONN, 128))
     return sock
 
 
-def _bind_ipv6_loopback(port: int):
+def _bind_ipv6_loopback(port: int, reuse_port: bool = False):
     """Best-effort extra listener on ::1 (the p4a bootstrap pings "localhost",
     which may resolve to IPv6 on some devices). Returns None when unavailable."""
     try:
-        return _bind_listener("::1", port, family=socket.AF_INET6)
+        return _bind_listener("::1", port, family=socket.AF_INET6, reuse_port=reuse_port)
     except OSError:
         return None
 
 
 def _is_android() -> bool:
-    return "ANDROID_PRIVATE" in os.environ
+    return any(k in os.environ for k in ("ANDROID_PRIVATE", "ANDROID_ARGUMENT", "ANDROID_APP_PATH"))
 
 
 def _bind_http_socket() -> socket.socket:
@@ -282,18 +287,20 @@ def _bind_http_socket() -> socket.socket:
     if _is_android():
         deadline = time.monotonic() + P4A_BIND_TIMEOUT_SECONDS
         while True:
-            try:
-                return _bind_listener("127.0.0.1", P4A_HTTP_PORT)
-            except OSError as e:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError(
-                        f"Could not bind 127.0.0.1:{P4A_HTTP_PORT} within "
-                        f"{int(P4A_BIND_TIMEOUT_SECONDS)}s ({e}). The Android WebView "
-                        "shell waits for this exact port, so ZMUX cannot start. "
-                        "Close other ZMUX instances and restart the app."
-                    )
-                print(f"[WARN] Port {P4A_HTTP_PORT} occupied ({e}), retrying...")
-                time.sleep(0.1)
+            for host in ("127.0.0.1", "0.0.0.0", "localhost"):
+                try:
+                    return _bind_listener(host, P4A_HTTP_PORT, reuse_port=True)
+                except OSError:
+                    continue
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Could not bind 127.0.0.1:{P4A_HTTP_PORT} within "
+                    f"{int(P4A_BIND_TIMEOUT_SECONDS)}s. The Android WebView "
+                    "shell waits for this exact port, so ZMUX cannot start. "
+                    "Close other ZMUX instances and restart the app."
+                )
+            print(f"[WARN] Port {P4A_HTTP_PORT} occupied, retrying...")
+            time.sleep(0.1)
     for port in range(P4A_HTTP_PORT, P4A_HTTP_PORT + 11):
         try:
             return _bind_listener("127.0.0.1", port)
@@ -304,11 +311,12 @@ def _bind_http_socket() -> socket.socket:
 
 def _bind_ws_socket(http_port: int) -> socket.socket:
     """Bind the WebSocket listener on the first free port above http_port."""
-    for port in range(http_port + 1, http_port + 21):
-        try:
-            return _bind_listener("127.0.0.1", port)
-        except OSError:
-            continue
+    for port in range(http_port + 1, http_port + 101):
+        for host in ("127.0.0.1", "0.0.0.0"):
+            try:
+                return _bind_listener(host, port)
+            except OSError:
+                continue
     raise RuntimeError(f"Could not find a free WebSocket port above {http_port}.")
 
 
@@ -327,6 +335,11 @@ def run_server():
 
     ws_sock = _bind_ws_socket(http_port)
     ws_port = ws_sock.getsockname()[1]
+    ws_listeners = [ws_sock]
+    ws_ipv6 = _bind_ipv6_loopback(ws_port)
+    if ws_ipv6 is not None:
+        ws_listeners.append(ws_ipv6)
+        print(f"[INFO] WebSocket also listening on [::1]:{ws_port}")
 
     print(f"[INFO] Starting ZMUX Terminal server on 127.0.0.1:{http_port}")
     print(f"[INFO] Selected WebSocket Port: {ws_port}")
@@ -337,7 +350,7 @@ def run_server():
     from zmux.pty_session import get_pty_session
 
     ws_server = WebSocketServer(host="127.0.0.1", port=ws_port)
-    ws_server.start(listener=ws_sock)
+    ws_server.start(listeners=ws_listeners)
 
     pty_sess = get_pty_session(ws_server)
     pty_sess.start()

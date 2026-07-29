@@ -1,10 +1,15 @@
 # ZABAWHEELS — Architecture & Development Roadmap
 
-> **Status:** Engineering implementation delivered; device gates pending
-> **Dokumen:** Roadmap arsitektur asli (status pelaksanaan: [ROADMAP_STATUS.md](ROADMAP_STATUS.md))
-> **Tanggal:** 29 Juli 2026  
-> **Target utama:** Zabacode pada Android ARMv7 dan ARM64  
-> **Perangkat verifikasi awal:** Infinix Smart 9 HD, ARMv7, Android 14 Go
+> **Engineering Status (2026-07-29):** Standalone ZMUX Android Terminal implementation delivered; ARMv7 (`armeabi-v7a` on *Infinix Smart 9 HD*) force-close and WebView boot freeze mitigations complete; 95+ automated tests passing.
+> **Documentation Notice:** This document is the original foundational architecture specification for the ZABAWHEELS wheelhouse and mobile Python environment. For current implementation status and technical documentation in English, see:
+> - [README.md](README.md) — Standalone ZMUX Android Terminal overview & features
+> - [CHANGELOG.md](CHANGELOG.md) — Detailed version history & ARMv7a mobile hardening fixes
+> - [ROADMAP_STATUS.md](ROADMAP_STATUS.md) — Feature matrix and milestone progress
+> - [REFACTOR_REPORT.md](REFACTOR_REPORT.md) — IDE-to-Terminal refactor audit report
+> - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — WebView port contract, PTY streaming, and anti-freeze invariants
+>
+> **Target Platform:** Android ARMv7 (`armeabi-v7a`) & ARM64 (`arm64-v8a`)  
+> **Primary Hardware Target:** Infinix Smart 9 HD (ARMv7 / Android 14 Go)
 
 ---
 

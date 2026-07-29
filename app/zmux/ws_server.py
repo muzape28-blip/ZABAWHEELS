@@ -31,6 +31,7 @@ class WebSocketServer:
         self.port = port
         self.clients: Set[socket.socket] = set()
         self.clients_lock = threading.Lock()
+        self.server_sockets: List[socket.socket] = []
         self.server_socket: Optional[socket.socket] = None
         self.is_running = False
         self.thread: Optional[threading.Thread] = None
@@ -39,15 +40,20 @@ class WebSocketServer:
         self.on_data_callback: Optional[Callable[[bytes], None]] = None
         self.on_resize_callback: Optional[Callable[[int, int], None]] = None
 
-    def start(self, listener: Optional[socket.socket] = None) -> None:
+    def start(self, listener: Optional[socket.socket] = None, listeners: Optional[List[socket.socket]] = None) -> None:
         """Start the WebSocket server on a background thread.
 
-        Optionally takes an already bound+listening socket so callers can
-        eliminate the probe-then-bind race at startup.
+        Optionally takes already bound+listening socket(s) so callers can
+        eliminate the probe-then-bind race at startup and support dual IPv4/IPv6.
         """
         if listener is not None:
+            self.server_sockets = [listener]
             self.server_socket = listener
             self.port = listener.getsockname()[1]
+        elif listeners:
+            self.server_sockets = list(listeners)
+            self.server_socket = self.server_sockets[0]
+            self.port = self.server_socket.getsockname()[1]
         self.is_running = True
         self.thread = threading.Thread(target=self._run_server, daemon=True, name="ZMUX-WebSocket-Server")
         self.thread.start()
@@ -55,6 +61,11 @@ class WebSocketServer:
     def stop(self) -> None:
         """Stop the server and close all connections."""
         self.is_running = False
+        for sock in getattr(self, "server_sockets", []):
+            try:
+                sock.close()
+            except Exception:
+                pass
         if self.server_socket:
             try:
                 self.server_socket.close()
@@ -105,24 +116,35 @@ class WebSocketServer:
                     pass
 
     def _run_server(self) -> None:
-        if self.server_socket is None:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if not getattr(self, "server_sockets", []):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                self.server_socket.bind((self.host, self.port))
-                self.server_socket.listen(5)
+                sock.bind((self.host, self.port))
+                sock.listen(min(socket.SOMAXCONN, 128))
+                self.server_sockets = [sock]
+                self.server_socket = sock
             except Exception as e:
                 print(f"[ERROR] Failed to bind WebSocket server on {self.host}:{self.port}: {e}")
                 self.is_running = False
                 return
+        self.server_socket = self.server_sockets[0]
         self.port = self.server_socket.getsockname()[1]
         print(f"[INFO] Secure WebSocket Server listening on {self.host}:{self.port}")
 
+        for sock in self.server_sockets:
+            t = threading.Thread(target=self._accept_loop, args=(sock,), daemon=True)
+            t.start()
+
+    def _accept_loop(self, sock: socket.socket) -> None:
         while self.is_running:
             try:
-                client_sock, client_addr = self.server_socket.accept()
+                client_sock, _ = sock.accept()
                 if not self.is_running:
-                    client_sock.close()
+                    try:
+                        client_sock.close()
+                    except Exception:
+                        pass
                     break
                 # Handle each client in a separate thread
                 t = threading.Thread(target=self._handle_client, args=(client_sock,), daemon=True)

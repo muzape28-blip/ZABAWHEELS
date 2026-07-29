@@ -1,0 +1,47 @@
+# Changelog
+
+All notable changes to the **ZMUX / ZABAWHEELS** project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v200.html).
+
+---
+
+## [1.0.0] - 2026-07-29
+
+### Fixed — Deep ARMv7a (Infinix Smart 9 HD) Force-Close & Freeze Elimination
+- **PTY Process Spawn & Signal Safety on ARMv7 (`armeabi-v7a`):**
+  - Replaced Python-level `preexec_fn=os.setsid` with native C-level POSIX `start_new_session=True` across `PTYTerminalSession.start()` and `_start_fallback()`. On 32-bit ARMv7 Android (Bionic libc on devices such as Infinix Smart 9 HD), executing Python functions inside `preexec_fn` after `fork()` in a multithreaded process caused mutex deadlocks and `SIGSEGV` / force-close crashes.
+  - Added automatic fallback to standard pipe session when `os.openpty()` raises `PermissionError` (Errno 13) or `OSError`. Many Android Go / ARMv7 SELinux policies restrict untrusted APK access to `/dev/ptmx`; ZMUX now seamlessly transitions to a standard pipe session instead of terminating.
+  - Added executable path validation (`os.access(candidate, os.X_OK)`) when detecting shells (`/system/bin/sh`, `/bin/sh`, `/system/xbin/sh`, `"sh"`).
+- **Android WebView Port Binding & Socket Reusability (`app/zmux/server.py`):**
+  - Enabled `SO_REUSEPORT` alongside `SO_REUSEADDR` for the Android WebView HTTP port 5000 listener (`_bind_http_socket`). When an Android app is restarted or brought back to foreground, previous TCP sockets may linger in `TIME_WAIT`, which previously caused an `OSError: [Errno 98] Address already in use` force close.
+  - Added multi-host fallback (`127.0.0.1`, `0.0.0.0`, `localhost`) when binding port 5000 on Android to accommodate OEM loopback network stack variations.
+  - Restricted `SO_REUSEPORT` on dynamic free-port allocations (`_bind_ws_socket`) so concurrent test instances or servers never collide on identical port numbers.
+- **Dual IPv4/IPv6 WebSocket Server (`app/zmux/ws_server.py` & `app/templates/terminal.html`):**
+  - Upgraded `WebSocketServer` to support listening on multiple bound sockets simultaneously (`listeners=[...]`). ZMUX now listens on both IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback interfaces for both HTTP and WebSocket connections.
+  - Enhanced `connectWebSocket()` in the terminal UI with a host cycling strategy (`getWsHost(attempt)`), automatically trying `window.location.hostname`, `"127.0.0.1"`, and `"localhost"` across reconnect attempts to prevent loading screen hangs on devices where `localhost` resolves exclusively to IPv6.
+- **Package Manager (`zpip`) Android In-Process Smoke Verification:**
+  - Replaced child-process `subprocess.run([sys.executable, ...])` smoke and verification tests with isolated in-process module importing (`_smoke_test_in_process`) when running on Android (`_is_android()`). On Android APKs, Python executes inside a shared library embedded in the Java Activity; invoking `sys.executable` as a standalone binary fails with `PermissionError` / `OSError`.
+  - Refined `android_abi()` architecture detection to verify pointer bit width (`struct.calcsize("P") * 8 == 32`), ensuring 32-bit Python userland on ARM builds correctly identifies as `armeabi-v7a` even when executing under a 64-bit kernel (`aarch64`).
+- **Path Resolution Hardening (`app/zmux/paths.py`):**
+  - Hardened `resolve_app_dir()` to inspect `ANDROID_PRIVATE`, `ANDROID_ARGUMENT`, and `ANDROID_APP_PATH` environment variables and verify directory writability via live write-probe testing (`_is_writable(path)`), preventing unhandled `PermissionError` crashes during startup directory creation.
+- **APK Packaging & Requirements (`app/buildozer.spec`):**
+  - Added `android.uses_cleartext_traffic = True` to explicitly authorize loopback cleartext HTTP/WS communication across all Android SDK levels.
+  - Explicitly listed all required Flask transitive dependencies (`werkzeug`, `jinja2`, `itsdangerous`, `click`, `blinker`, `MarkupSafe`) in Buildozer requirements to guarantee that C-extensions and core runtime dependencies are bundled in the universal ARMv7 + ARM64 APK.
+- **Main App Crash Reporting (`app/main.py`):**
+  - Upgraded `_write_crash_log()` to write tracebacks to multiple fallback locations (`ANDROID_PRIVATE`, `ANDROID_ARGUMENT`, project directory, `/data/local/tmp`) so crash logs are always accessible on physical mobile devices.
+
+### Changed — Documentation & Presentation
+- **Full English Localization:**
+  - Translated and standardized `README.md`, `REFACTOR_REPORT.md`, `ROADMAP_STATUS.md`, and `docs/ARCHITECTURE.md` into clean, professional English, accurately reflecting the current status, honest limitations, and tested capabilities of ZMUX.
+  - Updated `ZABAWHEELS.md` with an English Executive Summary bridging the repository's historical architecture specification with ZMUX's standalone terminal implementation.
+
+---
+
+## [0.9.0] - 2026-07-29
+
+### Added
+- Original ZMUX visual branding (monogram `Z` + prompt `>` + green neon cursor `_`), replacing placeholder/IDE icons across `logo.png`, `icon.png`, and `presplash.png`.
+- Real-time interactive Unix PTY and WebSocket terminal engine with scrollback replay buffer and resize support (`pty_session.py`, `ws_server.py`).
+- Standalone Android terminal UI (`app/templates/terminal.html`) with mobile-friendly virtual keyboard assistance and command history.
+- Curated ZABAWHEELS wheelhouse infrastructure (`index/`, `packages/`, `schemas/`, `scripts/`) with automated validation and reproducible CI build pipelines.

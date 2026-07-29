@@ -75,8 +75,15 @@ def canonicalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name.strip().lower())
 
 
+def _is_android() -> bool:
+    return any(k in os.environ for k in ("ANDROID_PRIVATE", "ANDROID_ARGUMENT", "ANDROID_APP_PATH"))
+
+
 def android_abi() -> str:
     machine = platform.machine().lower()
+    is_32bit = struct.calcsize("P") * 8 == 32
+    if is_32bit and machine in {"aarch64", "arm64", "arm64-v8a", "armv7l", "armv8l", "armeabi-v7a", "arm"}:
+        return "armeabi-v7a"
     if machine in {"armv7l", "armv8l", "armeabi-v7a"}:
         return "armeabi-v7a"
     if machine in {"aarch64", "arm64", "arm64-v8a"}:
@@ -292,18 +299,41 @@ def _import_name(name: str) -> str:
     return aliases.get(name, name.replace("-", "_"))
 
 
+def _smoke_test_in_process(staging: Path, module: str) -> None:
+    old_path = list(sys.path)
+    old_modules = set(sys.modules.keys())
+    try:
+        if str(staging) not in sys.path:
+            sys.path.insert(0, str(staging))
+        if str(USER_PACKAGES_DIR) not in sys.path:
+            sys.path.insert(1, str(USER_PACKAGES_DIR))
+        importlib.invalidate_caches()
+        importlib.import_module(module)
+    finally:
+        sys.path[:] = old_path
+        for mod in list(sys.modules.keys()):
+            if mod not in old_modules:
+                sys.modules.pop(mod, None)
+
+
 def _smoke_test(staging: Path, package: str) -> None:
     module = _import_name(package)
+    if _is_android():
+        _smoke_test_in_process(staging, module)
+        return
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
         [str(staging), str(USER_PACKAGES_DIR), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
-    result = subprocess.run(
-        [sys.executable, "-c", f"import importlib; importlib.import_module({module!r})"],
-        env=env, capture_output=True, text=True, timeout=30,
-    )
-    if result.returncode != 0:
-        raise ValueError(f"Smoke import failed: {(result.stderr or result.stdout).strip()}")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", f"import importlib; importlib.import_module({module!r})"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"Smoke import failed: {(result.stderr or result.stdout).strip()}")
+    except (OSError, PermissionError, FileNotFoundError):
+        _smoke_test_in_process(staging, module)
 
 
 def _manifest_requirements(manifest: dict) -> list:
@@ -486,12 +516,37 @@ def verify(name: str) -> dict:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(USER_PACKAGES_DIR) + os.pathsep + env.get("PYTHONPATH", "")
     try:
-        result = subprocess.run(
-            [sys.executable, "-c", f"import importlib; importlib.import_module({_import_name(package)!r})"],
-            env=env, capture_output=True, text=True, timeout=30,
-        )
-        import_ok = result.returncode == 0
-        error = "" if import_ok else (result.stderr or result.stdout).strip()
+        if _is_android():
+            old_path = list(sys.path)
+            try:
+                if str(USER_PACKAGES_DIR) not in sys.path:
+                    sys.path.insert(0, str(USER_PACKAGES_DIR))
+                importlib.invalidate_caches()
+                importlib.import_module(_import_name(package))
+                import_ok = True
+                error = ""
+            finally:
+                sys.path[:] = old_path
+        else:
+            result = subprocess.run(
+                [sys.executable, "-c", f"import importlib; importlib.import_module({_import_name(package)!r})"],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
+            import_ok = result.returncode == 0
+            error = "" if import_ok else (result.stderr or result.stdout).strip()
+    except (OSError, PermissionError, FileNotFoundError):
+        old_path = list(sys.path)
+        try:
+            if str(USER_PACKAGES_DIR) not in sys.path:
+                sys.path.insert(0, str(USER_PACKAGES_DIR))
+            importlib.invalidate_caches()
+            importlib.import_module(_import_name(package))
+            import_ok = True
+            error = ""
+        except Exception as exc:
+            import_ok, error = False, str(exc)
+        finally:
+            sys.path[:] = old_path
     except Exception as exc:
         import_ok, error = False, str(exc)
     return {"ok": not missing and import_ok, "package": package, "missing": missing, "import_ok": import_ok, "error": error}

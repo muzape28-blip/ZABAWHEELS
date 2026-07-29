@@ -43,6 +43,12 @@ class PTYTerminalSession:
         self.scrollback_max_size = 32768  # 32KB scrollback replay
         self.buffer_lock = threading.Lock()
 
+    def _resolve_shell(self) -> str:
+        for candidate in ("/system/bin/sh", "/bin/sh", "/system/xbin/sh", "sh"):
+            if candidate == "sh" or (os.path.exists(candidate) and os.access(candidate, os.X_OK)):
+                return candidate
+        return "sh"
+
     def start(self) -> None:
         """Start the interactive shell in a PTY if not already running."""
         with self.lock:
@@ -51,14 +57,7 @@ class PTYTerminalSession:
 
             self._stop_unlocked()
 
-            shell = "/system/bin/sh"
-            if not os.path.exists(shell):
-                shell = "/bin/sh"
-
-            # Check if shell exists at all, fallback to system python or sh
-            if not os.path.exists(shell):
-                shell = "sh"
-
+            shell = self._resolve_shell()
             print(f"[INFO] Spawning interactive PTY session using: {shell}")
 
             if not HAS_PTY or not hasattr(os, "openpty"):
@@ -81,7 +80,7 @@ class PTYTerminalSession:
                     stderr=self.slave_fd,
                     cwd=str(get_session().cwd),
                     env=session_env,
-                    preexec_fn=os.setsid if use_setsid else None,
+                    start_new_session=use_setsid,
                     close_fds=True,
                 )
                 self._own_process_group = use_setsid
@@ -111,8 +110,9 @@ class PTYTerminalSession:
                 self.reader_thread.start()
 
             except Exception as e:
-                print(f"[ERROR] Failed to start PTY session: {e}")
+                print(f"[WARN] Failed to start PTY session ({e}), falling back to standard pipe session...")
                 self._stop_unlocked()
+                self._start_fallback(shell)
 
     def _start_fallback(self, shell: str) -> None:
         """Fallback mode using standard pipes if PTY is not supported by OS."""
@@ -130,7 +130,7 @@ class PTYTerminalSession:
                 env=session_env,
                 text=False,
                 bufsize=0,
-                preexec_fn=os.setsid if use_setsid else None,
+                start_new_session=use_setsid,
             )
             self._own_process_group = use_setsid
             self.is_running = True
