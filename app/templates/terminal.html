@@ -1,6 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>
+// Catch global errors early and display them in the boot status overlay
+window.onerror = function(msg, url, line, col, error) {
+  var statusEl = document.getElementById('boot-status');
+  if (statusEl) {
+    statusEl.innerHTML = '<span style="color: #f85149; font-weight: bold;">Error: ' + msg + '</span><br><span style="font-size: 10px; color: #8b949e;">at ' + (url ? url.split('/').pop() : 'unknown') + ':' + line + ':' + col + '</span>';
+  }
+  return false;
+};
+window.onunhandledrejection = function(event) {
+  var statusEl = document.getElementById('boot-status');
+  if (statusEl) {
+    statusEl.innerHTML = '<span style="color: #f85149; font-weight: bold;">Unhandled Promise: ' + event.reason + '</span>';
+  }
+};
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>ZMUX Terminal</title>
