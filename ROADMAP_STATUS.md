@@ -29,7 +29,7 @@
 ### Package Manager (zpip)
 | Component | Status | Notes |
 |-----------|--------|-------|
-| HTTPS-only downloads | Implemented | No --trusted-host, no HTTP |
+| HTTPS-only downloads | Implemented | No trusted-host, no HTTP |
 | SHA-256 verification | Implemented | Mandatory |
 | Transactional install | Implemented | Full rollback on failure |
 | Dependency resolution | Implemented | DAG with cycle detection |
@@ -45,21 +45,22 @@
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Buildozer spec | Implemented | Universal ARMv7+ARM64 |
-| GitHub Actions workflow | Implemented | Pinned dependencies |
+| GitHub Actions workflow | Implemented | FIXED - branches updated |
 | APK artifact | CI-built | zmux-1.0.0-universal-debug.apk |
 | SHA256SUMS | CI-built | Checksum verification |
 | build-contract.json | CI-built | Runtime contract |
 | Provenance attestation | CI-built | GitHub attestation |
+| Package index | Implemented | index.json structure created |
 
 ### Device Testing
 | Component | ARMv7 | ARM64 |
 |-----------|-------|-------|
-| APK Install | ⏳ Pending | ⏳ Pending |
-| Terminal UI | ⏳ Pending | ⏳ Pending |
-| Command Execution | ⏳ Pending | ⏳ Pending |
-| Python Runtime | ⏳ Pending | ⏳ Pending |
-| zpip | ⏳ Pending | ⏳ Pending |
-| Native Smoke | ⏳ Pending | ⏳ Pending |
+| APK Install | Pending | Pending |
+| Terminal UI | Pending | Pending |
+| Command Execution | Pending | Pending |
+| Python Runtime | Pending | Pending |
+| zpip | Pending | Pending |
+| Native Smoke | Pending | Pending |
 
 ### Security
 | Component | Status | Notes |
@@ -79,8 +80,10 @@
 - [x] zpip package manager
 - [x] GitHub Actions CI/CD
 - [x] Security hardening
+- [x] Package index structure
+- [x] Workflow FIXED
 - [ ] Device testing (ARMv7 + ARM64)
-- [ ] Native package availability report
+- [ ] Native package builds
 
 ### v1.1.0 (Planned)
 - [ ] PTY support for full interactive REPL
@@ -97,21 +100,37 @@
 
 ## Honest Limitations
 
-1. **No PTY**: Current implementation uses subprocess pipes, not pseudo-terminals. This means some interactive programs may not work perfectly.
+1. **No PTY**: Current implementation uses subprocess pipes, not pseudo-terminals.
 
-2. **Shell access**: While built-in `cd` is restricted to home, shell commands can access areas permitted by Android OS. This is documented, not hidden.
+2. **Shell access**: Built-in cd is restricted to home, shell commands can access Android-permitted areas.
 
-3. **Native packages**: Many native packages (NumPy, SciPy, etc.) are not yet available in ZABAWHEELS index. ZMUX will honestly report when a package is unavailable.
+3. **Native packages**: Many native packages not yet available in ZABAWHEELS index.
 
-4. **Android Go**: Performance on low-end devices not yet verified.
-
-5. **No device testing**: All "implemented" status is based on code review and unit tests, not real device verification.
+4. **No device testing**: All implemented status is based on code review and unit tests, not real device verification.
 
 ## What ZMUX is NOT
 
-- ❌ Not an IDE or code editor
-- ❌ Not Zabacode with a new name
-- ❌ Not a fake terminal with hardcoded output
-- ❌ Not claiming Termux-level capabilities
-- ❌ Not providing AI assistant or marketplace
-- ❌ Not marking packages as "stable" without device testing
+- Not an IDE or code editor
+- Not Zabacode with a new name
+- Not a fake terminal with hardcoded output
+- Not claiming Termux-level capabilities
+- Not providing AI assistant or marketplace
+- Not marking packages as stable without device testing
+
+## Recent Changes (2026-07-29)
+
+### Fixed
+- GitHub Actions workflow updated with correct branches
+- Package index structure created (index.json, index/stable/, index/candidate/)
+
+### Added
+- index.json root file
+- index/stable/index.json
+- index/candidate/index.json (with numpy, pillow, cryptography)
+- index/experimental/index.json
+
+### Next
+- Trigger GitHub Actions build by pushing to main
+- Download and test APK on device
+- Build native packages (numpy, pillow, etc.)
+- Device verification and testing
