@@ -92,11 +92,28 @@ class TerminalSession:
         env["TERM"] = "xterm-256color"
         env["LANG"] = "C.UTF-8"
         env["LC_ALL"] = "C.UTF-8"
-        # Prepend the ZMUX CLI wrappers so built-in commands (zpip, help,
-        # zmux-info, clear, pip) resolve natively inside real /system/bin/sh
-        # PTY sessions instead of failing with "inaccessible or not found".
+        # --- PATH construction ---------------------------------------------------
+        # On Android the inherited os.environ may lack a usable PATH, causing
+        # basic system commands (mkdir, ls, cat, ...) to fail with "Permission
+        # denied" or "not found".  We therefore always include the standard
+        # Android system binary directories *before* prepending BIN_DIR so that
+        # both ZMUX wrappers and real system utilities are reachable.
+        _SYSTEM_PATHS = [
+            "/system/bin",
+            "/system/xbin",
+            "/vendor/bin",
+            "/sbin",
+        ]
         path = env.get("PATH", "")
-        env["PATH"] = f"{BIN_DIR}{os.pathsep}{path}" if path else str(BIN_DIR)
+        # Deduplicate while preserving order: BIN_DIR first, then system dirs,
+        # then any pre-existing PATH entries.
+        seen: set = {str(BIN_DIR)}  # BIN_DIR is always first, skip duplicates
+        parts: list = [str(BIN_DIR)]
+        for p in _SYSTEM_PATHS + (path.split(os.pathsep) if path else []):
+            if p and p not in seen:
+                seen.add(p)
+                parts.append(p)
+        env["PATH"] = os.pathsep.join(parts)
         # Add user packages to Python path
         from zmux.paths import USER_PACKAGES_DIR
         pythonpath = env.get("PYTHONPATH", "")
