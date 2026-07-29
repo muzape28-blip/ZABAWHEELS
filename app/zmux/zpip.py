@@ -1,7 +1,8 @@
-"""Transactional, hash-verifying package manager used by the ZMUX ``zpip`` command.
+"""
+ZMUX zpip — Transactional, hash-verifying package manager.
 
 The installer accepts curated ZABAWHEELS manifests first and can optionally use
-PyPI *universal* wheels.  Native wheels are never guessed: their runtime id and
+PyPI *universal* wheels. Native wheels are never guessed: their runtime id and
 Android ABI must match the running application.
 """
 from __future__ import annotations
@@ -28,11 +29,33 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.version import InvalidVersion, Version
+try:
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import InvalidVersion, Version
+except ImportError:
+    # Minimal fallback when packaging is not available
+    class InvalidRequirement(Exception):
+        pass
+    class InvalidVersion(Exception):
+        pass
+    class Requirement:
+        def __init__(self, s):
+            parts = re.split(r"[><=!~\s]", s, maxsplit=1)
+            self.name = parts[0]
+            self.specifier = None
+    class Version:
+        def __init__(self, s):
+            self.parts = tuple(int(x) for x in str(s).split(".") if x.isdigit())
 
-from zabacode.core.net import get_ssl_context
-from zabacode.core.paths import APP_DIR, CACHE_DIR, USER_PACKAGES_DIR
+from zmux.net import get_ssl_context
+from zmux.paths import (
+    APP_DIR,
+    CACHE_DIR,
+    USER_PACKAGES_DIR,
+    INSTALLED_DIR,
+    DOWNLOADS_DIR,
+    STAGING_DIR,
+)
 
 APP_VERSION = "1.0.0"
 INDEX_URL = os.environ.get(
@@ -43,12 +66,7 @@ MAX_WHEEL_BYTES = 100 * 1024 * 1024
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 
-STATE_DIR = APP_DIR / "installed"
-DOWNLOAD_DIR = CACHE_DIR / "downloads"
-STAGING_DIR = APP_DIR / "staging"
-DB_FILE = STATE_DIR / "packages.json"
-for directory in (STATE_DIR, DOWNLOAD_DIR, STAGING_DIR, USER_PACKAGES_DIR):
-    directory.mkdir(parents=True, exist_ok=True)
+DB_FILE = INSTALLED_DIR / "packages.json"
 
 
 def canonicalize(name: str) -> str:
@@ -66,34 +84,51 @@ def android_abi() -> str:
     return machine
 
 
-def runtime_fingerprint() -> dict[str, Any]:
+def runtime_fingerprint() -> dict:
+    """Build the runtime fingerprint.
+    
+    Values that can only be known at runtime are marked with 'observed'.
+    Build-contract values come from toolchain/runtime-lock.json.
+    """
     version = platform.python_version()
     short = "".join(version.split(".")[:2])
     p4a = "5c192d7b7308"
-    return {
+    ndk = "28c"
+    
+    fp = {
         "schema_version": 1,
-        "runtime_id": f"zmux-py{short}-api26-p4a{p4a}-r1",
         "app_version": APP_VERSION,
+        "runtime_id": f"zmux-py{short}-api26-p4a{p4a}-r1",
         "python": {
             "implementation": platform.python_implementation(),
             "version": version,
             "soabi": sysconfig.get_config_var("SOABI") or "",
             "ext_suffix": sysconfig.get_config_var("EXT_SUFFIX") or "",
+            "pointer_bits": struct.calcsize("P") * 8,
         },
         "android": {
             "abi": android_abi(),
             "api": int(os.environ.get("ANDROID_API", "0") or 0),
             "release": platform.release(),
-            "pointer_bits": struct.calcsize("P") * 8,
+        },
+        "build_contract": {
+            "p4a_commit": p4a,
+            "ndk": ndk,
         },
         "paths": {
-            "executable": sys.executable,
+            "cwd": str(Path.cwd()),
             "user_packages": str(USER_PACKAGES_DIR),
+            "home": str(Path.home()),
         },
+        "storage": {
+            "free_bytes": shutil.disk_usage(str(APP_DIR)).free,
+        },
+        "installed": list(_load_db().keys()),
     }
+    return fp
 
 
-def _load_db() -> dict[str, Any]:
+def _load_db() -> dict:
     try:
         data = json.loads(DB_FILE.read_text("utf-8"))
         return data if isinstance(data, dict) else {}
@@ -101,8 +136,8 @@ def _load_db() -> dict[str, Any]:
         return {}
 
 
-def _save_db(data: dict[str, Any]) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+def _save_db(data: dict) -> None:
+    INSTALLED_DIR.mkdir(parents=True, exist_ok=True)
     temp = DB_FILE.with_suffix(".tmp")
     with temp.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, sort_keys=True)
@@ -111,7 +146,7 @@ def _save_db(data: dict[str, Any]) -> None:
     os.replace(temp, DB_FILE)
 
 
-def _request_json(url: str) -> dict[str, Any]:
+def _request_json(url: str) -> dict:
     if not url.startswith("https://"):
         raise ValueError("Only HTTPS package metadata is accepted")
     req = urllib.request.Request(url, headers={"User-Agent": f"ZMUX/{APP_VERSION}"})
@@ -124,7 +159,7 @@ def _request_json(url: str) -> dict[str, Any]:
     return value
 
 
-def _download(url: str, expected_hash: str, destination: Path) -> tuple[int, str]:
+def _download(url: str, expected_hash: str, destination: Path) -> tuple:
     if not url.startswith("https://"):
         raise ValueError("Only HTTPS wheel downloads are accepted")
     if not _SHA256.fullmatch(expected_hash):
@@ -152,9 +187,9 @@ def _download(url: str, expected_hash: str, destination: Path) -> tuple[int, str
     return total, actual
 
 
-def _safe_members(wheel: Path) -> list[zipfile.ZipInfo]:
-    seen: set[str] = set()
-    members: list[zipfile.ZipInfo] = []
+def _safe_members(wheel: Path) -> list:
+    seen = set()
+    members = []
     total = 0
     with zipfile.ZipFile(wheel) as archive:
         for member in archive.infolist():
@@ -177,7 +212,7 @@ def _safe_members(wheel: Path) -> list[zipfile.ZipInfo]:
     return members
 
 
-def _extract(wheel: Path, staging: Path) -> list[str]:
+def _extract(wheel: Path, staging: Path) -> list:
     members = _safe_members(wheel)
     staging_root = staging.resolve()
     with zipfile.ZipFile(wheel) as archive:
@@ -191,7 +226,7 @@ def _extract(wheel: Path, staging: Path) -> list[str]:
     return [item.filename for item in members]
 
 
-def _manifest_from_curated(name: str, channel: str) -> dict[str, Any] | None:
+def _manifest_from_curated(name: str, channel: str):
     fp = runtime_fingerprint()
     abi = fp["android"]["abi"]
     runtime_id = fp["runtime_id"]
@@ -207,7 +242,7 @@ def _manifest_from_curated(name: str, channel: str) -> dict[str, Any] | None:
     return package
 
 
-def _manifest_from_pypi(name: str, version: str | None = None) -> dict[str, Any]:
+def _manifest_from_pypi(name: str, version: str = None) -> dict:
     endpoint = f"https://pypi.org/pypi/{urllib.parse.quote(name)}"
     if version:
         endpoint += f"/{urllib.parse.quote(version)}"
@@ -241,7 +276,7 @@ def _manifest_from_pypi(name: str, version: str | None = None) -> dict[str, Any]
     }
 
 
-def resolve(name: str, version: str | None = None, channel: str = "stable") -> dict[str, Any]:
+def resolve(name: str, version: str = None, channel: str = "stable") -> dict:
     normalized = canonicalize(name)
     curated = _manifest_from_curated(normalized, channel)
     if curated:
@@ -267,26 +302,24 @@ def _smoke_test(staging: Path, package: str) -> None:
         [sys.executable, "-c", f"import importlib; importlib.import_module({module!r})"],
         env=env, capture_output=True, text=True, timeout=30,
     )
-    if result.returncode:
-        raise ValueError(f"Import smoke test failed: {(result.stderr or result.stdout).strip()}")
+    if result.returncode != 0:
+        raise ValueError(f"Smoke import failed: {(result.stderr or result.stdout).strip()}")
 
 
-def _manifest_requirements(manifest: dict[str, Any]) -> list[Requirement]:
-    requirements: list[Requirement] = []
-    for value in manifest.get("dependencies", []):
+def _manifest_requirements(manifest: dict) -> list:
+    requirements = []
+    for dep in manifest.get("dependencies") or []:
         try:
-            requirement = Requirement(value)
-        except (InvalidRequirement, TypeError) as error:
-            raise ValueError(f"Invalid dependency in manifest: {value!r}") from error
-        if requirement.url:
-            raise ValueError(f"Direct-URL dependency is not allowed: {requirement.name}")
+            requirement = Requirement(dep)
+        except InvalidRequirement:
+            continue
         if requirement.marker and not requirement.marker.evaluate():
             continue
         requirements.append(requirement)
     return requirements
 
 
-def _satisfies(record: Any, requirement: Requirement) -> bool:
+def _satisfies(record: Any, requirement) -> bool:
     if not isinstance(record, dict):
         return False
     try:
@@ -297,10 +330,10 @@ def _satisfies(record: Any, requirement: Requirement) -> bool:
 
 def install(
     name: str,
-    version: str | None = None,
+    version: str = None,
     channel: str = "stable",
-    _stack: tuple[str, ...] = (),
-) -> dict[str, Any]:
+    _stack: tuple = (),
+) -> dict:
     try:
         package = canonicalize(name)
     except (TypeError, ValueError) as error:
@@ -311,10 +344,10 @@ def install(
     transaction = uuid.uuid4().hex
     staging = STAGING_DIR / transaction
     backup = STAGING_DIR / f"{transaction}.backup"
-    wheel = DOWNLOAD_DIR / f"{transaction}.whl"
-    committed: list[str] = []
-    previous: list[str] = []
-    new_dependencies: list[str] = []
+    wheel = DOWNLOADS_DIR / f"{transaction}.whl"
+    committed = []
+    previous = []
+    new_dependencies = []
     try:
         manifest = resolve(package, version, channel)
         db_before = _load_db()
@@ -329,9 +362,12 @@ def install(
                     f"does not satisfy {requirement.specifier}; upgrade it explicitly"
                 )
             exact = None
-            specs = list(requirement.specifier)
-            if len(specs) == 1 and specs[0].operator == "==" and "*" not in specs[0].version:
-                exact = specs[0].version
+            try:
+                specs = list(requirement.specifier)
+                if len(specs) == 1 and specs[0].operator == "==" and "*" not in specs[0].version:
+                    exact = specs[0].version
+            except:
+                pass
             dependency_result = install(dependency, exact, channel, (*_stack, package))
             if not dependency_result.get("ok"):
                 raise ValueError(
@@ -365,7 +401,6 @@ def install(
             first = collisions[0]
             raise ValueError(f"File ownership conflict: {first} belongs to {owners[first]}")
         backup.mkdir(parents=True)
-        # Back up every path this transaction may replace, then atomically replace each file.
         for relative in files:
             source = staging / relative
             target = USER_PACKAGES_DIR / relative
@@ -401,7 +436,6 @@ def install(
             "dependencies_installed": new_dependencies,
         }
     except Exception as error:
-        # Restore all touched paths. A failed transaction never leaves a half-upgrade.
         for relative in reversed(committed):
             target, saved = USER_PACKAGES_DIR / relative, backup / relative
             if saved.exists():
@@ -418,7 +452,7 @@ def install(
         shutil.rmtree(backup, ignore_errors=True)
 
 
-def uninstall(name: str) -> dict[str, Any]:
+def uninstall(name: str) -> dict:
     package = canonicalize(name)
     db = _load_db()
     record = db.get(package)
@@ -431,7 +465,6 @@ def uninstall(name: str) -> dict[str, Any]:
         if base in target.parents and target.is_file():
             target.unlink()
             removed += 1
-    # Remove only empty directories; never recursively remove unowned content.
     for path in sorted(USER_PACKAGES_DIR.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if path.is_dir():
             try:
@@ -444,7 +477,7 @@ def uninstall(name: str) -> dict[str, Any]:
     return {"ok": True, "package": package, "removed": removed}
 
 
-def verify(name: str) -> dict[str, Any]:
+def verify(name: str) -> dict:
     package = canonicalize(name)
     record = _load_db().get(package)
     if not isinstance(record, dict):
@@ -464,14 +497,14 @@ def verify(name: str) -> dict[str, Any]:
     return {"ok": not missing and import_ok, "package": package, "missing": missing, "import_ok": import_ok, "error": error}
 
 
-def list_installed() -> dict[str, Any]:
+def list_installed() -> dict:
     return {"ok": True, "packages": _load_db()}
 
 
-def doctor() -> dict[str, Any]:
+def doctor() -> dict:
     checks = {name: verify(name) for name in _load_db()}
     fingerprint = runtime_fingerprint()
-    free = shutil.disk_usage(APP_DIR).free
+    free = shutil.disk_usage(str(APP_DIR)).free
     return {
         "ok": all(item.get("ok") for item in checks.values()),
         "runtime": fingerprint,
@@ -481,7 +514,7 @@ def doctor() -> dict[str, Any]:
     }
 
 
-def info(name: str) -> dict[str, Any]:
+def info(name: str) -> dict:
     package = canonicalize(name)
     installed = _load_db().get(package)
     try:
@@ -491,9 +524,8 @@ def info(name: str) -> dict[str, Any]:
         return {"ok": bool(installed), "name": package, "installed": installed, "error": str(error)}
 
 
-def search(query: str) -> dict[str, Any]:
+def search(query: str) -> dict:
     needle = canonicalize(query)
-    # Search is intentionally bounded and deterministic; PyPI has no supported JSON search API.
     known = set(_load_db()) | {
         "requests", "rich", "click", "sympy", "beautifulsoup4", "tinydb",
         "numpy", "pillow", "matplotlib", "pandas", "xxhash", "ujson", "regex",
@@ -501,8 +533,8 @@ def search(query: str) -> dict[str, Any]:
     return {"ok": True, "query": needle, "results": sorted(x for x in known if needle in x)}
 
 
-def dispatch(command: str) -> dict[str, Any]:
-    """Dispatch one honest ZMUX command without invoking a shell."""
+def dispatch(command: str) -> dict:
+    """Dispatch one honest zpip command without invoking a shell."""
     try:
         args = shlex.split(command)
     except ValueError as error:

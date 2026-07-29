@@ -1,10 +1,7 @@
 """
-ZMUX Core — Local Encrypted Key Storage (at-rest protection for API keys)
+ZMUX Core — Local Encrypted Storage (at-rest protection)
 
-Replaces the previous XOR cipher whose key ("zabacode_local_keys_salt") was
-hardcoded in public source — anyone could decrypt a stolen key file in three
-lines. This module instead uses:
-
+Uses:
   * a 256-bit secret generated randomly **per installation**, stored in a
     separate 0600 file and never committed;
   * a HMAC-SHA256 keystream in counter mode (encrypt-then-MAC);
@@ -14,12 +11,6 @@ lines. This module instead uses:
 
 Stdlib only: ``cryptography`` requires a Rust toolchain that python-for-android
 frequently fails to cross-compile for ARM, which would break the APK build.
-Keys are derived from the master secret with PBKDF2-HMAC-SHA256.
-
-Threat model: protects API keys at rest against someone reading the file off
-the device or a backup. It cannot protect against a rooted device that can read
-the secret file itself — on Android the hardware-backed Keystore remains the
-preferred path and is always tried first (see ``security.py``).
 """
 
 import hashlib
@@ -30,11 +21,11 @@ import secrets
 import stat
 from pathlib import Path
 
-from zabacode.core.paths import APP_DIR
+from zmux.paths import APP_DIR
 
 __all__ = ["encrypt_payload", "decrypt_payload", "MASTER_KEY_FILE"]
 
-MASTER_KEY_FILE = APP_DIR / ".zabacode_master_key"
+MASTER_KEY_FILE = APP_DIR / ".zmux_master_key"
 _PBKDF2_ROUNDS = 200_000
 _NONCE_BYTES = 16
 _TAG_BYTES = 32
@@ -70,7 +61,7 @@ def _load_or_create_master_secret() -> bytes:
     return secret
 
 
-def _derive_keys(nonce: bytes) -> tuple[bytes, bytes]:
+def _derive_keys(nonce: bytes) -> tuple:
     """Derive independent (encryption, authentication) keys for one payload."""
     material = hashlib.pbkdf2_hmac(
         "sha256", _load_or_create_master_secret(), nonce, _PBKDF2_ROUNDS, dklen=64

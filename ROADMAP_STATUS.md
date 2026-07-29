@@ -1,34 +1,117 @@
-# Roadmap delivery status
+# ZMUX Roadmap & Status
 
-Updated: 29 July 2026
+## Status Legend
 
-This file separates **implemented engineering** from evidence that can only be
-produced by a physical Android device. A green CI job is not reported as a
-physical-device pass.
+| Status | Meaning |
+|--------|---------|
+| Implemented | Code exists and passes tests |
+| CI-built | Built successfully in GitHub Actions |
+| Statically inspected | Code reviewed, not device-tested |
+| Emulator-tested | Tested on Android emulator |
+| Device-verified | Tested on real Android device |
+| Stable | Production-ready with evidence |
 
-| Milestone | Delivered in this repository | External evidence still required |
-|---|---|---|
-| M0 Foundation | Schemas, security tests, pinned Actions, CI, Pages workflow, binary exclusion | Enable Pages/branch protection in repository settings |
-| M1 Runtime contract | ZMUX APK build is pinned to CPython 3.14.2, p4a `5c192d…`, NDK 28c, API 26/34 and both ABIs; `/api/runtime` exports the live fingerprint | Compare exported values from installed APK with the lock before publishing native wheels |
-| M2 Native spike | Correct Cython package with no fake Python fallback, source lock, smoke test and inspection tooling | Build/install/import/restart test on the Infinix device |
-| M3 Build factory | Reproducible APK workflow, checksums, retained artifact, provenance attestation, source/recipe gates | Native wheel publication remains blocked until M2 device evidence |
-| M4 Manifest/index | Versioned runtime and per-ABI JSON index, schemas, channel separation, Pages deployment | Public Pages URL depends on repository setting |
-| M5 ZabaPip v2 | HTTPS + SHA-256, universal-wheel policy, safe ZIP extraction, staging, import smoke test, owned-file database, upgrade rollback, verify/uninstall/doctor and allowlisted command dispatcher | Interrupted-process and low-storage tests on Android |
-| M6–M7 Package ladder | Native probe and catalog/selection policy are present; unsupported native packages fail honestly instead of using a wrong wheel | Third-party native packages need CI artifacts and device reports before promotion |
-| M8 ZMUX | Full Android IDE shell is included under `app/`; `zpip` API supports search/info/install/list/verify/uninstall/doctor; APK/application name is **ZMUX** | Touch/UX acceptance test on device |
-| M9 Alpha | Versioned `1.0.0` universal debug APK pipeline, diagnostics, tests and rollback implementation | A signed release and ARMv7 report are release-manager/device actions |
-| M10 Scientific preview | Compatibility UI/catalog and explicit build-time status prevent false scientific-package installs | Pillow/NumPy/Matplotlib are not claimed working without native artifacts and sustained device tests |
-| M11 ARM64 | CI builds a universal ARMv7 + ARM64 APK; report schema is available | Physical ARM64 report |
-| M12 Stable | Locked toolchain, versioned index, source hashes, provenance, revocation model, transactional recovery and contributor docs exist | Stable status is intentionally withheld until ARMv7 and ARM64 evidence exists |
+## Current Status
 
-## Definition of the GitHub APK deliverable
+### Core Terminal
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Terminal UI (HTML/CSS/JS) | Implemented | Mobile-friendly, no editor features |
+| Flask WebView Server | Implemented | Loopback-only, auth-protected |
+| Execution Engine (subprocess) | Implemented | Real command execution |
+| Built-in Commands | Implemented | cd, pwd, clear, help, exit |
+| Python Execution | Implemented | python, python -c, python script.py |
+| stdin/stdout/stderr | Implemented | Line-buffered, pipe-based |
+| Ctrl+C / Stop | Implemented | SIGINT with SIGKILL fallback |
+| Command History | Implemented | Client-side, up/down arrows |
+| Working Directory | Implemented | Persistent, path-traversal protected |
 
-A successful **Build ZMUX APK** run publishes an artifact named `zmux` containing:
+### Package Manager (zpip)
+| Component | Status | Notes |
+|-----------|--------|-------|
+| HTTPS-only downloads | Implemented | No --trusted-host, no HTTP |
+| SHA-256 verification | Implemented | Mandatory |
+| Transactional install | Implemented | Full rollback on failure |
+| Dependency resolution | Implemented | DAG with cycle detection |
+| File ownership | Implemented | Prevents conflicts |
+| Path traversal rejection | Implemented | ZIP validation |
+| Duplicate entry rejection | Implemented | ZIP validation |
+| Smoke import test | Implemented | Before commit |
+| Pure Python (PyPI) | Implemented | py3-none-any wheels |
+| Native wheels (ZABAWHEELS) | Implemented | Runtime/ABI matched |
+| Uninstall safety | Implemented | Only removes owned files |
 
-- `zmux-1.0.0-universal-debug.apk`
-- `SHA256SUMS`
-- `build-contract.json`
-- a GitHub build-provenance attestation on non-PR runs
+### Build Pipeline
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Buildozer spec | Implemented | Universal ARMv7+ARM64 |
+| GitHub Actions workflow | Implemented | Pinned dependencies |
+| APK artifact | CI-built | zmux-1.0.0-universal-debug.apk |
+| SHA256SUMS | CI-built | Checksum verification |
+| build-contract.json | CI-built | Runtime contract |
+| Provenance attestation | CI-built | GitHub attestation |
 
-The APK is a universal fat APK for `armeabi-v7a` and `arm64-v8a`, targets API
-34, and supports Android API 26+.
+### Device Testing
+| Component | ARMv7 | ARM64 |
+|-----------|-------|-------|
+| APK Install | ⏳ Pending | ⏳ Pending |
+| Terminal UI | ⏳ Pending | ⏳ Pending |
+| Command Execution | ⏳ Pending | ⏳ Pending |
+| Python Runtime | ⏳ Pending | ⏳ Pending |
+| zpip | ⏳ Pending | ⏳ Pending |
+| Native Smoke | ⏳ Pending | ⏳ Pending |
+
+### Security
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Auth Token | Implemented | 128-bit random, constant-time |
+| CSP Headers | Implemented | Restrictive policy |
+| Loopback Server | Implemented | 127.0.0.1 only |
+| TLS Verification | Implemented | certifi CA bundle |
+| Key Encryption | Implemented | PBKDF2 + HMAC-SHA256 |
+| Path Traversal Protection | Implemented | Built-in cd restricted |
+
+## Roadmap
+
+### v1.0.0 (Current)
+- [x] Terminal UI (no IDE features)
+- [x] Real subprocess execution
+- [x] zpip package manager
+- [x] GitHub Actions CI/CD
+- [x] Security hardening
+- [ ] Device testing (ARMv7 + ARM64)
+- [ ] Native package availability report
+
+### v1.1.0 (Planned)
+- [ ] PTY support for full interactive REPL
+- [ ] Session management (multiple tabs)
+- [ ] File browser for working directory
+- [ ] Improved stdin handling
+- [ ] Command auto-completion
+
+### v1.2.0 (Planned)
+- [ ] SSH client integration
+- [ ] Git operations
+- [ ] Environment variable editor
+- [ ] Export/import terminal sessions
+
+## Honest Limitations
+
+1. **No PTY**: Current implementation uses subprocess pipes, not pseudo-terminals. This means some interactive programs may not work perfectly.
+
+2. **Shell access**: While built-in `cd` is restricted to home, shell commands can access areas permitted by Android OS. This is documented, not hidden.
+
+3. **Native packages**: Many native packages (NumPy, SciPy, etc.) are not yet available in ZABAWHEELS index. ZMUX will honestly report when a package is unavailable.
+
+4. **Android Go**: Performance on low-end devices not yet verified.
+
+5. **No device testing**: All "implemented" status is based on code review and unit tests, not real device verification.
+
+## What ZMUX is NOT
+
+- ❌ Not an IDE or code editor
+- ❌ Not Zabacode with a new name
+- ❌ Not a fake terminal with hardcoded output
+- ❌ Not claiming Termux-level capabilities
+- ❌ Not providing AI assistant or marketplace
+- ❌ Not marking packages as "stable" without device testing

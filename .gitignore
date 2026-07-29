@@ -100,4 +100,8 @@ app/bin/
 app/cache/
 app/logs/
 app/user_packages/
+app/home/
+app/staging/
+app/installed/
+app/artifacts/
 app/.zmux_*

@@ -1,96 +1,65 @@
 # Device Testing
 
-> **Status:** Pre-Alpha (M0) — no device tests conducted yet
+## Status
 
-## Primary Test Device
+| Component | ARMv7 | ARM64 |
+|-----------|-------|-------|
+| APK Install | ⏳ Pending | ⏳ Pending |
+| Terminal UI | ⏳ Pending | ⏳ Pending |
+| Command Execution | ⏳ Pending | ⏳ Pending |
+| Python Runtime | ⏳ Pending | ⏳ Pending |
+| zpip Install | ⏳ Pending | ⏳ Pending |
+| Native Smoke | ⏳ Pending | ⏳ Pending |
 
-| Property | Value |
-|---|---|
-| Model | Infinix Smart 9 HD |
-| ABI | armeabi-v7a |
-| Android | 14 Go |
-| Role | Primary ARMv7 runtime validation |
+## Test Checklist
 
-## Testing Protocol (M2 Gate)
+### Basic Terminal
+- [ ] APK installs and launches
+- [ ] Terminal UI renders correctly
+- [ ] `echo hello` produces output
+- [ ] `python3 --version` works
+- [ ] `python3 -c "print(42)"` works
+- [ ] `cd` changes directory
+- [ ] `pwd` shows correct path
+- [ ] `clear` clears screen
+- [ ] `help` shows help
+- [ ] History navigation works (up/down arrows)
+- [ ] Ctrl+C stops running process
 
-The device test protocol for zaba-native-smoke (and all future packages):
+### Python Execution
+- [ ] Interactive Python REPL works
+- [ ] `python3 script.py` runs scripts
+- [ ] stdin input works
+- [ ] Exit codes are accurate
+- [ ] stdout/stderr separated
 
-### Installation Test
+### Package Manager
+- [ ] `zpip list` works
+- [ ] `zpip search <name>` works
+- [ ] `zpip info <name>` works
+- [ ] `zpip install <pure-python-package>` works
+- [ ] `zpip uninstall <package>` works
+- [ ] `zpip verify <package>` works
+- [ ] `zpip doctor` shows runtime info
 
-1. Install APK debug Zabacode
-2. Export runtime report
-3. Download smoke wheel from candidate release
-4. Verify SHA-256
-5. Install to staging directory
-6. Atomic commit to `user_packages`
-7. Run import test
+### Security
+- [ ] Path traversal blocked for built-in cd
+- [ ] HTTPS-only downloads
+- [ ] SHA-256 verified on install
+- [ ] Auth token required for API
 
-### Functionality Test
+### Performance
+- [ ] Terminal responsive on Android Go devices
+- [ ] No excessive memory usage
+- [ ] No battery drain during idle
 
-8. Call `zaba_native_smoke.add(20, 22)` → must return 42
-9. Call `zaba_native_smoke.runtime_info()` → must show correct ABI
+## Reporting Results
 
-### Persistence Test
+Use the [Device Test Issue Template](../.github/ISSUE_TEMPLATE/device-test.yml) to report test results.
 
-10. Restart interpreter → import again → must work
-11. Restart app → import again → must work
+## Legend
 
-### Cleanup Test
-
-12. Uninstall package → import must fail cleanly
-13. Reinstall → package must work again
-
-### Submit Report
-
-14. Export device test report (JSON format per device-report.schema.json)
-15. Upload report to GitHub issue or pull request
-
-## M2 Decision
-
-### Result A — Native loading works
-
-Continue with runtime wheel repository model. Expand to real third-party packages.
-
-### Result B — Native loading fails
-
-Do NOT create fake workaround. Use alternative strategy:
-- Runtime install only for pure Python
-- Native packages bundled when APK is built
-- Optional native package pack or APK flavor
-- ZabaPip marks native packages as `requires-rebuild`
-
-## ARM64 Testing
-
-ARM64 wheels are built via CI but labeled `build-only` until device-tested.
-
-To verify ARM64:
-- Build ARM64 wheel through CI
-- Find ARM64 device testers
-- Tester submits device report manually
-- No automatic telemetry collected
-- No personal data stored
-- Status upgraded from `build-only` to `device-verified` only after valid report
-
-## Device Report Format
-
-```json
-{
-  "package": "numpy",
-  "version": "x.y.z",
-  "runtime_id": "...",
-  "device": {
-    "model": "...",
-    "abi": "arm64-v8a",
-    "android": "..."
-  },
-  "tests": {
-    "install": "pass",
-    "import": "pass",
-    "smoke": "pass",
-    "restart": "pass",
-    "uninstall": "pass"
-  }
-}
-```
-
-Use the Device Test Report issue template to submit results.
+- ✅ Verified — tested on real device
+- ⏳ Pending — not yet tested
+- ❌ Failed — issue found
+- ⚠️ Partial — works with limitations
