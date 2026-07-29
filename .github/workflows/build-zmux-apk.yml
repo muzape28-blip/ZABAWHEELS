@@ -1,8 +1,10 @@
+https://raw.githubusercontent.com/muzape28-blip/ZABAWHEELS/main/workflow-templates/build-zmux-apk.yml
+
 name: Build ZMUX APK
 
 on:
   push:
-    branches: [main, arena/019fab2f-zabawheels, arena/019faae9-zabawheels]
+    branches: [main, arena/019faae9-zabawheels]
     paths:
       - "app/**"
       - "toolchain/runtime-lock.json"
@@ -37,14 +39,14 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.10"
           cache: pip
@@ -60,11 +62,12 @@ jobs:
       - name: Verify pinned runtime contract
         run: |
           grep -q "p4a.commit = $P4A_COMMIT" buildozer.spec
-          grep -q 'title = ZMUX' buildozer.spec
-          grep -q 'package.name = zmux' buildozer.spec
-          grep -q 'android.archs = armeabi-v7a, arm64-v8a' buildozer.spec
+          grep -q '^title = ZMUX$' buildozer.spec
+          grep -q '^package.name = zmux$' buildozer.spec
+          grep -q '^android.
+archs = armeabi-v7a, arm64-v8a$' buildozer.spec
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           accept-android-sdk-licenses: true
 
@@ -77,7 +80,7 @@ jobs:
           yes | "$ANDROID_SDK_ROOT/tools/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_SDK_ROOT/tools/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             app/.buildozer
@@ -99,15 +102,16 @@ jobs:
           test -n "$APK"
           cp "$APK" artifacts/zmux-1.0.0-universal-debug.apk
           sha256sum artifacts/zmux-1.0.0-universal-debug.apk > artifacts/SHA256SUMS
-          python3 - <<'PYEOF'
+          python - <<'PY'
           import json, pathlib
           lock = json.loads(pathlib.Path('../toolchain/runtime-lock.json').read_text())
           pathlib.Path('artifacts/build-contract.json').write_text(json.dumps(lock, indent=2) + '\n')
-          PYEOF
-          echo "apk=$PWD/artifacts/zmux-1.0.0-universal-debug.apk" >> "$GITHUB_OUTPUT"
+          PY
+          echo "apk=$PWD/artifacts/zmux-1.0.0-universal-debug.apk" >> 
+"$GITHUB_OUTPUT"
 
       - name: Upload ZMUX APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: zmux
           path: app/artifacts/*
@@ -116,6 +120,6 @@ jobs:
 
       - name: Attest APK provenance
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: app/artifacts/zmux-1.0.0-universal-debug.apk
