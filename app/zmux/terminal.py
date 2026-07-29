@@ -209,7 +209,11 @@ class TerminalSession:
                 stdin=subprocess.PIPE,
                 text=True,
                 bufsize=1,  # Line buffered
-                preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
+                # Use start_new_session instead of preexec_fn=os.setsid.
+                # preexec_fn with os.setsid crashes on Android Bionic libc
+                # (ARMv7 armeabi-v7a) due to unsafe after-fork signal state.
+                # start_new_session is the safe POSIX equivalent.
+                start_new_session=True,
             )
 
             # Start reader threads
