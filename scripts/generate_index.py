@@ -20,7 +20,6 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -47,15 +46,20 @@ def collect_manifests(channel: str) -> list:
     manifests = []
 
     if channel_dir.exists():
-        for json_file in channel_dir.glob("*.json"):
-            if json_file.name == "packages.json":
+        for json_file in sorted(channel_dir.glob("*.json")):
+            if json_file.name in {"index.json", "packages.json"}:
                 continue
             with open(json_file) as f:
                 try:
                     manifest = json.load(f)
-                    manifests.append(manifest)
                 except json.JSONDecodeError:
                     print(f"  ⚠️  Invalid JSON: {json_file}")
+                    continue
+            required = {"name", "version", "runtime_id", "abi", "artifact"}
+            if not required.issubset(manifest):
+                print(f"  ⚠️  Ignoring non-manifest JSON: {json_file}")
+                continue
+            manifests.append(manifest)
 
     return manifests
 
@@ -103,8 +107,8 @@ def generate_abi_json(manifests: list, runtime_id: str, abi: str) -> dict:
 
 
 def generate_index(output_dir: str, channel: str) -> bool:
-    """Generate the full index."""
-    print(f"\nZABAWHEELS Index Generator")
+    """Generate the full index without overwriting data from other channels."""
+    print("\nZABAWHEELS Index Generator")
     print(f"Output: {output_dir}")
     print(f"Channel: {channel}\n")
 
@@ -112,9 +116,22 @@ def generate_index(output_dir: str, channel: str) -> bool:
     runtime_lock = load_runtime_lock()
     runtime_id = runtime_lock.get("runtime_id", "PENDING_RUNTIME_PROBE")
 
-    # Collect manifests
-    manifests = collect_manifests(channel)
-    print(f"  Found {len(manifests)} manifests for channel '{channel}'")
+    # The public v1 index is shared by every release channel. When all channels
+    # are requested, collect them first and write the index exactly once.
+    channels = (
+        ["experimental", "candidate", "stable"]
+        if channel == "all"
+        else [channel]
+    )
+    manifests = [
+        manifest
+        for current_channel in channels
+        for manifest in collect_manifests(current_channel)
+    ]
+    print(
+        f"  Found {len(manifests)} manifests across "
+        f"{', '.join(repr(item) for item in channels)}"
+    )
 
     # Create output structure
     output_path = Path(output_dir)
@@ -159,13 +176,8 @@ def main():
 
     args = parser.parse_args()
 
-    if args.channel == "all":
-        for channel in ["experimental", "candidate", "stable"]:
-            generate_index(args.output, channel)
-    else:
-        generate_index(args.output, args.channel)
-
-    sys.exit(0)
+    success = generate_index(args.output, args.channel)
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

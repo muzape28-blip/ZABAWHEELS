@@ -5,7 +5,7 @@
       "version": "0.1.0",
       "source": "local",
       "source_url": "packages/zaba-native-smoke/",
-      "sha256": "66f248e6493bbfd4c3cf78b5374502ffb81f1f1bf99f1fa6a861d813daa2b9d5",
+      "sha256": "292e1aab6c91a6a6be3c3b51596a77775ba9d8c437ea00cc2aeebc1bc50e43bd",
       "license": "AGPL-3.0",
       "status": "recipe-ready"
     }

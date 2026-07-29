@@ -22,19 +22,29 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DIR = REPO_ROOT / "schemas"
+PACKAGES_DIR = REPO_ROOT / "packages"
+PACKAGE_NAME = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 
 
 def load_recipe(package_name: str) -> dict:
-    """Load recipe.yaml for a package."""
+    """Load a package recipe without permitting path traversal."""
     import yaml
 
-    recipe_path = REPO_ROOT / "packages" / package_name / "recipe.yaml"
+    if not PACKAGE_NAME.fullmatch(package_name):
+        print(f"❌ Invalid package name: {package_name!r}")
+        sys.exit(1)
+    package_dir = (PACKAGES_DIR / package_name).resolve()
+    if PACKAGES_DIR.resolve() not in package_dir.parents:
+        print(f"❌ Package path escapes packages directory: {package_name!r}")
+        sys.exit(1)
+    recipe_path = package_dir / "recipe.yaml"
     if not recipe_path.exists():
         print(f"❌ Recipe not found: {recipe_path}")
         sys.exit(1)
@@ -72,10 +82,21 @@ def generate_manifest(
     runtime_id: str,
     abi: str,
     channel: str,
-    wheel_path: str = None,
+    wheel_path: str | None = None,
+    artifact_url: str = "",
+    build_passed: bool = False,
+    elf_inspected: bool = False,
 ) -> dict:
     """Generate package manifest."""
     recipe = load_recipe(package)
+    if recipe.get("package") != package:
+        raise ValueError(
+            f"Recipe package {recipe.get('package')!r} does not match {package!r}"
+        )
+    if str(recipe.get("version")) != version:
+        raise ValueError(
+            f"Recipe version {recipe.get('version')!r} does not match {version!r}"
+        )
 
     manifest = {
         "schema_version": 1,
@@ -88,7 +109,7 @@ def generate_manifest(
         "channel": channel,
         "artifact": {
             "filename": "",
-            "url": "",
+            "url": artifact_url,
             "size": 0,
             "sha256": "",
         },
@@ -103,8 +124,8 @@ def generate_manifest(
             "license": recipe.get("upstream_license", ""),
         },
         "verification": {
-            "build_passed": False,
-            "elf_inspected": False,
+            "build_passed": build_passed,
+            "elf_inspected": elf_inspected,
             "device_tested": False,
             "tested_devices": [],
         },
@@ -140,6 +161,13 @@ def main():
                         choices=["experimental", "candidate", "stable"],
                         help="Release channel")
     parser.add_argument("--wheel", default=None, help="Path to wheel file")
+    parser.add_argument("--artifact-url", default="", help="Published wheel URL")
+    parser.add_argument(
+        "--build-passed", action="store_true", help="Mark the build as passed"
+    )
+    parser.add_argument(
+        "--elf-inspected", action="store_true", help="Mark ELF inspection as passed"
+    )
     parser.add_argument("--output", default=None, help="Output path for manifest JSON")
 
     args = parser.parse_args()
@@ -152,8 +180,15 @@ def main():
     print(f"Channel: {args.channel}\n")
 
     manifest = generate_manifest(
-        args.package, args.version, args.runtime_id, args.abi,
-        args.channel, args.wheel
+        args.package,
+        args.version,
+        args.runtime_id,
+        args.abi,
+        args.channel,
+        args.wheel,
+        args.artifact_url,
+        args.build_passed,
+        args.elf_inspected,
     )
 
     if not validate_manifest(manifest):
@@ -165,8 +200,11 @@ def main():
     if not output_path:
         output_path = str(REPO_ROOT / "index" / args.channel / f"{args.package}-{args.version}-{args.abi}.json")
 
-    with open(output_path, "w") as f:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
+        f.write("\n")
 
     print(f"\n  ✓ Manifest saved to: {output_path}")
 

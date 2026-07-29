@@ -17,6 +17,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,16 +28,34 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGES_DIR = REPO_ROOT / "packages"
 TOOLCHAIN_DIR = REPO_ROOT / "toolchain"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
+PACKAGE_NAME = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+
+try:
+    from scripts.verify_source_lock import local_source_files, local_source_hash
+except ModuleNotFoundError:
+    from verify_source_lock import local_source_files, local_source_hash
 
 # ---------------------------------------------------------------------------
 # Recipe & runtime-lock loaders
 # ---------------------------------------------------------------------------
 
+def package_directory(package_name: str) -> Path:
+    """Resolve an allowlisted package directory without permitting traversal."""
+    if not PACKAGE_NAME.fullmatch(package_name):
+        print(f"❌ Invalid package name: {package_name!r}")
+        sys.exit(1)
+    package_dir = (PACKAGES_DIR / package_name).resolve()
+    if PACKAGES_DIR.resolve() not in package_dir.parents:
+        print(f"❌ Package path escapes packages directory: {package_name!r}")
+        sys.exit(1)
+    return package_dir
+
+
 def load_recipe(package_name: str) -> dict:
     """Load recipe.yaml for a package."""
     import yaml  # noqa: F811
 
-    recipe_path = PACKAGES_DIR / package_name / "recipe.yaml"
+    recipe_path = package_directory(package_name) / "recipe.yaml"
     if not recipe_path.exists():
         print(f"❌ Recipe not found: {recipe_path}")
         sys.exit(1)
@@ -343,9 +362,14 @@ def prepare_source(package: str, recipe: dict, build_dir: Path) -> Path:
         dest = build_dir / package
         if dest.is_dir():
             shutil.rmtree(dest)
-        shutil.copytree(pkg_dir, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        dest.mkdir(parents=True)
+        for source in local_source_files(pkg_dir):
+            relative = source.relative_to(pkg_dir)
+            target = dest / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
 
-        print(f"  ✓ Local source copied to: {dest}")
+        print(f"  ✓ Verified local source copied to: {dest}")
         return dest
 
     # TODO: Download external source + verify SHA-256
@@ -504,6 +528,18 @@ def run_build(package: str, version: str, abi: str, channel: str, dry_run: bool)
 
     # Step 1: Load recipe
     recipe = load_recipe(package)
+    if recipe.get("package") != package:
+        print(
+            f"❌ Recipe package {recipe.get('package')!r} does not match "
+            f"requested package {package!r}."
+        )
+        return False
+    if str(recipe.get("version")) != version:
+        print(
+            f"❌ Recipe version {recipe.get('version')!r} does not match "
+            f"requested version {version!r}."
+        )
+        return False
 
     # Step 2: Load runtime lock
     lock = load_runtime_lock()
@@ -522,7 +558,14 @@ def run_build(package: str, version: str, abi: str, channel: str, dry_run: bool)
     source_url = recipe.get("source_url")
     source_sha256 = recipe.get("source_sha256")
     if source_url == "local":
-        print(f"  ✓ Local source package: {package}")
+        actual_source_hash = local_source_hash(package_directory(package))
+        if actual_source_hash != source_sha256:
+            print(
+                "  ❌ Local source hash mismatch: "
+                f"expected {source_sha256}, got {actual_source_hash}"
+            )
+            return False
+        print(f"  ✓ Local source package verified: {package}")
     elif not source_url or not source_sha256:
         print(f"  ❌ Source URL or SHA-256 missing")
         return False
@@ -575,7 +618,8 @@ def run_build(package: str, version: str, abi: str, channel: str, dry_run: bool)
     print(f"\n  Inspecting artifact...")
     inspect_ok = inspect_artifact(wheel_path, abi)
     if not inspect_ok:
-        print("  ⚠️  Inspection found issues — wheel may not work on Android")
+        print("  ❌ Artifact inspection failed; refusing to publish the wheel.")
+        return False
 
     # Step 12: Compute SHA-256
     sha256 = compute_sha256(wheel_path)
@@ -594,6 +638,8 @@ def run_build(package: str, version: str, abi: str, channel: str, dry_run: bool)
             "--abi", abi,
             "--channel", channel,
             "--wheel", str(wheel_path),
+            "--build-passed",
+            "--elf-inspected",
             "--output", str(build_dir / "manifest.json"),
         ],
         timeout=30,

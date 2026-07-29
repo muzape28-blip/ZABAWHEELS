@@ -2,36 +2,5 @@
   "schema_version": 1,
   "runtime_id": "zmux-py314-api26-p4a5c192d7b7308-r1",
   "generated_at": "2026-07-29T14:35:00Z",
-  "packages": {
-    "zaba-native-smoke": {
-      "name": "zaba-native-smoke",
-      "versions": [
-        "1.0.0"
-      ],
-      "description": "Test package for ZMUX native smoke test",
-      "abis": [
-        "armeabi-v7a",
-        "arm64-v8a"
-      ],
-      "status": "candidate",
-      "tags": [
-        "test",
-        "smoke"
-      ],
-      "dependencies": [],
-      "last_updated": "2026-07-29",
-      "channel": "candidate",
-      "runtime_id": "zmux-py314-api26-p4a5c192d7b7308-r1",
-      "artifact": {
-        "filename": "zaba_native_smoke-1.0.0-cp314-cp314-android_armeabi_v7a.whl",
-        "url": "https://github.com/muzape28-blip/ZABAWHEELS/raw/main/packages/zaba-native-smoke/dist/zaba_native_smoke-1.0.0-cp314-cp314-android_armeabi_v7a.whl",
-        "sha256": "PLACEHOLDER_SHA256_FOR_TESTING",
-        "size": 12345
-      },
-      "native": {
-        "has_extensions": false,
-        "needed_libraries": []
-      }
-    }
-  }
+  "packages": {}
 }

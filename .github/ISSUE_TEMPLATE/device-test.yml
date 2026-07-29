@@ -90,7 +90,7 @@ body:
     attributes:
       label: Errors observed
       description: Describe any errors, crashes, or unexpected behavior
-      placeholder: e.g. ImportError: dlopen failed: library not found
+      placeholder: "e.g. ImportError: dlopen failed: library not found"
 
   - type: textarea
     id: additional-notes

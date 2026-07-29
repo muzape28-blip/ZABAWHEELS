@@ -24,8 +24,9 @@ from pathlib import Path
 
 try:
     import yaml
+    from jsonschema import Draft202012Validator
 except ImportError:
-    print("❌ PyYAML is required. Install: pip install pyyaml")
+    print("❌ PyYAML and jsonschema are required. Install: pip install pyyaml jsonschema")
     sys.exit(1)
 
 
@@ -79,6 +80,16 @@ def validate_recipe(recipe_path: Path) -> list:
 
     if not recipe:
         return ["Empty recipe file"]
+
+    schema_path = SCHEMA_DIR / "recipe.schema.json"
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        validator = Draft202012Validator(schema)
+        for error in sorted(validator.iter_errors(recipe), key=lambda item: list(item.path)):
+            location = ".".join(str(part) for part in error.path) or "<root>"
+            errors.append(f"Schema violation at {location}: {error.message}")
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"Cannot load recipe schema: {error}")
 
     # Check required fields
     for field in REQUIRED_RECIPE_FIELDS:

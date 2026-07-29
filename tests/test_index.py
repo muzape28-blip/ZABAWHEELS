@@ -3,8 +3,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INDEX_DIR = REPO_ROOT / "index"
@@ -49,3 +47,15 @@ def test_index_note_is_present():
         with open(packages_path) as f:
             data = json.load(f)
         assert "note" in data, f"Missing 'note' in {channel}/packages.json"
+
+
+def test_published_index_has_no_placeholder_artifacts():
+    """Never advertise a wheel with a fake checksum or repository-local URL."""
+    for index_path in INDEX_DIR.rglob("*.json"):
+        if "schemas" in index_path.parts:
+            continue
+        content = index_path.read_text(encoding="utf-8")
+        assert "PLACEHOLDER" not in content, f"Placeholder found in {index_path}"
+        assert "/raw/main/packages/" not in content, (
+            f"Repository-local artifact URL found in {index_path}"
+        )
