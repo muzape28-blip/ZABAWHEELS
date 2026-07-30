@@ -35,15 +35,16 @@ Built-in commands:
   cd <dir>      Change directory
   exit          Exit terminal session
 
-System commands:
-  ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
-  All standard Android/Linux commands available via /system/bin/sh
-
-Python:
-  python        Start Python interpreter
-  python <file> Run Python script
-  python -c "..."  Execute Python code
+Python-native terminal:
+  Type Python expressions or statements directly (this is the primary REPL).
+  python <file> Run a Python script in the embedded CPython runtime
+  python -c "..." Execute Python code in the embedded CPython runtime
   pip           Python package manager (if available)
+
+Filesystem commands:
+  ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
+  These use real Python filesystem APIs. Native Android utilities are invoked
+  directly by absolute path; ZMUX never starts /system/bin/sh.
 
 ZMUX Package Manager:
   zpip search <name>      Search for packages
@@ -76,6 +77,9 @@ class TerminalSession:
 
     def __init__(self):
         self._cwd = HOME_DIR
+        # The primary executor is embedded CPython, not /system/bin/sh.
+        from zmux.python_shell import PythonShell
+        self._python_shell = PythonShell(self._cwd)
         self._process: Optional[subprocess.Popen] = None
         self._output_queue: queue.Queue = queue.Queue()
         self._stdout_thread: Optional[threading.Thread] = None
@@ -182,112 +186,28 @@ class TerminalSession:
                     "status": ProcessStatus.RUNNING,
                 }
 
-        # Parse command
-        if not command.strip():
-            return {"ok": True, "stdout": "", "stderr": "", "exit_code": 0, "status": ProcessStatus.IDLE}
-
-        # Handle built-in commands
-        builtin_result = self._handle_builtin(command)
-        if builtin_result is not None:
-            return builtin_result
-
-        # Execute real subprocess
-        try:
-            self._status = ProcessStatus.RUNNING
-            self._exit_code = None
-            
-            # Use shell=False for security, but allow shell for complex commands
-            # Document: shell=True is used here because terminal needs to support
-            # pipes, redirects, and complex shell syntax. User is already in a shell.
-            self._process = subprocess.Popen(
-                command,
-                cwd=str(self._cwd),
-                env=self._env,
-                shell=True,  # Documented: needed for shell features
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # Line buffered
-                # Use start_new_session instead of preexec_fn=os.setsid.
-                # preexec_fn with os.setsid crashes on Android Bionic libc
-                # (ARMv7 armeabi-v7a) due to unsafe after-fork signal state.
-                # start_new_session is the safe POSIX equivalent.
-                start_new_session=True,
-            )
-
-            # Start reader threads
-            self._stdout_thread = threading.Thread(
-                target=self._read_stream,
-                args=(self._process.stdout, "stdout"),
-                daemon=True,
-            )
-            self._stderr_thread = threading.Thread(
-                target=self._read_stream,
-                args=(self._process.stderr, "stderr"),
-                daemon=True,
-            )
-            self._stdout_thread.start()
-            self._stderr_thread.start()
-
-            # Wait for completion with optional timeout
+        # ``exit`` ends the virtual terminal session; it is not delegated to a
+        # shell process. Preserve a requested numeric exit code for API users.
+        exit_parts = command.split()
+        if exit_parts and exit_parts[0] == "exit":
             try:
-                if timeout:
-                    self._process.wait(timeout=timeout)
-                else:
-                    self._process.wait()
-            except subprocess.TimeoutExpired:
-                self.stop()
-                return {
-                    "ok": False,
-                    "stdout": self._collect_output(),
-                    "stderr": f"Command timed out after {timeout}s",
-                    "exit_code": -1,
-                    "status": ProcessStatus.FAILED,
-                }
+                code = int(exit_parts[1]) if len(exit_parts) > 1 else 0
+            except ValueError:
+                code = 2
+            self._exit_code = code
+            self._status = ProcessStatus.EXITED
+            return {"ok": code == 0, "stdout": "Goodbye!\n", "stderr": "", "exit_code": code, "status": self._status}
 
-            # Collect remaining output
-            if self._stdout_thread:
-                self._stdout_thread.join(timeout=1)
-            if self._stderr_thread:
-                self._stderr_thread.join(timeout=1)
-
-            stdout = self._collect_output()
-            stderr = ""  # stderr is in output queue
-            
-            self._exit_code = self._process.returncode
-            self._status = ProcessStatus.IDLE  # Terminal is ready for next command
-
-            return {
-                "ok": self._exit_code == 0,
-                "stdout": stdout,
-                "stderr": stderr,
-                "exit_code": self._exit_code,
-                "status": self._status,
-            }
-
-        except FileNotFoundError:
-            self._status = ProcessStatus.FAILED
-            self._exit_code = 127
-            return {
-                "ok": False,
-                "stdout": "",
-                "stderr": f"Command not found: {command.split()[0]}",
-                "exit_code": 127,
-                "status": ProcessStatus.FAILED,
-            }
-        except Exception as e:
-            self._status = ProcessStatus.FAILED
-            self._exit_code = -1
-            return {
-                "ok": False,
-                "stdout": "",
-                "stderr": str(e),
-                "exit_code": -1,
-                "status": ProcessStatus.FAILED,
-            }
-        finally:
-            self._process = None
+        # PythonShell is the only command path.  In particular, do not use
+        # shell=True: Android's shell cannot execute files from many app-private
+        # mounts.  PythonShell executes Python in-process and invokes Android
+        # utilities directly by absolute path when a native utility is needed.
+        result = self._python_shell.execute(command, timeout=timeout)
+        self._cwd = self._python_shell.cwd
+        self._exit_code = result.get("exit_code")
+        self._status = ProcessStatus.IDLE
+        result["status"] = self._status
+        return result
 
     def _collect_output(self) -> str:
         """Collect all output from the queue."""

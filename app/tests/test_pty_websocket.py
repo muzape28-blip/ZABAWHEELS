@@ -81,8 +81,8 @@ def test_pty_session_lifecycle():
         session.start()
 
         assert session.is_running
-        assert session.process is not None
-        assert session.process.poll() is None
+        # Python-native mode deliberately does not spawn a shell process.
+        assert session.process is None
 
         # Try to write some characters
         session.write_input(b"echo pty_test\n")
@@ -94,7 +94,7 @@ def test_pty_session_lifecycle():
 
         session.stop()
         assert not session.is_running
-        assert session.process is None or session.process.poll() is not None
+        assert session.process is None
     finally:
         server.stop()
 
@@ -209,9 +209,8 @@ def test_websocket_start_with_multiple_listeners():
         server.stop()
 
 
-def test_pty_session_fallback_on_openpty_failure(monkeypatch):
-    """Verify that if os.openpty raises PermissionError (common on ARMv7 Android Go),
-    PTYTerminalSession gracefully falls back to a standard pipe session without crashing."""
+def test_python_native_session_does_not_depend_on_openpty(monkeypatch):
+    """Python-native mode must work even where Android denies /dev/ptmx."""
     import os
 
     def _mock_openpty():
@@ -228,13 +227,12 @@ def test_pty_session_fallback_on_openpty_failure(monkeypatch):
         session.start()
 
         assert session.is_running
-        assert session.process is not None
-        assert session.process.poll() is None
+        assert session.process is None
 
-        session.write_input(b"echo fallback_ok\n")
+        session.write_input(b"echo python_native_ok\n")
         time.sleep(0.2)
         scrollback = session.get_scrollback()
-        assert b"fallback_ok" in scrollback or len(scrollback) > 0
+        assert b"python_native_ok" in scrollback
 
         session.stop()
         assert not session.is_running
