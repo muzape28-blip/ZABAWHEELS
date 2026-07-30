@@ -6,7 +6,69 @@ from zmux.server import (
     _bind_listener,
     _bind_ws_socket,
     _format_zpip_output,
+    _get_json_payload,
+    app,
 )
+
+
+def test_get_json_payload_invalid_json_returns_2tuple_and_400():
+    """Malformed JSON body must yield a 2-tuple so POST callers can unpack
+    `payload, err = _get_json_payload()` without raising
+    `ValueError: too many values to unpack` (regression for PR #14)."""
+    with app.test_request_context(
+        "/api/exec",
+        method="POST",
+        data=b"{not valid json",
+        content_type="application/json",
+    ):
+        payload, err = _get_json_payload()
+        assert payload is None
+        # The error value must be a 2-tuple (Response, status), not a 3-tuple,
+        # so Flask can return it directly via `return err`.
+        assert isinstance(err, tuple) and len(err) == 2
+        resp = app.make_response(err)
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "invalid_json"
+
+
+def test_get_json_payload_non_object_returns_2tuple_and_400():
+    """A JSON array/scalar is not a request object -> 400 with invalid_json_type."""
+    with app.test_request_context(
+        "/api/exec",
+        method="POST",
+        data=b"[1, 2, 3]",
+        content_type="application/json",
+    ):
+        payload, err = _get_json_payload()
+        assert payload is None
+        assert isinstance(err, tuple) and len(err) == 2
+        resp = app.make_response(err)
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "invalid_json_type"
+
+
+def test_get_json_payload_valid_dict_returns_data():
+    with app.test_request_context(
+        "/api/exec",
+        method="POST",
+        data=b'{"command": "echo hi"}',
+        content_type="application/json",
+    ):
+        payload, err = _get_json_payload()
+        assert err is None
+        assert payload == {"command": "echo hi"}
+
+
+def test_get_json_payload_empty_body_returns_empty_dict():
+    with app.test_request_context(
+        "/api/exec",
+        method="POST",
+        data=b"",
+        content_type="application/json",
+    ):
+        payload, err = _get_json_payload()
+        assert err is None
+        assert payload == {}
 
 
 def test_install_output_uses_real_newlines():
