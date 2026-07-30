@@ -60,13 +60,25 @@ def require_auth(func):
 
 
 def _get_json_payload():
+    """Parse and validate JSON body.
+
+    Returns a 2-tuple (payload, error_response).
+    - On success: (dict, None)
+    - On error:   (None, (jsonify_response, status_code))
+
+    Callers must unpack exactly 2 values and return `err` when it is not None:
+
+        payload, err = _get_json_payload()
+        if err:
+            return err
+    """
     data = request.get_json(silent=True)
     if data is None:
         if request.get_data(cache=True, as_text=True).strip():
-            return None, jsonify({"ok": False, "message": "Invalid JSON", "code": "invalid_json"}), 400
+            return None, (jsonify({"ok": False, "message": "Invalid JSON", "code": "invalid_json"}), 400)
         return {}, None
     if not isinstance(data, dict):
-        return None, jsonify({"ok": False, "message": "JSON must be object", "code": "invalid_json_type"}), 400
+        return None, (jsonify({"ok": False, "message": "JSON must be object", "code": "invalid_json_type"}), 400)
     return data, None
 
 
