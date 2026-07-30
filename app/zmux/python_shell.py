@@ -7,7 +7,6 @@ path.
 """
 from __future__ import annotations
 
-import ast
 import contextlib
 import io
 import os
@@ -67,9 +66,10 @@ class PythonShell:
                 return self._exec_python_command(parts[1:])
             if command in {"pip", "zpip", "help", "zmux-info"}:
                 return self._exec_zmux_command(command, parts[1:])
-            # A known executable or a line containing shell operators is a
-            # command. Everything else is genuine Python source.
-            if self._is_external_command(command) or any(x in line for x in ("|", ">", "<")):
+            # A known external executable is run as a command. Everything else
+            # is genuine Python source. (Lines containing |, >, < already went
+            # to _exec_subprocess above — no need to test for them twice.)
+            if self._is_external_command(command):
                 return self._exec_subprocess(line, timeout)
             return self._exec_python(line)
         except (OSError, ValueError) as exc:
@@ -101,8 +101,29 @@ class PythonShell:
         for value in values: self._path(value).mkdir(parents=parents, exist_ok=parents)
         return ""
 
+    # Options accepted by _cmd_rm. Anything else is rejected loudly instead of
+    # being fuzzy-matched: previously any "-" argument *containing* the letter
+    # "r"/"f" enabled recursive/force (e.g. `rm -random-flag dir/` would have
+    # recursively deleted a directory the user never asked to touch).
+    _RM_LONG_FLAGS = {"--recursive", "--force"}
+    _RM_CLUSTER_LETTERS = frozenset("rRf")
+
     def _cmd_rm(self, args: list[str]) -> str:
-        recursive, force = any("r" in a for a in args if a.startswith("-")), any("f" in a for a in args if a.startswith("-"))
+        recursive = force = False
+        for arg in args:
+            if not arg.startswith("-"):
+                continue
+            if arg in self._RM_LONG_FLAGS:
+                if arg == "--recursive":
+                    recursive = True
+                else:
+                    force = True
+            elif arg[1:] and set(arg[1:]) <= self._RM_CLUSTER_LETTERS:
+                recursive = recursive or "r" in arg or "R" in arg
+                force = force or "f" in arg
+            else:
+                shown = arg if arg.startswith("--") else arg[1:]
+                raise ValueError(f"invalid option -- '{shown}'")
         values = [a for a in args if not a.startswith("-")]
         if not values: raise ValueError("missing operand")
         for value in values:
@@ -140,7 +161,12 @@ class PythonShell:
     def _cmd_clear(self, args: list[str]) -> str: return "\033[H\033[2J\033[3J"
     def _cmd_env(self, args: list[str]) -> str: return "".join(f"{k}={v}\n" for k, v in sorted(os.environ.items()))
     def _cmd_which(self, args: list[str]) -> str:
-        return "".join((self._find_executable(arg) or "") + ("\n" if self._find_executable(arg) else "") for arg in args)
+        found = []
+        for arg in args:
+            resolved = self._find_executable(arg)  # single lookup per name
+            if resolved:
+                found.append(resolved)
+        return "".join(path + "\n" for path in found)
     def _cmd_uname(self, args: list[str]) -> str: return platform.platform() + "\n"
 
     def _cmd_cd(self, args: list[str]) -> str:

@@ -85,7 +85,7 @@ ZMUX is a standalone Android terminal application that runs as a WebView fronten
 The pinned Python-for-Android WebView bootstrap starts `main.py` in a background thread, while `WebViewLoader.testConnection()` polls **`localhost:5000`** (the value of `p4a.port` in `buildozer.spec`) continuously until a TCP connection succeeds before loading `http://127.0.0.1:5000/`. To guarantee reliable boot across Android devices:
 
 - **Strict Android Port 5000 Ownership (`SO_REUSEPORT`):** On Android, the HTTP server must bind exactly port 5000. Setting both `SO_REUSEADDR` and `SO_REUSEPORT` ensures that restarting ZMUX while a previous socket is lingering in `TIME_WAIT` never throws `Address already in use`.
-- **Multi-Host Fallback:** If binding `127.0.0.1:5000` fails due to OEM network stack variations, ZMUX automatically retries binding on `0.0.0.0` and `localhost`.
+- **Multi-Host Fallback (Loopback-Only):** If binding `127.0.0.1:5000` fails due to OEM network stack variations, ZMUX retries binding on `localhost`. Binding to `0.0.0.0` was deliberately removed: `/` serves the WebView auth token without authentication, so a wildcard-interface bind would hand that token — and with it full command execution — to every device on the local network. Loopback is a hard security invariant, not a preference.
 - **Pre-Bound Listener Injection:** Sockets are bound before starting Waitress (`serve(..., sockets=[...])`) and the WebSocket server (`start(listeners=[...])`), eliminating probe-then-bind race conditions.
 - **Dual IPv4/IPv6 Loopback Listeners:** Both the HTTP server and WebSocket server listen simultaneously on IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback addresses, preventing connection hangs when `localhost` resolves to IPv6.
 

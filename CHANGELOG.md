@@ -8,7 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+- **Removed `0.0.0.0` (wildcard-interface) bind fallback for both the HTTP and WebSocket listeners** (`app/zmux/server.py`). `/` serves the WebView `AUTH_TOKEN` unauthenticated (the page's JavaScript needs it), so any device on the same LAN could previously have fetched the token and driven `/api/exec` whenever the fallback triggered. Listeners are now strictly loopback (`127.0.0.1` / `localhost` / `::1`), restoring the documented security boundary.
+- **Native wheel libraries are installed read-only** (`app/zmux/zpip.py`): `.so` files committed to `user_packages/` are now `chmod 0o444`. Android 14+ "safer dynamic code loading" requires dynamically loaded files to be read-only (warning on targetSdk 34, hard `UnsatisfiedLinkError: Attempt to load writable file` enforced on newer targets). Same fix Termux applied to `termux-am`.
+- **`rm` flag parsing is now strict** (`app/zmux/python_shell.py`): unknown options raise `invalid option` instead of being fuzzy-matched. Previously any `-` argument merely *containing* the letters `r`/`f` enabled recursive/force — `rm -random-flag dir/` would have recursively deleted a directory.
+
+### Changed
+- **The WebSocket port now lives in `app.config["WS_PORT"]`** instead of a mutable module-level global in `app/zmux/server.py`, so the CSP header and `terminal.html` always render the real port and tests can set it explicitly without `run_server()`.
+
+### Removed
+- **Dead code in `app/zmux/terminal.py`** (~180 lines): `_handle_builtin()` and its five `_builtin_*` handlers, `_read_stream()`, `_drain_output()`, `_collect_output()`, and the unused output queue/stream threads — all unreachable since `execute()` delegates exclusively to `PythonShell`. The module docstring and the `send_input()`/`stop()` stubs now honestly describe what they do today (no long-lived streaming process exists, so both report "No process running").
+
 ### Fixed
+- **`which` no longer resolves each name twice** per lookup (`app/zmux/python_shell.py`).
+- **Removed the duplicated pipeline/redirection operator check** in `PythonShell.execute()` — lines containing `|`, `>`, `<` were tested twice on the same code path.
+- **`zpip install` no longer swallows `KeyboardInterrupt`/`SystemExit`** while probing dependency pins (bare `except:` → `except Exception:`).
+
+### Fixed (kept from earlier unreleased work)
 - **Transparent Unix Shell Integration for ZMUX Built-in Commands:** typing `zpip`, `help`, `zmux-info`, `clear`, or `pip` inside the real Android PTY shell no longer fails with `/system/bin/sh: <cmd>: inaccessible or not found`. `/system/bin/sh` only executes binaries and scripts found on `$PATH`, so ZMUX now ships native shell entrypoints:
   - Added `app/zmux/cli.py`, a CLI entrypoint (`python -m zmux.cli <cmd> [args...]`) that implements the command handlers: `help` prints the formatted ZMUX terminal help text, `clear` emits `\033[H\033[2J\033[3J`, `zmux-info` prints the formatted runtime fingerprint, `zpip` dispatches through the package manager with cleanly formatted output, and `pip` invokes standard pip when a runnable interpreter exists or prints guidance to use `zpip` otherwise.
   - `app/zmux/paths.py` now defines `BIN_DIR` (`APP_DIR/bin`) and auto-generates executable (`0o755`) `#!/system/bin/sh` wrappers for every command at import time via `ensure_cli_wrappers()`; each wrapper execs `python -m zmux.cli "$0" "$@"` (falling back to `python3`) and `BIN_DIR` is added to `os.environ["PATH"]`.
