@@ -13,6 +13,7 @@ import os
 import platform
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -21,6 +22,27 @@ from pathlib import Path
 from typing import Callable
 
 from zmux.paths import HOME_DIR
+
+
+# --- Optional Rich rendering (DX polish) --------------------------------------
+# Rich is a pure-python universal wheel; when installed (e.g. via
+# ``zpip install rich``) tracebacks render syntax-highlighted. Everything
+# degrades to plain ``traceback.format_exc()`` output when it is absent.
+_RICH_UNSET = object()
+_rich_impl = _RICH_UNSET
+
+
+def _get_rich():
+    """Import rich lazily, once. Returns (Console, Traceback) or None."""
+    global _rich_impl
+    if _rich_impl is _RICH_UNSET:
+        try:
+            from rich.console import Console
+            from rich.traceback import Traceback
+            _rich_impl = (Console, Traceback)
+        except Exception:
+            _rich_impl = None
+    return _rich_impl
 
 
 class PythonShell:
@@ -42,11 +64,84 @@ class PythonShell:
             "cd": self._cmd_cd, "clear": self._cmd_clear, "env": self._cmd_env,
             "which": self._cmd_which, "uname": self._cmd_uname,
         }
+        # --- Interactivity / cancellation infrastructure -----------------------
+        #: Terminal width reported by the front-end (used by Rich rendering).
+        self.width = 80
+        #: Optional file-like stdin provider installed while user code runs;
+        #: the websocket terminal feeds it so ``input()`` works.
+        self.stdin_provider = None
+        #: Cooperative Ctrl+C: set by :meth:`interrupt`; checked by the stdin
+        #: provider and combined with async KeyboardInterrupt injection.
+        self._interrupt = threading.Event()
+        #: Monotonic counter bumped on every Ctrl+C. Lets the execution loop
+        #: distinguish "flag set before this command started" (discardable)
+        #: from "flag set for this command" without a busy-state race window.
+        self._interrupt_epoch = 0
+        #: In-flight pipeline processes, so :meth:`interrupt` can signal them.
+        self._procs: list[subprocess.Popen] = []
+        self._procs_lock = threading.Lock()
+        #: >0 while inside _exec_subprocess (even between spawn and register),
+        #: so Ctrl+C classification never misreads a pipeline as pure Python.
+        self._subprocess_depth = 0
 
-    def execute(self, line: str, timeout: float | None = None) -> dict:
+    # ------------------------------------------------------------------ cancel
+    def interrupt(self) -> None:
+        """Cooperative Ctrl+C.
+
+        Sets the interrupt flag (stdin providers stop blocking) and forwards
+        SIGINT to any in-flight pipeline process group, escalating to SIGKILL.
+        Pure-Python runaway code is interrupted by the caller injecting
+        ``KeyboardInterrupt`` into the execution thread (see pty_session).
+        """
+        self._interrupt_epoch += 1
+        self._interrupt.set()
+        with self._procs_lock:
+            victims = [p for p in self._procs if p.poll() is None]
+        for proc in victims:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                if hasattr(os, "killpg"):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+                else:
+                    proc.send_signal(signal.SIGINT)
+
+        def _escalate() -> None:
+            for proc in victims:
+                if proc.poll() is not None:
+                    continue
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    if hasattr(os, "killpg"):
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    else:
+                        proc.kill()
+
+        timer = threading.Timer(1.5, _escalate)
+        timer.daemon = True
+        timer.start()
+
+    def has_running_processes(self) -> bool:
+        """True while subprocess execution owns the worker (pre-spawn counts)."""
+        with self._procs_lock:
+            if self._subprocess_depth > 0:
+                return True
+            return any(p.poll() is None for p in self._procs)
+
+    def clear_interrupt(self, epoch: int | None = None) -> None:
+        """Reset the Ctrl+C latch.
+
+        With ``epoch``, only clears when no *newer* interrupt arrived since
+        that epoch — a Ctrl+C pressed mid-startup must survive loop setup.
+        """
+        if epoch is None or epoch == self._interrupt_epoch:
+            self._interrupt.clear()
+
+    def execute(self, line: str, timeout: float | None = None, force_python: bool = False) -> dict:
         line = line.strip()
         if not line:
             return self._result()
+        if force_python:
+            # REPL mode evaluates *everything* as Python — command builtins
+            # are intentionally not consulted (`ls` must be a NameError there).
+            return self._exec_python(line)
         try:
             parts = shlex.split(line)
         except ValueError as exc:
@@ -184,11 +279,45 @@ class PythonShell:
         self.cwd = target
         return ""
 
+    @contextlib.contextmanager
+    def _stdin_context(self):
+        """Point sys.stdin at the installed provider while user code runs.
+
+        (contextlib.redirect_stdin only exists on Python 3.12+; the embedded
+        runtime is 3.11, so the swap is done by hand.)
+        """
+        if self.stdin_provider is None:
+            yield
+            return
+        old_stdin = sys.stdin
+        sys.stdin = self.stdin_provider
+        try:
+            yield
+        finally:
+            sys.stdin = old_stdin
+
+    def _format_traceback(self) -> str:
+        """Rich-rendered traceback when available; stdlib format otherwise."""
+        rich = _get_rich()
+        if rich is not None:
+            Console, Traceback = rich
+            buffer = io.StringIO()
+            console = Console(
+                file=buffer,
+                force_terminal=True,
+                width=max(20, self.width),
+                color_system="standard",
+                highlight=False,
+            )
+            console.print(Traceback(show_locals=False))
+            return buffer.getvalue()
+        return traceback.format_exc()
+
     def _exec_python(self, source: str) -> dict:
         out, err = io.StringIO(), io.StringIO()
         try:
             # eval gives REPL-like expression output; exec handles statements.
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self._stdin_context():
                 try:
                     code = compile(source, "<zmux>", "eval")
                 except SyntaxError:
@@ -198,8 +327,17 @@ class PythonShell:
                     value = eval(code, self.globals, self.globals)
                     if value is not None: print(repr(value))
             return self._result(out.getvalue(), err.getvalue())
+        except KeyboardInterrupt:
+            # Ctrl+C (async-injected or raised by user/stdin): mirror CPython's
+            # own REPL — a one-line notice and exit status 130, no traceback.
+            return self._result(out.getvalue(), err.getvalue() + "KeyboardInterrupt\n", 130)
+        except SystemExit as exc:
+            # Quiet exit like the real REPL exiting a subshell: no traceback
+            # spam; propagate the numeric code when one was given.
+            code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+            return self._result(out.getvalue(), err.getvalue(), code)
         except BaseException:
-            return self._result(out.getvalue(), err.getvalue() + traceback.format_exc(), 1)
+            return self._result(out.getvalue(), err.getvalue() + self._format_traceback(), 1)
 
     def _exec_python_command(self, args: list[str]) -> dict:
         if not args or args[0] in {"--version", "-V"}:
@@ -237,6 +375,15 @@ class PythonShell:
     def _is_external_command(self, command: str) -> bool: return self._find_executable(command) is not None
 
     def _exec_subprocess(self, line: str, timeout: float | None) -> dict:
+        with self._procs_lock:
+            self._subprocess_depth += 1
+        try:
+            return self._exec_subprocess_inner(line, timeout)
+        finally:
+            with self._procs_lock:
+                self._subprocess_depth -= 1
+
+    def _exec_subprocess_inner(self, line: str, timeout: float | None) -> dict:
         # Parse pipelines ourselves; shell=True would reintroduce /system/bin/sh.
         lexer = shlex.shlex(line, posix=True, punctuation_chars="|<>")
         lexer.whitespace_split = True
@@ -278,10 +425,25 @@ class PythonShell:
                 executable = self._find_executable(stage[0])
                 if not executable: return self._result(stderr=f"{stage[0]}: command not found\n", code=127)
                 stdin = previous.stdout if previous else source_handle
+                # start_new_session gives every pipeline its own process group,
+                # so interrupt() can killpg() it without signalling our own
+                # server process (shared group would nuke the app itself).
                 proc = subprocess.Popen([executable, *stage[1:]], cwd=self.cwd, stdin=stdin,
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                        start_new_session=True)
                 if previous: previous.stdout.close()
                 processes.append(proc); previous = proc
+                # Register for Ctrl+C signalling (interrupt() kills the group).
+                with self._procs_lock:
+                    self._procs.append(proc)
+                # Close the spawn race: Ctrl+C may have been pressed in the
+                # gap between worker start and Popen returning.
+                if self._interrupt.is_set() and proc.poll() is None:
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        if hasattr(os, "killpg"):
+                            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+                        else:
+                            proc.send_signal(signal.SIGINT)
                 # Drain every stderr concurrently. Waiting for only the last
                 # pipeline member can deadlock when an earlier member writes a
                 # large error stream.
@@ -296,9 +458,20 @@ class PythonShell:
                 with output_file.open("a" if append else "w", encoding="utf-8") as handle: handle.write(stdout)
                 stdout = ""
             code = next((p.returncode for p in processes if p.returncode), 0)
+            if code < 0:
+                # Killed by a signal: say so plainly instead of printing a bare
+                # negative exit code (Termux renders this as
+                # "[Process completed (signal N)]").
+                sig = -code
+                hint = f"[process terminated by signal {sig}"
+                if sig == 9:
+                    hint += " — SIGKILL; on Android 12+ this is often the OS phantom-process limit"
+                stderr_parts.append(hint + "]\n")
             return self._result(stdout, "".join(stderr_parts), code)
         except subprocess.TimeoutExpired:
             for proc in processes: proc.kill()
             return self._result(stderr=f"Command timed out after {timeout}s\n", code=1)
         finally:
+            with self._procs_lock:
+                self._procs = [p for p in self._procs if p not in processes]
             if source_handle: source_handle.close()

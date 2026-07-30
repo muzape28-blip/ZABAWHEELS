@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from zmux.paths import BIN_DIR, HOME_DIR
+from zmux.paths import BIN_DIR, HOME_DIR, display_path
 
 
 HELP_TEXT = """ZMUX Terminal v1.0.0
@@ -244,12 +244,7 @@ class TerminalSession:
 
     def get_prompt(self) -> str:
         """Get shell prompt string."""
-        try:
-            rel = self._cwd.relative_to(HOME_DIR)
-            path = f"~/{rel}" if str(rel) != "." else "~"
-        except ValueError:
-            path = str(self._cwd)
-        return f"zmux:{path}$ "
+        return f"zmux:{display_path(self._cwd)}$ "
 
 
 # Global terminal session instance

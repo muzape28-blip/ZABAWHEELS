@@ -24,6 +24,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Removed the duplicated pipeline/redirection operator check** in `PythonShell.execute()` — lines containing `|`, `>`, `<` were tested twice on the same code path.
 - **`zpip install` no longer swallows `KeyboardInterrupt`/`SystemExit`** while probing dependency pins (bare `except:` → `except Exception:`).
 
+### Added — Interactive Terminal (PR 2: terminal identity)
+- **Shell/REPL mode split.** The terminal no longer looks like a bare `>>>`
+  interpreter for everything. Default is a real shell persona (`zmux:~$`,
+  cwd-aware prompt); typing `python`/`python3` enters a *pure* Python REPL
+  (`>>>`) where shell builtins are not intercepted (`ls` is a NameError,
+  like the real CPython REPL); `exit()`/`quit()` or Ctrl+D returns to the
+  shell. Compound blocks keep `...` continuation and a blank line closes an
+  open block — standard REPL semantics.
+- **Kill switch (real Ctrl+C).** Runaway commands can finally be stopped:
+  - Pure-Python runaways (`while True: pass`) are interrupted by async
+    `KeyboardInterrupt` injection into the dedicated execution thread.
+  - Subprocess pipelines run `start_new_session=True` in their own process
+    group; Ctrl+C forwards SIGINT to the group (escalating SIGKILL after
+    1.5 s) without ever signalling the app itself (a shared process group
+    would have nuked the hosting process — caught in testing).
+  - An interrupt **epoch counter** wipes out the classic busy-flag race
+    window, and a spawn-race check covers Ctrl+C landing between worker
+    start and `Popen` returning. Both were reproduced as flaky-test
+    failures and are now deterministic (5/5 clean suite runs).
+  - Processes killed by a signal render an explicit `[process terminated
+    by signal N]` hint (Termux-style), with a phantom-process-killer note
+    for SIGKILL on Android 12+.
+  - KeyboardInterrupt/SystemExit render like the real REPL (one-line
+    notice + exit 130, quiet code propagation) instead of traceback spam.
+- **Working stdin.** While a command runs, typed lines queue as stdin, so
+  `input()` now works in both modes; leftover lines when the command
+  finishes become type-ahead commands (real-terminal semantics). Stdin
+  reads unblock cleanly on Ctrl+C via the queue-backed provider polling
+  the interrupt flag. (`contextlib.redirect_stdin` doesn't exist before
+  Python 3.12, so the swap is done manually — caught on-device-class 3.11.)
+- **Command history.** Up/Down arrows (`ESC [ A/B`, plus SS3 dialect)
+  recall submitted lines (cap 500); escape sequences no longer leak `[A`
+  into the line buffer (previous bug).
+
+### Added — DX polish (PR 3)
+- **Rich-rendered tracebacks when `rich` is installed** (pure-python
+  universal wheel, `zpip install rich`): syntax-highlighted exceptions in
+  `_exec_python`, transparent plain-traceback fallback otherwise. Width
+  follows the front-end resize events.
+- **First-boot example scripts** (`~/examples/`: `hello.py`,
+  `files_demo.py`, `zpip_demo.py`), seeded once behind a marker so user
+  edits are never overwritten; seeding failure never blocks startup.
+
 ### Fixed (kept from earlier unreleased work)
 - **Transparent Unix Shell Integration for ZMUX Built-in Commands:** typing `zpip`, `help`, `zmux-info`, `clear`, or `pip` inside the real Android PTY shell no longer fails with `/system/bin/sh: <cmd>: inaccessible or not found`. `/system/bin/sh` only executes binaries and scripts found on `$PATH`, so ZMUX now ships native shell entrypoints:
   - Added `app/zmux/cli.py`, a CLI entrypoint (`python -m zmux.cli <cmd> [args...]`) that implements the command handlers: `help` prints the formatted ZMUX terminal help text, `clear` emits `\033[H\033[2J\033[3J`, `zmux-info` prints the formatted runtime fingerprint, `zpip` dispatches through the package manager with cleanly formatted output, and `pip` invokes standard pip when a runnable interpreter exists or prints guidance to use `zpip` otherwise.

@@ -97,6 +97,12 @@ The pinned Python-for-Android WebView bootstrap starts `main.py` in a background
 - **Send Timeouts (`SO_SNDTIMEO`):** Client sockets use `SO_SNDTIMEO` so a backgrounded WebView cannot block `sendall()` indefinitely.
 - **Host Cycling Reconnection:** The terminal UI cycles through loopback candidate hosts (`window.location.hostname`, `127.0.0.1`, `localhost`) across reconnect attempts, preventing silent loading screen hangs.
 
+## Interactive Terminal Model
+
+- **Single execution worker with a command queue.** Every completed input line is executed by one dedicated thread (`ZMUX-Terminal-Exec`), keeping the WebSocket input path live while user code runs. The worker swallows stray async `KeyboardInterrupt` at idle and can never die from a user exception.
+- **Two terminal personas.** Shell mode (`zmux:~$`) runs filesystem/zmux commands and evaluates everything else as Python (ZMUX escape hatch); REPL mode (`>>>`, entered via `python`) evaluates *everything* as Python — command builtins are bypassed so the REPL is pure (`force_python=True`).
+- **Ctrl+C is a pipeline, not a flag.** `PTYTerminalSession` → `PythonShell.interrupt()` → (a) epoch-bumped interrupt latch checked by the stdin provider, (b) SIGINT → SIGKILL escalation to the pipeline **process group** (children spawn with `start_new_session=True` — the app itself is never in that group), (c) async `KeyboardInterrupt` injection into the worker thread for pure-Python runaways only. Async delivery is racy by nature; the epoch tag, subprocess-depth tracking, spawn-race recheck, and worker-level `except KeyboardInterrupt` make outcomes deterministic: either a clean `KeyboardInterrupt` or a `[process terminated by signal N]` hint — never a frozen session.
+
 ## Security Boundaries
 
 - **WebView ↔ Server:** Loopback only (`127.0.0.1` / `::1`), protected by a 128-bit random authentication token.

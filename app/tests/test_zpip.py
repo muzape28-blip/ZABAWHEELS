@@ -1,11 +1,9 @@
 """Tests for ZMUX zpip package manager."""
 import os
 import sys
-import json
 import tempfile
 import zipfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -208,7 +206,6 @@ class TestNativeLibrariesInstalledReadOnly:
 
     @staticmethod
     def _prepare(tmp_path: Path, monkeypatch):
-        import stat as stat_module  # noqa: F401  (kept local to fixture users)
         from zmux import zpip
 
         user_packages_dir = tmp_path / "user_packages"
