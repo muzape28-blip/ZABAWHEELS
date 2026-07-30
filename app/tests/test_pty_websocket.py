@@ -8,7 +8,6 @@ WebSocket framing, and PTY process spawn capabilities.
 import socket
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -239,3 +238,144 @@ def test_python_native_session_does_not_depend_on_openpty(monkeypatch):
     finally:
         server.stop()
 
+
+# ---------------------------------------------------------------------------
+# Interactive terminal behaviour (PR 2): mode split, kill switch, stdin,
+# history — exercised without any real sockets via a ws_server stub.
+# ---------------------------------------------------------------------------
+
+
+class _FakeWS:
+    """Minimal ws_server stand-in (no sockets)."""
+
+    def __init__(self):
+        self.data = bytearray()
+        self.callbacks = {}
+
+    def register_callbacks(self, on_data, on_resize):
+        self.callbacks = {"on_data": on_data, "on_resize": on_resize}
+
+    def broadcast(self, payload):
+        self.data.extend(payload)
+
+
+def _wait_for(predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.fixture
+def interactive():
+    session = PTYTerminalSession(_FakeWS())
+    session.start()
+    yield session
+    session.stop()
+
+
+class TestModeSplit:
+    def test_shell_is_the_default_mode_and_python_enters_repl(self, interactive):
+        assert _wait_for(lambda: b"zmux:" in interactive.get_scrollback())
+
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+
+        interactive.write_input(b"21+21\n")
+        assert _wait_for(lambda: b"42\r\n" in interactive.get_scrollback())
+
+    def test_repl_is_pure_python_not_shell(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        # Inside the REPL, shell builtins must NOT be intercepted.
+        interactive.write_input(b"ls\n")
+        assert _wait_for(lambda: b"NameError" in interactive.get_scrollback())
+
+    def test_exit_function_returns_to_shell(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        interactive.write_input(b"exit()\n")
+        # NB: no rstrip() here — the prompt itself ends with a space.
+        assert _wait_for(lambda: interactive.get_scrollback().endswith(b"$ "))
+
+    def test_python_with_arguments_runs_script_not_repl(self, interactive, tmp_path):
+        """`python file.py` must execute the script — only the bare word
+        `python` enters the REPL (demo-caught regression)."""
+        script = tmp_path / "mini.py"
+        script.write_text("print('script_output_marker')\n", encoding="utf-8")
+        interactive.write_input(f"python {script}\n".encode("utf-8"))
+        assert _wait_for(lambda: b"script_output_marker" in interactive.get_scrollback())
+        # Still in shell mode: no REPL prompt was opened.
+        assert interactive.get_scrollback().rstrip().rstrip(b"\r\n").endswith(b"$")
+
+    def test_compound_block_and_blank_line_close(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        interactive.write_input(b"for i in range(3):\n")
+        assert _wait_for(lambda: b"... " in interactive.get_scrollback())
+        interactive.write_input(b" print(i*10)\n")
+        time.sleep(0.2)
+        interactive.write_input(b"\n")  # blank line closes the block (REPL semantics)
+        assert _wait_for(lambda: b"0\r\n10\r\n20\r\n" in interactive.get_scrollback())
+
+
+class TestKillSwitch:
+    def test_ctrl_c_stops_runaway_python(self, interactive):
+        interactive.write_input(b"while True: pass\n")
+        assert _wait_for(lambda: interactive._busy.is_set()), "command never started"
+        interactive.write_input(b"\x03")
+        assert _wait_for(lambda: b"KeyboardInterrupt" in interactive.get_scrollback(), timeout=15)
+        # The session must still accept and run the next command.
+        interactive.write_input(b"echo still_alive\n")
+        assert _wait_for(lambda: b"still_alive\r\n" in interactive.get_scrollback())
+
+    def test_ctrl_c_kills_subprocess_pipeline(self, interactive):
+        interactive.write_input(b"sleep 30\n")
+        assert _wait_for(lambda: interactive._busy.is_set()), "sleep never started"
+        start = time.monotonic()
+        interactive.write_input(b"\x03")
+        # Which marker appears depends on ^C timing vs. process spawn — both
+        # are correct "interrupted" renderings (like a real terminal): the
+        # signal hint when the process died by SIGINT, KeyboardInterrupt when
+        # the cancellation landed before/around spawn.
+        assert _wait_for(
+            lambda: b"signal" in interactive.get_scrollback()
+            or b"KeyboardInterrupt" in interactive.get_scrollback(),
+            timeout=15,
+        )
+        elapsed = time.monotonic() - start
+        assert elapsed < 15, f"interrupt took too long ({elapsed:.1f}s) — sleep 30 not killed"
+        interactive.write_input(b"echo after_kill\n")
+        assert _wait_for(lambda: b"after_kill\r\n" in interactive.get_scrollback())
+
+
+class TestStdinAndHistory:
+    def test_input_reads_queued_stdin_line(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        interactive.write_input(b"name = input('who? ')\n")
+        assert _wait_for(lambda: interactive._busy.is_set())
+        interactive.write_input(b"zaba\n")  # busy -> routed to stdin queue
+        assert _wait_for(lambda: not interactive._busy.is_set()), "input() never returned"
+        interactive.write_input(b"name\n")
+        assert _wait_for(lambda: b"'zaba'" in interactive.get_scrollback())
+
+    def test_arrow_up_recalls_last_command(self, interactive):
+        interactive.write_input(b"echo hist_marker\n")
+        assert _wait_for(lambda: b"hist_marker\r\n" in interactive.get_scrollback())
+        before = interactive.get_scrollback().count(b"hist_marker\r\n")
+        interactive.write_input(b"\x1b[A")  # Up
+        time.sleep(0.1)
+        interactive.write_input(b"\n")
+        assert _wait_for(
+            lambda: interactive.get_scrollback().count(b"hist_marker\r\n") >= before + 1
+        )
+
+    def test_escape_sequences_do_not_leak_into_line_buffer(self, interactive):
+        # Pressing Up with empty history must not type "[A" (previous bug).
+        interactive.write_input(b"\x1b[A")
+        time.sleep(0.1)
+        interactive.write_input(b"echo clean_line\n")
+        assert _wait_for(lambda: b"clean_line\r\n" in interactive.get_scrollback())

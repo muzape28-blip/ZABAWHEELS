@@ -1,29 +1,31 @@
-"""
-ZMUX Terminal Execution Engine
+"""ZMUX Terminal Session (REST API transport).
 
-Provides a real subprocess-based terminal that:
-- Runs commands with stdout/stderr streaming
-- Supports stdin input
-- Handles cancellation (Ctrl+C)
-- Maintains persistent working directory
-- Returns real exit codes
+Manages one persistent terminal session for the REST endpoints
+(``/api/exec``, ``/api/status`` ...). Commands are executed by the embedded
+Python-native shell (:class:`zmux.python_shell.PythonShell`): Python source
+runs in-process, filesystem commands use real Python filesystem APIs, and
+external programs are only ever started by absolute path — never via
+``/system/bin/sh``.
 
-Threat model: This executes real system commands within app-private storage.
-Commands like /system/bin/sh can see more than app-private area per Android OS policy.
+This module used to drive a streaming ``subprocess.Popen`` command engine;
+that design was replaced by PythonShell. A few stream-oriented helpers
+(out-of-band stdin, Ctrl+C cancellation) survive only as inert stubs because
+no long-running process currently exists; a real cancellation mechanism is
+planned work.
+
+Threat model: commands execute within app-private storage. Native Android
+utilities invoked by absolute path can see more than the app-private area,
+per Android OS policy.
 """
 
 import os
-import queue
-import select
 import signal
 import subprocess
-import sys
 import threading
-import time
 from pathlib import Path
 from typing import Optional
 
-from zmux.paths import BIN_DIR, HOME_DIR, LOG_DIR
+from zmux.paths import BIN_DIR, HOME_DIR, display_path
 
 
 HELP_TEXT = """ZMUX Terminal v1.0.0
@@ -73,7 +75,13 @@ class ProcessStatus:
 
 
 class TerminalSession:
-    """Manages a persistent terminal session with real subprocess execution."""
+    """Manages a persistent terminal session backed by the embedded Python shell.
+
+    The session owns the working directory and the last exit code. Python
+    state (variables, imports) persists across commands, giving REPL
+    semantics; ``self._process`` is a compatibility placeholder for the
+    retired subprocess engine and is always ``None`` today.
+    """
 
     def __init__(self):
         self._cwd = HOME_DIR
@@ -81,9 +89,6 @@ class TerminalSession:
         from zmux.python_shell import PythonShell
         self._python_shell = PythonShell(self._cwd)
         self._process: Optional[subprocess.Popen] = None
-        self._output_queue: queue.Queue = queue.Queue()
-        self._stdout_thread: Optional[threading.Thread] = None
-        self._stderr_thread: Optional[threading.Thread] = None
         self._status = ProcessStatus.IDLE
         self._exit_code: Optional[int] = None
         self._lock = threading.Lock()
@@ -124,31 +129,6 @@ class TerminalSession:
         env["PYTHONPATH"] = f"{USER_PACKAGES_DIR}:{pythonpath}" if pythonpath else str(USER_PACKAGES_DIR)
         return env
 
-    def _read_stream(self, stream, stream_name: str):
-        """Read from a stream and queue output."""
-        try:
-            for line in iter(stream.readline, ""):
-                if line:
-                    self._output_queue.put((stream_name, line))
-        except (ValueError, OSError):
-            pass
-        finally:
-            try:
-                stream.close()
-            except:
-                pass
-
-    def _drain_output(self) -> list:
-        """Drain all pending output from the queue."""
-        output = []
-        while not self._output_queue.empty():
-            try:
-                stream, line = self._output_queue.get_nowait()
-                output.append({"stream": stream, "line": line})
-            except queue.Empty:
-                break
-        return output
-
     @property
     def cwd(self) -> Path:
         """Current working directory."""
@@ -170,7 +150,7 @@ class TerminalSession:
     def execute(self, command: str, timeout: Optional[float] = None) -> dict:
         """
         Execute a command and return result.
-        
+
         Returns dict with:
         - ok: bool
         - stdout: str
@@ -209,135 +189,13 @@ class TerminalSession:
         result["status"] = self._status
         return result
 
-    def _collect_output(self) -> str:
-        """Collect all output from the queue."""
-        lines = []
-        while not self._output_queue.empty():
-            try:
-                stream, line = self._output_queue.get_nowait()
-                if stream == "stdout":
-                    lines.append(line)
-            except queue.Empty:
-                break
-        return "".join(lines)
-
-    def _handle_builtin(self, command: str) -> Optional[dict]:
-        """Handle built-in commands that don't need subprocess."""
-        parts = command.strip().split()
-        if not parts:
-            return None
-
-        cmd = parts[0]
-
-        if cmd == "cd":
-            return self._builtin_cd(parts[1:])
-        elif cmd == "pwd" and len(parts) == 1:
-            return self._builtin_pwd()
-        elif cmd == "clear" and len(parts) == 1:
-            return {"ok": True, "stdout": "\033[2J\033[H", "stderr": "", "exit_code": 0, "status": ProcessStatus.IDLE}
-        elif cmd == "help" and len(parts) == 1:
-            return self._builtin_help()
-        elif cmd == "exit" and len(parts) == 1:
-            return self._builtin_exit()
-
-        return None
-
-    def _builtin_cd(self, args: list) -> dict:
-        """Change directory with path traversal protection."""
-        if not args:
-            target = HOME_DIR
-        else:
-            target_str = " ".join(args)
-            if target_str == "~":
-                target = HOME_DIR
-            elif target_str.startswith("~/"):
-                target = HOME_DIR / target_str[2:]
-            else:
-                target = self._cwd / target_str
-
-        # Resolve and validate
-        try:
-            target = target.resolve()
-        except (OSError, ValueError) as e:
-            return {
-                "ok": False,
-                "stdout": "",
-                "stderr": f"cd: {target_str}: {e}",
-                "exit_code": 1,
-                "status": ProcessStatus.FAILED,
-            }
-
-        # Security: prevent traversal outside HOME_DIR for built-in cd
-        # Note: shell commands can still access broader filesystem per Android OS
-        if not str(target).startswith(str(HOME_DIR)):
-            return {
-                "ok": False,
-                "stdout": "",
-                "stderr": f"cd: cannot access '{target_str}': outside home directory",
-                "exit_code": 1,
-                "status": ProcessStatus.FAILED,
-            }
-
-        if not target.exists():
-            return {
-                "ok": False,
-                "stdout": "",
-                "stderr": f"cd: {target_str}: No such file or directory",
-                "exit_code": 1,
-                "status": ProcessStatus.FAILED,
-            }
-
-        if not target.is_dir():
-            return {
-                "ok": False,
-                "stdout": "",
-                "stderr": f"cd: {target_str}: Not a directory",
-                "exit_code": 1,
-                "status": ProcessStatus.FAILED,
-            }
-
-        self._cwd = target
-        return {"ok": True, "stdout": "", "stderr": "", "exit_code": 0, "status": ProcessStatus.IDLE}
-
-    def _builtin_pwd(self) -> dict:
-        """Print working directory."""
-        # Show relative path from HOME_DIR for readability
-        try:
-            rel = self._cwd.relative_to(HOME_DIR)
-            display = f"~/{rel}" if str(rel) != "." else "~"
-        except ValueError:
-            display = str(self._cwd)
-        
-        return {
-            "ok": True,
-            "stdout": f"{display}\n",
-            "stderr": "",
-            "exit_code": 0,
-            "status": ProcessStatus.IDLE,
-        }
-
-    def _builtin_help(self) -> dict:
-        """Show help message."""
-        return {
-            "ok": True,
-            "stdout": HELP_TEXT,
-            "stderr": "",
-            "exit_code": 0,
-            "status": ProcessStatus.IDLE,
-        }
-
-    def _builtin_exit(self, args=None) -> dict:
-        """Exit terminal session."""
-        return {
-            "ok": True,
-            "stdout": "Goodbye!\n",
-            "stderr": "",
-            "exit_code": 0,
-            "status": ProcessStatus.EXITED,
-        }
-
     def send_input(self, text: str) -> dict:
-        """Send input to running process."""
+        """Send input to a running process.
+
+        Currently inert: no long-lived streaming process exists, so this
+        always reports that nothing is running. Kept as part of the REST API
+        surface; a real stdin path is planned work.
+        """
         with self._lock:
             if not self._process or self._process.poll() is not None:
                 return {"ok": False, "error": "No process running"}
@@ -350,7 +208,12 @@ class TerminalSession:
                 return {"ok": False, "error": str(e)}
 
     def stop(self) -> dict:
-        """Stop running process (Ctrl+C equivalent)."""
+        """Stop the running process (Ctrl+C equivalent).
+
+        Currently inert for the same reason as :meth:`send_input`: there is no
+        child process to signal. Kept for API compatibility; real cancellation
+        is planned work.
+        """
         with self._lock:
             if not self._process or self._process.poll() is not None:
                 return {"ok": True, "message": "No process running"}
@@ -361,7 +224,7 @@ class TerminalSession:
                     os.killpg(os.getpgid(self._process.pid), signal.SIGINT)
                 else:
                     self._process.send_signal(signal.SIGINT)
-                
+
                 # Wait briefly for graceful shutdown
                 try:
                     self._process.wait(timeout=2)
@@ -381,12 +244,7 @@ class TerminalSession:
 
     def get_prompt(self) -> str:
         """Get shell prompt string."""
-        try:
-            rel = self._cwd.relative_to(HOME_DIR)
-            path = f"~/{rel}" if str(rel) != "." else "~"
-        except ValueError:
-            path = str(self._cwd)
-        return f"zmux:{path}$ "
+        return f"zmux:{display_path(self._cwd)}$ "
 
 
 # Global terminal session instance

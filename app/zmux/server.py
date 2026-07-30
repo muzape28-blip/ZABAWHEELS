@@ -32,6 +32,7 @@ app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
 
 @app.after_request
 def _security_headers(resp):
+    ws_port = app.config["WS_PORT"]
     resp.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
@@ -82,11 +83,15 @@ def _get_json_payload():
     return data, None
 
 
-ws_port = 5001
+# The WebSocket port is only known once run_server() has bound its listener,
+# so it lives in app.config (read at request time) rather than in a mutable
+# module global that tests could observe before the server even started.
+app.config.setdefault("WS_PORT", 5001)
+
 
 @app.get("/")
 def index():
-    return render_template("terminal.html", auth_token=AUTH_TOKEN, ws_port=ws_port)
+    return render_template("terminal.html", auth_token=AUTH_TOKEN, ws_port=app.config["WS_PORT"])
 
 
 @app.get("/api/health")
@@ -227,7 +232,10 @@ def _bind_http_socket() -> socket.socket:
     if _is_android():
         deadline = time.monotonic() + P4A_BIND_TIMEOUT_SECONDS
         while True:
-            for host in ("127.0.0.1", "0.0.0.0", "localhost"):
+            # Loopback candidates only. 0.0.0.0 was deliberately removed: "/"
+            # serves the WebView auth token without authentication, so binding
+            # a wildcard interface would hand that token to the whole LAN.
+            for host in ("127.0.0.1", "localhost"):
                 try:
                     return _bind_listener(host, P4A_HTTP_PORT, reuse_port=True)
                 except OSError:
@@ -250,19 +258,20 @@ def _bind_http_socket() -> socket.socket:
 
 
 def _bind_ws_socket(http_port: int) -> socket.socket:
-    """Bind the WebSocket listener on the first free port above http_port."""
+    """Bind the WebSocket listener on the first free port above http_port.
+
+    Loopback only, by design: the token-authenticated terminal stream must
+    never be reachable from any non-loopback interface.
+    """
     for port in range(http_port + 1, http_port + 101):
-        for host in ("127.0.0.1", "0.0.0.0"):
-            try:
-                return _bind_listener(host, port)
-            except OSError:
-                continue
+        try:
+            return _bind_listener("127.0.0.1", port)
+        except OSError:
+            continue
     raise RuntimeError(f"Could not find a free WebSocket port above {http_port}.")
 
 
 def run_server():
-    global ws_port
-
     # Bind real listeners up front (no probe-then-bind race).
     http_sock = _bind_http_socket()
     http_port = http_sock.getsockname()[1]
@@ -275,6 +284,9 @@ def run_server():
 
     ws_sock = _bind_ws_socket(http_port)
     ws_port = ws_sock.getsockname()[1]
+    # Publish before serving so the CSP header and terminal.html render with
+    # the real port from the very first request.
+    app.config["WS_PORT"] = ws_port
     ws_listeners = [ws_sock]
     ws_ipv6 = _bind_ipv6_loopback(ws_port)
     if ws_ipv6 is not None:

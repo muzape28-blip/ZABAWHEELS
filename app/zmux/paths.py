@@ -168,3 +168,65 @@ try:
     ensure_cli_wrappers()
 except OSError:
     pass
+
+
+# ---------------------------------------------------------------------------
+# Small shared display/example helpers
+# ---------------------------------------------------------------------------
+
+def display_path(cwd: Path, home: Path = HOME_DIR) -> str:
+    """Render ``cwd`` relative to ``home`` (``~`` style) for prompt display."""
+    try:
+        rel = Path(cwd).resolve().relative_to(home.resolve())
+        return "~" if str(rel) == "." else f"~/{rel}"
+    except ValueError:
+        return str(cwd)
+
+
+#: First-boot example scripts (educational onboarding, Pydroid-style).
+#: Kept tiny on purpose: each demonstrates one thing that actually works in
+#: the ZMUX runtime today.
+EXAMPLE_SCRIPTS: dict[str, str] = {
+    "hello.py": (
+        '"""ZMUX hello — plain Python running in the embedded runtime."""\n'
+        'import platform\n\n'
+        'print("Hello from ZMUX!")\n'
+        'print("Python:", platform.python_version())\n'
+    ),
+    "files_demo.py": (
+        '"""File APIs operate on the real app-private filesystem."""\n'
+        'from pathlib import Path\n\n'
+        'note = Path("notes.txt")\n'
+        'note.write_text("ditulis dari ZMUX\\n", encoding="utf-8")\n'
+        'print("isi notes.txt:", note.read_text(encoding="utf-8").strip())\n'
+        'note.unlink()\n'
+    ),
+    "zpip_demo.py": (
+        '"""See what zpip knows about this runtime."""\n'
+        'import sys\n\n'
+        'sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))\n'
+        'from zmux import zpip  # noqa: E402\n\n'
+        'print(zpip.format_fingerprint(zpip.runtime_fingerprint()))\n'
+    ),
+}
+
+_EXAMPLES_MARKER = ".examples_seeded"
+
+
+def seed_examples(home: Path = HOME_DIR) -> Path | None:
+    """Drop the example scripts into ``home/examples`` once (marker-guarded).
+
+    Returns the examples dir when seeding happened, None when it was already
+    done (or failed — onboarding must never break terminal startup).
+    """
+    try:
+        if (home / _EXAMPLES_MARKER).exists():
+            return None
+        target = home / "examples"
+        target.mkdir(parents=True, exist_ok=True)
+        for name, content in EXAMPLE_SCRIPTS.items():
+            (target / name).write_text(content, encoding="utf-8")
+        (home / _EXAMPLES_MARKER).touch()
+        return target
+    except OSError:
+        return None

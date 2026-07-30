@@ -85,7 +85,7 @@ ZMUX is a standalone Android terminal application that runs as a WebView fronten
 The pinned Python-for-Android WebView bootstrap starts `main.py` in a background thread, while `WebViewLoader.testConnection()` polls **`localhost:5000`** (the value of `p4a.port` in `buildozer.spec`) continuously until a TCP connection succeeds before loading `http://127.0.0.1:5000/`. To guarantee reliable boot across Android devices:
 
 - **Strict Android Port 5000 Ownership (`SO_REUSEPORT`):** On Android, the HTTP server must bind exactly port 5000. Setting both `SO_REUSEADDR` and `SO_REUSEPORT` ensures that restarting ZMUX while a previous socket is lingering in `TIME_WAIT` never throws `Address already in use`.
-- **Multi-Host Fallback:** If binding `127.0.0.1:5000` fails due to OEM network stack variations, ZMUX automatically retries binding on `0.0.0.0` and `localhost`.
+- **Multi-Host Fallback (Loopback-Only):** If binding `127.0.0.1:5000` fails due to OEM network stack variations, ZMUX retries binding on `localhost`. Binding to `0.0.0.0` was deliberately removed: `/` serves the WebView auth token without authentication, so a wildcard-interface bind would hand that token — and with it full command execution — to every device on the local network. Loopback is a hard security invariant, not a preference.
 - **Pre-Bound Listener Injection:** Sockets are bound before starting Waitress (`serve(..., sockets=[...])`) and the WebSocket server (`start(listeners=[...])`), eliminating probe-then-bind race conditions.
 - **Dual IPv4/IPv6 Loopback Listeners:** Both the HTTP server and WebSocket server listen simultaneously on IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback addresses, preventing connection hangs when `localhost` resolves to IPv6.
 
@@ -96,6 +96,12 @@ The pinned Python-for-Android WebView bootstrap starts `main.py` in a background
 - **Lock-Free Broadcasts:** `WebSocketServer.broadcast()` sends data outside `clients_lock`. Previously, sending inside the lock caused a deadlock when `_unregister_client()` was invoked on a disconnected client.
 - **Send Timeouts (`SO_SNDTIMEO`):** Client sockets use `SO_SNDTIMEO` so a backgrounded WebView cannot block `sendall()` indefinitely.
 - **Host Cycling Reconnection:** The terminal UI cycles through loopback candidate hosts (`window.location.hostname`, `127.0.0.1`, `localhost`) across reconnect attempts, preventing silent loading screen hangs.
+
+## Interactive Terminal Model
+
+- **Single execution worker with a command queue.** Every completed input line is executed by one dedicated thread (`ZMUX-Terminal-Exec`), keeping the WebSocket input path live while user code runs. The worker swallows stray async `KeyboardInterrupt` at idle and can never die from a user exception.
+- **Two terminal personas.** Shell mode (`zmux:~$`) runs filesystem/zmux commands and evaluates everything else as Python (ZMUX escape hatch); REPL mode (`>>>`, entered via `python`) evaluates *everything* as Python — command builtins are bypassed so the REPL is pure (`force_python=True`).
+- **Ctrl+C is a pipeline, not a flag.** `PTYTerminalSession` → `PythonShell.interrupt()` → (a) epoch-bumped interrupt latch checked by the stdin provider, (b) SIGINT → SIGKILL escalation to the pipeline **process group** (children spawn with `start_new_session=True` — the app itself is never in that group), (c) async `KeyboardInterrupt` injection into the worker thread for pure-Python runaways only. Async delivery is racy by nature; the epoch tag, subprocess-depth tracking, spawn-race recheck, and worker-level `except KeyboardInterrupt` make outcomes deterministic: either a clean `KeyboardInterrupt` or a `[process terminated by signal N]` hint — never a frozen session.
 
 ## Security Boundaries
 

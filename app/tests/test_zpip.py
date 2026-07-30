@@ -1,11 +1,9 @@
 """Tests for ZMUX zpip package manager."""
 import os
 import sys
-import json
 import tempfile
 import zipfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -191,3 +189,78 @@ class TestDependencyCycle:
         result = install("test-package", _stack=("test-package",))
         assert not result["ok"]
         assert "cycle" in result["error"].lower()
+
+
+class TestNativeLibrariesInstalledReadOnly:
+    """Android 14+ safer dynamic code loading requires dlopen()'d files to be
+    read-only. Installed .so files must therefore be frozen (0o444) at commit
+    time — while upgrades and uninstalls must still work on the frozen files."""
+
+    @staticmethod
+    def _write_demo_wheel(destination: Path):
+        with zipfile.ZipFile(destination, "w") as zf:
+            zf.writestr("demo/__init__.py", "VALUE = 1\n")
+            zf.writestr("demo/native.so", b"\x7fELF-demo")
+            zf.writestr("demo-1.0.dist-info/WHEEL", "Wheel-Version: 1.0")
+            zf.writestr("demo-1.0.dist-info/RECORD", "")
+
+    @staticmethod
+    def _prepare(tmp_path: Path, monkeypatch):
+        from zmux import zpip
+
+        user_packages_dir = tmp_path / "user_packages"
+        user_packages_dir.mkdir()
+        monkeypatch.setattr(zpip, "USER_PACKAGES_DIR", user_packages_dir)
+        monkeypatch.setattr(zpip, "STAGING_DIR", tmp_path / "staging")
+        monkeypatch.setattr(zpip, "DOWNLOADS_DIR", tmp_path / "downloads")
+        monkeypatch.setattr(zpip, "INSTALLED_DIR", tmp_path / "installed")
+        monkeypatch.setattr(zpip, "DB_FILE", tmp_path / "installed" / "packages.json")
+
+        manifest = {
+            "name": "demo",
+            "version": "1.0",
+            "runtime_id": "py3-none-any",
+            "abi": "any",
+            "channel": "pypi",
+            "artifact": {
+                "filename": "demo-1.0-py3-none-any.whl",
+                "url": "https://example.invalid/demo-1.0-py3-none-any.whl",
+                "size": 0,
+                "sha256": "a" * 64,
+            },
+            "dependencies": [],
+        }
+        monkeypatch.setattr(zpip, "resolve", lambda name, version=None, channel="stable": manifest)
+
+        def fake_download(url, expected_hash, destination):
+            TestNativeLibrariesInstalledReadOnly._write_demo_wheel(Path(destination))
+            return (123, "a" * 64)
+
+        monkeypatch.setattr(zpip, "_download", fake_download)
+        return zpip, user_packages_dir
+
+    def test_so_files_frozen_py_files_writable(self, tmp_path, monkeypatch):
+        import stat
+        zpip, user_packages_dir = self._prepare(tmp_path, monkeypatch)
+
+        result = zpip.install("demo")
+        assert result["ok"], result.get("error")
+
+        so_mode = stat.S_IMODE((user_packages_dir / "demo" / "native.so").stat().st_mode)
+        assert so_mode == 0o444, f"expected 0o444, got {oct(so_mode)}"
+
+        py_mode = stat.S_IMODE((user_packages_dir / "demo" / "__init__.py").stat().st_mode)
+        assert py_mode & 0o200, "pure-python files must keep normal (writable) permissions"
+
+    def test_reinstall_over_read_only_and_uninstall(self, tmp_path, monkeypatch):
+        zpip, user_packages_dir = self._prepare(tmp_path, monkeypatch)
+
+        assert zpip.install("demo")["ok"]
+        # Re-install must replace the frozen .so without aborting the commit.
+        second = zpip.install("demo")
+        assert second["ok"], second.get("error")
+
+        # Uninstall must still be able to remove read-only files.
+        removed = zpip.uninstall("demo")
+        assert removed["ok"], removed.get("error")
+        assert not (user_packages_dir / "demo" / "native.so").exists()

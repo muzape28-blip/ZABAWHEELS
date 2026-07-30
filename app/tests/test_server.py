@@ -2,6 +2,8 @@
 
 import socket
 
+import pytest
+
 from zmux.server import (
     _bind_listener,
     _bind_ws_socket,
@@ -145,3 +147,59 @@ def test_bind_ws_socket_skips_occupied_ports():
             blocker.close()
     finally:
         http_sock.close()
+
+
+class TestLoopbackOnlyBind:
+    """"/" serves the WebView auth token unauthenticated, so no listener may
+    ever bind a wildcard interface (0.0.0.0). These tests force every bind
+    attempt to fail and record which hosts were tried."""
+
+    def _recording_bind(self, attempts):
+        def fake_bind(host, port, family=socket.AF_INET, reuse_port=False):
+            attempts.append(host)
+            raise OSError("blocked by test")
+        return fake_bind
+
+    def test_ws_socket_never_attempts_wildcard(self, monkeypatch):
+        from zmux import server
+        attempts = []
+        monkeypatch.setattr(server, "_bind_listener", self._recording_bind(attempts))
+        with pytest.raises(RuntimeError):
+            server._bind_ws_socket(5000)
+        assert attempts, "expected at least one bind attempt"
+        assert set(attempts) == {"127.0.0.1"}
+        assert "0.0.0.0" not in attempts
+
+    def test_http_socket_never_attempts_wildcard_on_android(self, monkeypatch):
+        from zmux import server
+        attempts = []
+        monkeypatch.setattr(server, "_bind_listener", self._recording_bind(attempts))
+        monkeypatch.setenv("ANDROID_PRIVATE", "1")
+        # Keep the retry loop short for the test.
+        monkeypatch.setattr(server, "P4A_BIND_TIMEOUT_SECONDS", 0.05)
+        with pytest.raises(RuntimeError):
+            server._bind_http_socket()
+        assert attempts
+        assert attempts[0] == "127.0.0.1"
+        assert "0.0.0.0" not in attempts
+        assert set(attempts) <= {"127.0.0.1", "localhost"}
+
+
+class TestWsPortConfig:
+    """The announced WebSocket port lives in app.config, not a module global."""
+
+    def test_default_ws_port_present(self):
+        assert app.config["WS_PORT"] == 5001
+
+    def test_csp_and_template_use_configured_port(self):
+        old = app.config["WS_PORT"]
+        app.config["WS_PORT"] = 59999
+        try:
+            client = app.test_client()
+            resp = client.get("/")
+            assert resp.status_code == 200
+            assert f"ws://127.0.0.1:{59999}" in resp.headers["Content-Security-Policy"]
+            # terminal.html receives the same port for its ws:// connect URL
+            assert b"59999" in resp.data
+        finally:
+            app.config["WS_PORT"] = old

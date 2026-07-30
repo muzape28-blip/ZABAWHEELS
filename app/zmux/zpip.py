@@ -7,10 +7,8 @@ Android ABI must match the running application.
 """
 from __future__ import annotations
 
-import csv
 import hashlib
 import importlib
-import io
 import json
 import os
 import platform
@@ -21,7 +19,6 @@ import struct
 import subprocess
 import sys
 import sysconfig
-import tempfile
 import urllib.parse
 import urllib.request
 import uuid
@@ -50,7 +47,6 @@ except ImportError:
 from zmux.net import get_ssl_context
 from zmux.paths import (
     APP_DIR,
-    CACHE_DIR,
     USER_PACKAGES_DIR,
     INSTALLED_DIR,
     DOWNLOADS_DIR,
@@ -396,7 +392,9 @@ def install(
                 specs = list(requirement.specifier)
                 if len(specs) == 1 and specs[0].operator == "==" and "*" not in specs[0].version:
                     exact = specs[0].version
-            except:
+            except Exception:
+                # Unusual specifier objects (fallback Requirement shim) simply
+                # mean "no exact pin" — never swallow KeyboardInterrupt/SystemExit.
                 pass
             dependency_result = install(dependency, exact, channel, (*_stack, package))
             if not dependency_result.get("ok"):
@@ -440,6 +438,18 @@ def install(
                 shutil.copy2(target, saved)
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(source, target)
+            if relative.endswith(".so"):
+                # Android 14+ "safer dynamic code loading": native libraries
+                # loaded via dlopen() must be read-only files (warning on
+                # targetSdk 34, hard `UnsatisfiedLinkError` on newer targets).
+                # Freezing them at install time keeps native wheel imports
+                # working — the same fix Termux applied to termux-am (chmod 400).
+                # Best-effort: a filesystem without chmod support keeps the
+                # previous (writable) behaviour rather than aborting the commit.
+                try:
+                    os.chmod(target, 0o444)
+                except OSError:
+                    pass
             committed.append(relative)
         for obsolete in set(previous) - set(files):
             target = USER_PACKAGES_DIR / obsolete
