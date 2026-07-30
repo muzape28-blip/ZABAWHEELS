@@ -80,6 +80,11 @@ ZMUX is a standalone Android terminal application that runs as a WebView fronten
 7. Atomically commits files to `user_packages/` and records metadata in the installed package database.
 8. On any failure: performs a full rollback without corrupting existing installations.
 
+### Package Search (`zpip search`)
+1. Every query is answered from at most three sources, and each source's status is disclosed in the result: **curated catalog** (the same per-runtime/per-ABI `<index>/runtimes/<runtime_id>/<abi>.json` used by installs, fetched with an 8 s budget), the **installed database**, and — for single-token queries that are valid package names — an **exact-name PyPI probe** (`pypi.org/pypi/<name>/json`, the same endpoint installs fall back to). PyPI no longer operates a search API, so zpip deliberately offers no fuzzy PyPI search; an empty screen with disclosed source statuses beats an invented answer.
+2. Catalog responses are cached under `cache/catalogs/` (1 h freshness). When the network is down or `ZMUX_OFFLINE=1` is set, search serves the cache and labels it `cache`/`stale`/`unavailable`. Caching is best-effort: a failed write never fails the search.
+3. Matching is token AND across name (separator-insensitive) and summary; ranking is exact-name > name > summary-only, ties broken curated > pypi > installed. Results carry `source` and `installed` flags so a user can tell "curated build exists", "uncurated PyPI fallback", and "already on device" apart at a glance.
+
 ## Boot & Port Contract (p4a WebView Bootstrap)
 
 The pinned Python-for-Android WebView bootstrap starts `main.py` in a background thread, while `WebViewLoader.testConnection()` polls **`localhost:5000`** (the value of `p4a.port` in `buildozer.spec`) continuously until a TCP connection succeeds before loading `http://127.0.0.1:5000/`. To guarantee reliable boot across Android devices:

@@ -19,6 +19,7 @@ import struct
 import subprocess
 import sys
 import sysconfig
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -47,6 +48,7 @@ except ImportError:
 from zmux.net import get_ssl_context
 from zmux.paths import (
     APP_DIR,
+    CACHE_DIR,
     USER_PACKAGES_DIR,
     INSTALLED_DIR,
     DOWNLOADS_DIR,
@@ -61,6 +63,13 @@ INDEX_URL = os.environ.get(
 MAX_WHEEL_BYTES = 100 * 1024 * 1024
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_QUERY_TOKEN = re.compile(r"[a-z0-9][a-z0-9+._-]*")
+
+# Search-time network budget and curated catalog cache freshness. The catalog
+# is small and changes rarely, so an hour of freshness avoids refetching on
+# every keystroke-query while a stale copy remains usable offline.
+SEARCH_TIMEOUT = 8
+CATALOG_TTL_SECONDS = 3600
 
 DB_FILE = INSTALLED_DIR / "packages.json"
 
@@ -149,11 +158,21 @@ def _save_db(data: dict) -> None:
     os.replace(temp, DB_FILE)
 
 
-def _request_json(url: str) -> dict:
+def _offline() -> bool:
+    """Honest offline switch: ZMUX_OFFLINE=1 skips every network fetch.
+
+    Package *installs* still require the network (a wheel must come from
+    somewhere), but metadata commands such as ``zpip search`` degrade to the
+    on-device cache instead of blocking on timeouts.
+    """
+    return os.environ.get("ZMUX_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _request_json(url: str, timeout: int = 25) -> dict:
     if not url.startswith("https://"):
         raise ValueError("Only HTTPS package metadata is accepted")
     req = urllib.request.Request(url, headers={"User-Agent": f"ZMUX/{APP_VERSION}"})
-    with urllib.request.urlopen(req, timeout=25, context=get_ssl_context()) as response:
+    with urllib.request.urlopen(req, timeout=timeout, context=get_ssl_context()) as response:
         if int(response.headers.get("Content-Length", "0") or 0) > 5 * 1024 * 1024:
             raise ValueError("Package metadata is too large")
         value = json.loads(response.read(5 * 1024 * 1024 + 1))
@@ -285,6 +304,70 @@ def resolve(name: str, version: str = None, channel: str = "stable") -> dict:
     if curated:
         return curated
     return _manifest_from_pypi(normalized, version)
+
+
+def _catalog_cache_path(runtime_id: str, abi: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{runtime_id}-{abi}")
+    return CACHE_DIR / "catalogs" / f"{safe}.json"
+
+
+def _fetch_curated_catalog() -> tuple:
+    """Return ``(packages, status)`` for this runtime's curated catalog.
+
+    Status is one of ``live`` (just fetched), ``cache`` (fresh on-disk copy),
+    ``stale`` (expired on-disk copy, network unavailable or offline), or
+    ``unavailable`` (nothing usable anywhere). The status is surfaced to the
+    user verbatim — a stale answer is fine as long as it is labeled as one.
+    """
+    fp = runtime_fingerprint()
+    cache_path = _catalog_cache_path(fp["runtime_id"], fp["android"]["abi"])
+    if not _offline():
+        try:
+            url = f"{INDEX_URL}/runtimes/{fp['runtime_id']}/{fp['android']['abi']}.json"
+            payload = _request_json(url, timeout=SEARCH_TIMEOUT)
+            packages = payload.get("packages")
+            if not isinstance(packages, dict):
+                raise ValueError("curated catalog has no packages object")
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    json.dumps({"fetched_at": time.time(), "packages": packages}),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass  # caching is best-effort; the fresh result still counts
+            return packages, "live"
+        except Exception:
+            pass  # fall through to whatever the cache holds
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        packages = cached.get("packages")
+        if isinstance(packages, dict):
+            age = time.time() - float(cached.get("fetched_at", 0) or 0)
+            return packages, "cache" if age <= CATALOG_TTL_SECONDS else "stale"
+    except (OSError, ValueError):
+        pass
+    return {}, "unavailable"
+
+
+def _probe_pypi(name: str) -> dict:
+    """Exact-name probe against the PyPI JSON API.
+
+    PyPI has no search API any more (the XML-RPC search was shut down years
+    ago), so the honest thing zpip can offer is an *exact* lookup — the same
+    data ``zpip install`` would resolve for an uncurated name.
+    """
+    try:
+        url = f"https://pypi.org/pypi/{urllib.parse.quote(name)}/json"
+        metadata = _request_json(url, timeout=SEARCH_TIMEOUT)
+    except Exception:
+        return None
+    info = metadata.get("info") or {}
+    return {
+        "name": str(info.get("name") or name),
+        "version": str(info.get("version") or ""),
+        "summary": str(info.get("summary") or ""),
+    }
 
 
 def _import_name(name: str) -> str:
@@ -590,12 +673,95 @@ def info(name: str) -> dict:
 
 
 def search(query: str) -> dict:
-    needle = canonicalize(query)
-    known = set(_load_db()) | {
-        "requests", "rich", "click", "sympy", "beautifulsoup4", "tinydb",
-        "numpy", "pillow", "matplotlib", "pandas", "xxhash", "ujson", "regex",
+    """Search the curated ZABAWHEELS index, the local installs, and PyPI.
+
+    The query may be multiple words; every token must match (AND). There is
+    deliberately no hardcoded package list: results come only from the live
+    (or cached) curated catalog, the installed database, and — for a single
+    token that is a valid package name — an exact PyPI probe. When a source
+    cannot be reached the result says so instead of inventing answers.
+    """
+    raw = str(query or "")
+    tokens = _QUERY_TOKEN.findall(raw.lower())
+    if not tokens:
+        return {"ok": False, "query": raw, "error": "empty search query"}
+
+    installed = _load_db()
+    catalog, curated_status = _fetch_curated_catalog()
+
+    def _norm(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", str(name).lower())
+
+    norm_tokens = [_norm(token) for token in tokens]
+
+    def _rank(name: str, summary: str):
+        norm_name = _norm(name)
+        summary_l = str(summary or "").lower()
+        for token, norm_token in zip(tokens, norm_tokens):
+            if norm_token not in norm_name and token not in summary_l:
+                return None
+        if len(norm_tokens) == 1 and norm_name == norm_tokens[0]:
+            return 0
+        if all(norm_token in norm_name for norm_token in norm_tokens):
+            return 1
+        return 2
+
+    hits = {}
+    # On a tie the richer source wins: curated metadata beats a bare PyPI
+    # record, which beats an installed-db row (name and version only).
+    _SOURCE_PRIORITY = {"curated": 0, "pypi": 1, "installed": 2}
+
+    def _consider(name, *, version="", summary="", source):
+        rank = _rank(name, summary)
+        if rank is None:
+            return
+        key = _norm(name)
+        weight = (rank, _SOURCE_PRIORITY[source])
+        entry = hits.get(key)
+        if entry is None or weight < (entry[0], entry[1]):
+            hits[key] = (rank, _SOURCE_PRIORITY[source], {
+                "name": str(name),
+                "version": str(version or ""),
+                "summary": str(summary or ""),
+                "source": source,
+                "installed": key in installed,
+            })
+
+    for pkg_name, manifest in catalog.items():
+        if isinstance(manifest, dict):
+            _consider(
+                manifest.get("name", pkg_name),
+                version=manifest.get("version", ""),
+                summary=manifest.get("summary", ""),
+                source="curated",
+            )
+    for pkg_name, record in installed.items():
+        _consider(
+            pkg_name,
+            version=(record or {}).get("version", "") if isinstance(record, dict) else "",
+            source="installed",
+        )
+
+    pypi_status = "skipped"
+    exact_curated = len(norm_tokens) == 1 and norm_tokens[0] in {_norm(k) for k in catalog}
+    if len(tokens) == 1 and _NAME.fullmatch(tokens[0]) and not _offline() and not exact_curated:
+        probe = _probe_pypi(tokens[0])
+        if probe is not None:
+            _consider(**probe, source="pypi")
+            pypi_status = "live"
+        else:
+            pypi_status = "unavailable"
+
+    results = [
+        entry
+        for _, _, entry in sorted(hits.values(), key=lambda item: (item[0], item[2]["name"]))
+    ]
+    return {
+        "ok": True,
+        "query": raw,
+        "results": results,
+        "sources": {"curated": curated_status, "pypi": pypi_status},
     }
-    return {"ok": True, "query": needle, "results": sorted(x for x in known if needle in x)}
 
 
 def format_output(command, result):
@@ -659,7 +825,27 @@ def format_output(command, result):
         return "No packages installed", 0
     if action == "search":
         results = result.get("results", [])
-        return "\n".join(results) if results else "No packages found", 0
+        lines = []
+        for entry in results:
+            tag = entry.get("source", "?")
+            if entry.get("installed") and entry.get("source") != "installed":
+                tag += ",installed"
+            version = f" {entry['version']}" if entry.get("version") else ""
+            summary = f" - {entry['summary']}" if entry.get("summary") else ""
+            lines.append(f"{entry.get('name', '?')}{version} [{tag}]{summary}")
+        if not results:
+            lines.append("No packages found")
+        sources = result.get("sources", {})
+        # Unavailable/degraded sources are disclosed even on an empty screen:
+        # "no results" because the index is unreachable must never read as
+        # "the package does not exist".
+        if sources.get("curated") == "stale":
+            lines.append("(curated index: stale cache; connect to refresh)")
+        elif sources.get("curated") == "unavailable":
+            lines.append("(curated index unavailable; no cached copy)")
+        if sources.get("pypi") == "unavailable":
+            lines.append("(pypi.org unreachable; exact-match probe skipped)")
+        return "\n".join(lines), 0
     if action == "info":
         pkg = result.get("name", "")
         installed = result.get("installed")
@@ -722,7 +908,9 @@ def dispatch(command: str) -> dict:
             return list_installed()
         if action == "doctor" and not values:
             return doctor()
-        if action in {"search", "info", "verify", "uninstall"} and len(values) == 1:
+        if action == "search" and values:
+            return search(" ".join(values))
+        if action in {"info", "verify", "uninstall"} and len(values) == 1:
             return globals()[action](values[0])
         if action == "install" and len(values) in {1, 2}:
             return install(values[0], values[1] if len(values) == 2 else None)
