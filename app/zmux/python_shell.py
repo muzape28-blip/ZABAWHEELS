@@ -16,6 +16,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import traceback
 from pathlib import Path
 from typing import Callable
@@ -62,7 +63,7 @@ class PythonShell:
                 return self._exec_subprocess(line, timeout)
             if command in self.commands:
                 return self._result(stdout=self.commands[command](parts[1:]))
-            if command == "python":
+            if command in {"python", "python3"}:
                 return self._exec_python_command(parts[1:])
             if command in {"pip", "zpip", "help", "zmux-info"}:
                 return self._exec_zmux_command(command, parts[1:])
@@ -234,6 +235,8 @@ class PythonShell:
             if not argv: return self._result(stderr="invalid command\n", code=2)
             cleaned.append(argv)
         previous, processes, source_handle = None, [], None
+        stderr_parts: list[str] = []
+        stderr_threads: list[threading.Thread] = []
         try:
             if input_file: source_handle = input_file.open("r", encoding="utf-8")
             for index, stage in enumerate(cleaned):
@@ -244,13 +247,23 @@ class PythonShell:
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 if previous: previous.stdout.close()
                 processes.append(proc); previous = proc
-            stdout, stderr = processes[-1].communicate(timeout=timeout)
+                # Drain every stderr concurrently. Waiting for only the last
+                # pipeline member can deadlock when an earlier member writes a
+                # large error stream.
+                def drain(stream=proc.stderr):
+                    stderr_parts.append(stream.read())
+                reader = threading.Thread(target=drain, daemon=True)
+                reader.start(); stderr_threads.append(reader)
+            stdout, _ = processes[-1].communicate(timeout=timeout)
             for proc in processes[:-1]: proc.wait(timeout=timeout)
+            for reader in stderr_threads: reader.join(timeout=1)
             if output_file:
                 with output_file.open("a" if append else "w", encoding="utf-8") as handle: handle.write(stdout)
                 stdout = ""
             code = next((p.returncode for p in processes if p.returncode), 0)
-            return self._result(stdout, stderr, code)
+            return self._result(stdout, "".join(stderr_parts), code)
         except subprocess.TimeoutExpired:
             for proc in processes: proc.kill()
             return self._result(stderr=f"Command timed out after {timeout}s\n", code=1)
+        finally:
+            if source_handle: source_handle.close()

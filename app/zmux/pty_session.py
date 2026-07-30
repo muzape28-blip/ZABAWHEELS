@@ -86,7 +86,8 @@ class PTYTerminalSession:
         # Support compound Python blocks (for/def/try etc.) without pretending
         # to be a shell. Known shell commands remain single-line operations.
         candidate = "\n".join([*self._python_lines, line])
-        is_command = bool(line.strip()) and line.lstrip().split(maxsplit=1)[0] in self.shell.commands | {"python", "pip", "zpip", "help", "zmux-info"}
+        commands = set(self.shell.commands) | {"python", "python3", "pip", "zpip", "help", "zmux-info"}
+        is_command = bool(line.strip()) and line.lstrip().split(maxsplit=1)[0] in commands
         if self._python_lines or not is_command:
             try:
                 pending = codeop.compile_command(candidate, "<zmux>", "exec")
