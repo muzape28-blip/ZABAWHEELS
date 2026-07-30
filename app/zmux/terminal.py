@@ -35,15 +35,16 @@ Built-in commands:
   cd <dir>      Change directory
   exit          Exit terminal session
 
-System commands:
-  ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
-  All standard Android/Linux commands available via /system/bin/sh
-
-Python:
-  python        Start Python interpreter
-  python <file> Run Python script
-  python -c "..."  Execute Python code
+Python-native terminal:
+  Type Python expressions or statements directly (this is the primary REPL).
+  python <file> Run a Python script in the embedded CPython runtime
+  python -c "..." Execute Python code in the embedded CPython runtime
   pip           Python package manager (if available)
+
+Filesystem commands:
+  ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
+  These use real Python filesystem APIs. Native Android utilities are invoked
+  directly by absolute path; ZMUX never starts /system/bin/sh.
 
 ZMUX Package Manager:
   zpip search <name>      Search for packages
@@ -76,6 +77,9 @@ class TerminalSession:
 
     def __init__(self):
         self._cwd = HOME_DIR
+        # The primary executor is embedded CPython, not /system/bin/sh.
+        from zmux.python_shell import PythonShell
+        self._python_shell = PythonShell(self._cwd)
         self._process: Optional[subprocess.Popen] = None
         self._output_queue: queue.Queue = queue.Queue()
         self._stdout_thread: Optional[threading.Thread] = None
@@ -182,16 +186,19 @@ class TerminalSession:
                     "status": ProcessStatus.RUNNING,
                 }
 
-        # Parse command
-        if not command.strip():
-            return {"ok": True, "stdout": "", "stderr": "", "exit_code": 0, "status": ProcessStatus.IDLE}
+        # PythonShell is the only command path.  In particular, do not use
+        # shell=True: Android's shell cannot execute files from many app-private
+        # mounts.  PythonShell executes Python in-process and invokes Android
+        # utilities directly by absolute path when a native utility is needed.
+        result = self._python_shell.execute(command, timeout=timeout)
+        self._cwd = self._python_shell.cwd
+        self._exit_code = result.get("exit_code")
+        self._status = ProcessStatus.IDLE
+        result["status"] = self._status
+        return result
 
-        # Handle built-in commands
-        builtin_result = self._handle_builtin(command)
-        if builtin_result is not None:
-            return builtin_result
-
-        # Execute real subprocess
+        # Legacy subprocess implementation intentionally unreachable.  Kept
+        # below temporarily for API reference while older clients migrate.
         try:
             self._status = ProcessStatus.RUNNING
             self._exit_code = None
