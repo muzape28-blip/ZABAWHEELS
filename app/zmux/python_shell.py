@@ -146,7 +146,15 @@ class PythonShell:
     def _cmd_cd(self, args: list[str]) -> str:
         if len(args) > 1: raise ValueError("too many arguments")
         target = self._path(args[0]) if args else HOME_DIR
-        if not target.is_dir(): raise FileNotFoundError(target)
+        # Keep the virtual terminal inside app-private storage. This avoids
+        # exposing arbitrary device paths while preserving a real persistent
+        # directory change for subsequent Python and subprocess operations.
+        try:
+            target.relative_to(HOME_DIR.resolve())
+        except ValueError:
+            raise PermissionError(f"cannot access '{target}': outside home directory")
+        if not target.is_dir():
+            raise FileNotFoundError(f"No such file or directory: '{target}'")
         self.cwd = target
         return ""
 
@@ -168,8 +176,9 @@ class PythonShell:
             return self._result(out.getvalue(), err.getvalue() + traceback.format_exc(), 1)
 
     def _exec_python_command(self, args: list[str]) -> dict:
-        if not args:
-            return self._result(stdout=f"Python {sys.version}\nUse Python expressions directly at this prompt.\n")
+        if not args or args[0] in {"--version", "-V"}:
+            suffix = "Use Python expressions directly at this prompt.\n" if not args else ""
+            return self._result(stdout=f"Python {sys.version}\n{suffix}")
         if args[0] == "-c":
             if len(args) < 2: return self._result(stderr="python: argument expected for -c\n", code=2)
             return self._exec_python(args[1])

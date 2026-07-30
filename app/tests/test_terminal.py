@@ -31,7 +31,8 @@ class TestBuiltinCommands:
         result = terminal.execute("pwd")
         assert result["ok"]
         assert result["exit_code"] == 0
-        assert "~" in result["stdout"]
+        # Python-native mode reports the real app-private working directory.
+        assert result["stdout"].strip() == str(terminal.cwd)
 
     def test_cd_home(self, terminal):
         """Test cd to home."""

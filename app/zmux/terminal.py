@@ -186,6 +186,18 @@ class TerminalSession:
                     "status": ProcessStatus.RUNNING,
                 }
 
+        # ``exit`` ends the virtual terminal session; it is not delegated to a
+        # shell process. Preserve a requested numeric exit code for API users.
+        exit_parts = command.split()
+        if exit_parts and exit_parts[0] == "exit":
+            try:
+                code = int(exit_parts[1]) if len(exit_parts) > 1 else 0
+            except ValueError:
+                code = 2
+            self._exit_code = code
+            self._status = ProcessStatus.EXITED
+            return {"ok": code == 0, "stdout": "Goodbye!\n", "stderr": "", "exit_code": code, "status": self._status}
+
         # PythonShell is the only command path.  In particular, do not use
         # shell=True: Android's shell cannot execute files from many app-private
         # mounts.  PythonShell executes Python in-process and invokes Android
