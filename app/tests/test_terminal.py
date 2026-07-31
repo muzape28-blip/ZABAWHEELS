@@ -4,7 +4,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -124,8 +123,6 @@ class TestWorkingDirectory:
 
     def test_cwd_persistence(self, terminal):
         """Test that cwd persists between commands."""
-        initial_cwd = terminal.cwd
-        
         # Create a test directory
         test_dir = terminal.cwd / "test_dir"
         test_dir.mkdir(exist_ok=True)
@@ -281,10 +278,12 @@ class TestCliWrappers:
 class TestZmuxCli:
     """Test the python -m zmux.cli entrypoint behind the wrappers."""
 
-    def _run_cli(self, *args):
+    def _run_cli(self, *args, extra_env=None):
         """Run zmux.cli in a subprocess exactly like a wrapper would."""
         env = os.environ.copy()
         env["PYTHONPATH"] = str(APP_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             [sys.executable, "-m", "zmux.cli", *args],
             env=env,
@@ -299,7 +298,7 @@ class TestZmuxCli:
         assert cli.main(["help"]) == 0
         out = capsys.readouterr().out
         assert "ZMUX Terminal" in out
-        assert "zpip search <name>" in out
+        assert "zpip search <query>" in out
         assert out.endswith("\n")
 
     def test_cli_clear_main(self, capsys):
@@ -359,11 +358,35 @@ class TestZmuxCli:
         assert result.returncode == 0
         assert result.stdout == "\033[H\033[2J\033[3J"
 
-    def test_cli_zpip_subprocess(self):
-        """python -m zmux.cli zpip search works as a real process."""
-        result = self._run_cli("zpip", "search", "requests")
+    def test_cli_zpip_subprocess(self, tmp_path):
+        """python -m zmux.cli zpip search works as a real process.
+
+        Fully hermetic: the subprocess runs offline against a seeded curated
+        catalog cache inside a throwaway ANDROID_PRIVATE app dir, so no test
+        ever depends on the network or repo state.
+        """
+        import json
+        import time
+        from zmux import zpip as zpip_mod
+
+        fp = zpip_mod.runtime_fingerprint()
+        cache_name = zpip_mod._catalog_cache_path(
+            fp["runtime_id"], fp["android"]["abi"]).name
+        cache_dir = tmp_path / "cache" / "catalogs"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / cache_name).write_text(json.dumps({
+            "fetched_at": time.time(),
+            "packages": {
+                "requests": {"name": "requests", "version": "2.32.3",
+                             "summary": "Python HTTP for Humans."},
+            },
+        }))
+        result = self._run_cli(
+            "zpip", "search", "requests",
+            extra_env={"ANDROID_PRIVATE": str(tmp_path), "ZMUX_OFFLINE": "1"},
+        )
         assert result.returncode == 0
-        assert "requests" in result.stdout
+        assert "requests 2.32.3 [curated]" in result.stdout
 
     def test_cli_zmux_info_subprocess(self):
         """python -m zmux.cli zmux-info works as a real process."""
