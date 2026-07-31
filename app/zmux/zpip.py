@@ -19,6 +19,7 @@ import struct
 import subprocess
 import sys
 import sysconfig
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -162,13 +163,45 @@ def _request_json(url: str) -> dict:
     return value
 
 
-def _download(url: str, expected_hash: str, destination: Path) -> tuple:
+#: Optional callback receiving progress text (already carriage-returned) while
+#: a wheel downloads. Set by the terminal so installs are not a silent block;
+#: left None for REST/CLI callers, where the download stays quiet.
+progress_sink = None
+
+#: Minimum interval between progress repaints, so a fast link does not spend
+#: all its time writing to the websocket (rpkg throttles the same way).
+_PROGRESS_INTERVAL = 0.1
+
+
+def _render_progress(name: str, done: int, total: int, started: float) -> str:
+    """One-line download progress bar: name, size, rate, bar, percent."""
+    elapsed = max(time.monotonic() - started, 1e-6)
+    rate = done / 1024 / elapsed
+    label = name if len(name) <= 18 else name[:15] + "..."
+    if total > 0:
+        fraction = min(done / total, 1.0)
+        filled = int(20 * fraction)
+        bar = "#" * filled + "-" * (20 - filled)
+        pct = f"{fraction * 100:3.0f}%"
+    else:  # server sent no Content-Length
+        bar = "-" * 20
+        pct = "  ?%"
+    return (
+        f"\x1b[2K\r{label:<18} {done / 1048576:5.1f} MiB "
+        f"{rate:6.1f} KiB/s [{bar}] {pct}"
+    )
+
+
+def _download(url: str, expected_hash: str, destination: Path, label: str = "") -> tuple:
     if not url.startswith("https://"):
         raise ValueError("Only HTTPS wheel downloads are accepted")
     if not _SHA256.fullmatch(expected_hash):
         raise ValueError("A valid SHA-256 is required")
     request = urllib.request.Request(url, headers={"User-Agent": f"ZMUX/{APP_VERSION}"})
     digest, total = hashlib.sha256(), 0
+    sink = progress_sink
+    started = time.monotonic()
+    last_paint = 0.0
     with urllib.request.urlopen(request, timeout=90, context=get_ssl_context()) as response:
         announced = int(response.headers.get("Content-Length", "0") or 0)
         if announced > MAX_WHEEL_BYTES:
@@ -183,6 +216,14 @@ def _download(url: str, expected_hash: str, destination: Path) -> tuple:
                     raise ValueError("Wheel exceeds the 100 MiB safety limit")
                 digest.update(chunk)
                 output.write(chunk)
+                if sink is not None:
+                    now = time.monotonic()
+                    if now - last_paint >= _PROGRESS_INTERVAL:
+                        sink(_render_progress(label or "downloading", total, announced, started))
+                        last_paint = now
+    if sink is not None:
+        # Final repaint at 100%, then end the line so the next output starts clean.
+        sink(_render_progress(label or "downloading", total, total, started) + "\n")
     actual = digest.hexdigest()
     if actual != expected_hash:
         destination.unlink(missing_ok=True)
@@ -410,7 +451,10 @@ def install(
                 )
         artifact = manifest.get("artifact") or {}
         wheel.parent.mkdir(parents=True, exist_ok=True)
-        size, digest = _download(str(artifact.get("url", "")), str(artifact.get("sha256", "")), wheel)
+        label = f"{package}-{manifest.get('version', '')}".rstrip("-")
+        size, digest = _download(
+            str(artifact.get("url", "")), str(artifact.get("sha256", "")), wheel, label
+        )
         staging.mkdir(parents=True)
         files = _extract(wheel, staging)
         _smoke_test(staging, package)
@@ -455,6 +499,12 @@ def install(
             target = USER_PACKAGES_DIR / obsolete
             if target.is_file():
                 target.unlink()
+        # "explicit" = the user asked for this by name; a package pulled in
+        # only as a dependency is implicit (_stack is non-empty for those).
+        # Re-installing a dependency by name promotes it to explicit, and a
+        # package never silently loses the flag. This is what makes a future
+        # `zpip autoremove` possible and what `zpip list` reports.
+        previously_explicit = bool(old.get("explicit")) if old else False
         db[package] = {
             "version": manifest.get("version", ""),
             "runtime_id": manifest.get("runtime_id", ""),
@@ -464,6 +514,7 @@ def install(
             "sha256": digest,
             "size": size,
             "transaction": transaction,
+            "explicit": previously_explicit or not _stack,
         }
         _save_db(db)
         importlib.invalidate_caches()
@@ -653,13 +704,24 @@ def format_output(command, result):
     if action == "list":
         pkgs = result.get("packages", {})
         if pkgs:
-            return "\n".join(
-                f"{name} {record.get('version', '')}" for name, record in pkgs.items()
-            ), 0
+            lines = []
+            for name, record in pkgs.items():
+                version = record.get("version", "")
+                # Mark dependencies so users can tell what they asked for
+                # from what was pulled in underneath it.
+                suffix = "" if record.get("explicit", True) else "  (dependency)"
+                lines.append(f"{name} {version}{suffix}")
+            return "\n".join(lines), 0
         return "No packages installed", 0
     if action == "search":
         results = result.get("results", [])
-        return "\n".join(results) if results else "No packages found", 0
+        if not results:
+            return "No packages found", 0
+        installed = set(_load_db())
+        return "\n".join(
+            f"{item} [installed]" if canonicalize(item.split()[0]) in installed else item
+            for item in results
+        ), 0
     if action == "info":
         pkg = result.get("name", "")
         installed = result.get("installed")

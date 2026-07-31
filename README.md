@@ -82,11 +82,11 @@ exit          # Exit terminal session
 
 ### Secure Package Manager (`zpip`)
 ```bash
-zpip search <name>             # Search curated ZABAWHEELS package index
+zpip search <name>             # Search curated index ([installed] marks what you have)
 zpip info <name>               # View package details and compatibility
 zpip install <name>            # Install verified package
 zpip install <name> <version>  # Install specific package version
-zpip list                      # List installed packages
+zpip list                      # List installed packages (dependencies marked)
 zpip verify <name>             # Verify installation integrity against manifest
 zpip uninstall <name>          # Cleanly remove package and owned files
 zpip doctor                    # Diagnose system health and runtime fingerprint

@@ -400,11 +400,24 @@ class PythonShell:
             self.globals["__name__"], self.globals["__file__"], sys.argv = old_name, old_file, old_argv
 
     def _exec_zmux_command(self, command: str, args: list[str]) -> dict:
-        from zmux import cli
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main([command, *args])
-        return self._result(out.getvalue(), err.getvalue(), code)
+        from zmux import cli, zpip
+        out, err = self._make_sinks()
+        # A wheel download is the longest blocking thing zpip does; without a
+        # progress sink the terminal simply stops responding for its duration.
+        # The bar is written straight through (it uses \r to repaint in place,
+        # which a line-buffered sink would otherwise hold back).
+        previous_sink = zpip.progress_sink
+        if self.output_sink is not None:
+            zpip.progress_sink = lambda text: self.output_sink(
+                text.replace("\n", "\r\n").encode("utf-8", errors="replace")
+            )
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main([command, *args])
+        finally:
+            zpip.progress_sink = previous_sink
+        return self._result(self._drain(out), self._drain(err), code,
+                            streamed=self._streamed())
 
     def _find_executable(self, command: str) -> str | None:
         """Resolve ``command`` against the ZMUX PATH.

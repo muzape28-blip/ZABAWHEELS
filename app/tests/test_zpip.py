@@ -1,7 +1,9 @@
 """Tests for ZMUX zpip package manager."""
+import hashlib
 import os
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -232,7 +234,7 @@ class TestNativeLibrariesInstalledReadOnly:
         }
         monkeypatch.setattr(zpip, "resolve", lambda name, version=None, channel="stable": manifest)
 
-        def fake_download(url, expected_hash, destination):
+        def fake_download(url, expected_hash, destination, label=""):
             TestNativeLibrariesInstalledReadOnly._write_demo_wheel(Path(destination))
             return (123, "a" * 64)
 
@@ -264,3 +266,88 @@ class TestNativeLibrariesInstalledReadOnly:
         removed = zpip.uninstall("demo")
         assert removed["ok"], removed.get("error")
         assert not (user_packages_dir / "demo" / "native.so").exists()
+
+
+class TestInstallUX:
+    """Download progress, explicit/dependency marking, [installed] in search."""
+
+    def test_progress_bar_shape(self):
+        from zmux import zpip
+        line = zpip._render_progress("demo-1.0", 512 * 1024, 1024 * 1024, time.monotonic() - 1)
+        assert "\x1b[2K\r" in line, "must repaint in place"
+        assert "[##########----------]" in line
+        assert "50%" in line
+        assert "demo-1.0" in line
+
+    def test_progress_handles_unknown_content_length(self):
+        from zmux import zpip
+        line = zpip._render_progress("demo", 4096, 0, time.monotonic() - 1)
+        assert "?%" in line, "unknown total must not divide by zero"
+
+    def test_long_package_name_is_truncated(self):
+        from zmux import zpip
+        line = zpip._render_progress("a" * 40, 0, 100, time.monotonic())
+        assert "..." in line
+
+    def test_progress_sink_receives_updates_during_download(self, monkeypatch, tmp_path):
+        from zmux import zpip
+        payload = b"x" * (300 * 1024)
+        digest = hashlib.sha256(payload).hexdigest()
+
+        class _Response:
+            headers = {"Content-Length": str(len(payload))}
+            def __init__(self): self._chunks = [payload[i:i + 65536] for i in range(0, len(payload), 65536)]
+            def read(self, _n): return self._chunks.pop(0) if self._chunks else b""
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        monkeypatch.setattr(zpip.urllib.request, "urlopen", lambda *a, **k: _Response())
+        # Force a repaint on every chunk rather than waiting for the throttle.
+        monkeypatch.setattr(zpip, "_PROGRESS_INTERVAL", 0.0)
+        frames = []
+        monkeypatch.setattr(zpip, "progress_sink", frames.append)
+        size, actual = zpip._download("https://example/x.whl", digest, tmp_path / "w.whl", "demo")
+        assert size == len(payload) and actual == digest
+        assert frames, "no progress was reported"
+        assert frames[-1].rstrip().endswith("100%"), "final frame must show 100%"
+
+    def test_no_progress_sink_means_no_output(self, monkeypatch, tmp_path):
+        """REST/CLI callers must not have escape codes injected into results."""
+        from zmux import zpip
+        payload = b"y" * 1024
+        digest = hashlib.sha256(payload).hexdigest()
+
+        class _Response:
+            headers = {"Content-Length": "1024"}
+            def __init__(self): self._done = False
+            def read(self, _n):
+                if self._done: return b""
+                self._done = True
+                return payload
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        monkeypatch.setattr(zpip.urllib.request, "urlopen", lambda *a, **k: _Response())
+        monkeypatch.setattr(zpip, "progress_sink", None)
+        assert zpip._download("https://e/x.whl", digest, tmp_path / "w.whl")[0] == 1024
+
+    def test_list_marks_dependencies(self):
+        from zmux import zpip
+        text, code = zpip.format_output("zpip list", {
+            "ok": True,
+            "packages": {
+                "asked-for": {"version": "1.0", "explicit": True},
+                "pulled-in": {"version": "2.0", "explicit": False},
+            },
+        })
+        assert code == 0
+        assert "asked-for 1.0" in text and "(dependency)" not in text.split("\n")[0]
+        assert "pulled-in 2.0  (dependency)" in text
+
+    def test_list_defaults_to_explicit_for_legacy_records(self):
+        """Databases written before the flag existed must not all show as deps."""
+        from zmux import zpip
+        text, _ = zpip.format_output("zpip list", {
+            "ok": True, "packages": {"legacy": {"version": "0.1"}},
+        })
+        assert "(dependency)" not in text
