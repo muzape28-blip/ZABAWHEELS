@@ -35,7 +35,8 @@ Built-in commands:
   clear         Clear terminal screen
   pwd           Print working directory
   cd <dir>      Change directory
-  exit          Exit terminal session
+  exit / quit   In the Python REPL: back to the shell. In shell mode these
+                behave like CPython's builtins (exit() / Ctrl+D to leave)
 
 Python-native terminal:
   Type Python expressions or statements directly (this is the primary REPL).
@@ -64,6 +65,16 @@ Storage:
   zmux-setup-storage      Request Android storage access and link the shared
                           directories into ~/storage (opt-in; ZMUX stays
                           sandboxed until you run it)
+
+Alpine Linux sandbox (proot):
+  linux-setup             Install the Alpine userland (download ~4 MiB,
+                          SHA-512 verified) — enables git and linux below
+  git <args...>           Real git: clone, branch, checkout, push — normal
+                          syntax. e.g. git clone <url>
+  linux <cmd...>          Run a shell command inside Alpine,
+                          e.g. linux apk add openssh-client
+  alpine <cmd...>         Alias of linux
+  gates                   Run the strict on-device acceptance probe (G1-G5)
 
 Startup file:
   ~/.zmuxrc     Runs line by line when a session starts (imports, variables,

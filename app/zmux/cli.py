@@ -20,10 +20,11 @@ import subprocess
 import sys
 
 #: Commands handled by this module (mirrors zmux.paths.CLI_COMMANDS).
-COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip", "zmux-setup-storage")
+COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip", "zmux-setup-storage",
+            "linux-setup", "linux", "gates")
 
 _USAGE = ("usage: python -m zmux.cli "
-          "<zpip|help|zmux-info|clear|pip|zmux-setup-storage> [args...]")
+          "<zpip|help|zmux-info|clear|pip|zmux-setup-storage|linux-setup|linux|gates> [args...]")
 
 _PIP_FALLBACK = """pip is not available inside this ZMUX runtime.
 Use the ZMUX package manager instead:
@@ -75,6 +76,51 @@ def _cmd_zpip(args: list) -> int:
     return exit_code
 
 
+def _cmd_linux_setup(args: list) -> int:
+    """Install (or repair) the proot'd Alpine userland."""
+    from zmux import linuxenv
+    try:
+        result = linuxenv.install(progress=lambda text: sys.stdout.write(text))
+    except Exception as error:
+        print(f"linux-setup failed: {error}", file=sys.stderr)
+        return 1
+    print(f"Alpine {result.get('version', '?')} ready at {result.get('path')}")
+    if (linuxenv.rootfs_dir() / "usr" / "bin" / "git").is_file():
+        print("`git` is available. Try: git clone <url>")
+    else:
+        print("Enable git (one-time, needs network):")
+        print("  linux apk add git openssh-client")
+    return 0
+
+
+def _cmd_linux(args: list) -> int:
+    """Run a shell command inside the Alpine userland (CLI entry)."""
+    from zmux import linuxenv
+    if not linuxenv.is_installed():
+        print("Alpine environment is not installed. Run: linux-setup", file=sys.stderr)
+        return 1
+    if not args:
+        print("usage: zmux linux <command...>")
+        return 2
+    try:
+        guest_argv = ["/bin/sh", "-c", shlex.join(args)]
+        cmdline = linuxenv.build_command_line(guest_argv, linuxenv.HOME_DIR)
+    except RuntimeError as error:
+        print(f"linux: {error}", file=sys.stderr)
+        return 1
+    env = dict(os.environ)
+    env.update(linuxenv.proot_env())
+    return subprocess.call(cmdline, shell=True, env=env)
+
+
+def _cmd_gates(args: list) -> int:
+    """Run the strict on-device acceptance probe (G1–G5)."""
+    from zmux import linuxenv
+    results = linuxenv.run_gates()
+    passed = sum(1 for r in results.values() if r["ok"])
+    return 0 if passed == len(results) else 1
+
+
 def _cmd_pip(args: list) -> int:
     """Run standard pip, or explain how to use zpip when pip cannot run.
 
@@ -108,6 +154,12 @@ def main(argv=None) -> int:
         return _cmd_zmux_info()
     if command == "zmux-setup-storage":
         return _cmd_setup_storage()
+    if command == "linux-setup":
+        return _cmd_linux_setup(args)
+    if command in ("linux", "alpine"):
+        return _cmd_linux(args)
+    if command == "gates":
+        return _cmd_gates(args)
     if command == "zpip":
         return _cmd_zpip(args)
     if command == "pip":

@@ -187,7 +187,8 @@ class PythonShell:
                 )
         return None
 
-    def execute(self, line: str, timeout: float | None = None, force_python: bool = False) -> dict:
+    def execute(self, line: str, timeout: float | None = None, force_python: bool = False,
+                env_extra: dict | None = None) -> dict:
         line = line.strip()
         if not line:
             return self._result()
@@ -206,19 +207,49 @@ class PythonShell:
         # source legitimately contains ';', '&' and '&&'-like text, and must
         # keep falling through to the interpreter.
         if command in self.commands or command in {
-            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage"
+            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage",
+            "git", "linux", "alpine", "linux-setup", "gates",
         } or self._is_external_command(command):
             rejection = self._unsupported_operator(parts, line)
             if rejection is not None:
                 return rejection
+        # `true && touch x` is shell intent, but `true` is keyword-guarded so
+        # it never reaches the check above. Fire the loud shell-operator error
+        # for the classic `/bin/true` stand-ins only, and only for operators
+        # that are NEVER valid Python — `print("a && b")` and `x = "a && b"`
+        # must keep working, and `true & x` (a Python bitwise on a variable
+        # named true) is left alone.
+        if command in {"true", "false"}:
+            for operator, description in self.UNSUPPORTED_OPERATORS:
+                if operator == "&":
+                    continue
+                if operator in ("`", "$("):
+                    hit = any(operator in token for token in parts)
+                elif operator == ";":
+                    hit = ";" in parts or any(token.endswith(";") for token in parts)
+                else:
+                    hit = operator in parts
+                if hit:
+                    return self._result(
+                        stderr=(
+                            f"zmux: {description} is not supported — ZMUX has no shell "
+                            f"language.\n"
+                            f"  Supported: pipelines (|), redirection (> >> <), quoting.\n"
+                        ),
+                        code=2,
+                    )
         try:
             # Operators need the pipeline/redirection executor even when the
             # first word is also a Python-backed built-in (for example
             # ``echo hello > file``).
             if any(x in line for x in ("|", ">", "<")):
-                return self._exec_subprocess(line, timeout)
+                return self._exec_subprocess(line, timeout, env_extra=env_extra)
             if command in self.commands:
                 return self._result(stdout=self.commands[command](parts[1:]))
+            if command in {"git", "linux", "alpine"}:
+                return self._exec_linux(command, parts[1:], timeout)
+            if command in {"linux-setup", "gates"}:
+                return self._exec_zmux_command(command, parts[1:])
             if command in {"python", "python3"}:
                 return self._exec_python_command(parts[1:])
             if command in {"pip", "zpip", "help", "zmux-info", "zmux-setup-storage"}:
@@ -227,7 +258,7 @@ class PythonShell:
             # is genuine Python source. (Lines containing |, >, < already went
             # to _exec_subprocess above — no need to test for them twice.)
             if self._is_external_command(command):
-                return self._exec_subprocess(line, timeout)
+                return self._exec_subprocess(line, timeout, env_extra=env_extra)
             return self._exec_python(line, origin=line)
         except (OSError, ValueError) as exc:
             return self._result(stderr=f"{command}: {exc}\n", code=1)
@@ -251,15 +282,102 @@ class PythonShell:
         p = Path(value)
         return (p if p.is_absolute() else self.cwd / p).resolve()
 
+    #: Option letters accepted by _cmd_ls (-a -l -R -t -r, in any cluster).
+    #: Anything else is rejected loudly instead of being swallowed:
+    #: `ls -R` and `ls -t` previously exited 0 with plain output — the same
+    #: silent-failure class as the operator guards — and `ls --color` was
+    #: accepted and ignored. An honest terminal either implements a flag or
+    #: says it does not.
+    _LS_OPTIONS = frozenset("alRtr")
+
     def _cmd_ls(self, args: list[str]) -> str:
-        target = self._path(next((a for a in args if not a.startswith("-")), "."))
-        show_all, long = "-a" in args or "-la" in args or "-al" in args, any("l" in a for a in args if a.startswith("-"))
-        entries = sorted(target.iterdir(), key=lambda p: p.name)
-        if not show_all:
-            entries = [p for p in entries if not p.name.startswith(".")]
+        show_all = long = recursive = by_time = reverse = False
+        operands: list[str] = []
+        after_ddash = False
+        for arg in args:
+            if after_ddash:
+                operands.append(arg)
+                continue
+            if arg == "--":
+                after_ddash = True
+                continue
+            if arg.startswith("-") and arg != "-":
+                letters = arg[1:]
+                if not letters or not set(letters) <= self._LS_OPTIONS:
+                    shown = arg if arg.startswith("--") else letters[0]
+                    raise ValueError(f"invalid option -- '{shown}'")
+                show_all |= "a" in letters
+                long |= "l" in letters
+                recursive |= "R" in letters
+                by_time |= "t" in letters
+                reverse |= "r" in letters
+                continue
+            operands.append(arg)
+        targets = [self._path(value) for value in (operands or ["."])]
+        for target in targets:
+            if not target.exists():
+                raise FileNotFoundError(f"No such file or directory: '{target}'")
+        if recursive:
+            return self._ls_recursive(targets, show_all, long, by_time, reverse)
+        return self._ls_flat(targets, show_all, long, by_time, reverse)
+
+    @staticmethod
+    def _ls_sort_key(path: Path, by_time: bool):
+        return path.stat().st_mtime if by_time else path.name
+
+    def _ls_entries(self, path: Path, show_all: bool, by_time: bool, reverse: bool) -> list:
+        entries = [p for p in path.iterdir() if show_all or not p.name.startswith(".")]
+        # `-t` lists newest first by default (so reverse=False still means
+        # descending mtime); `-r` flips either ordering.
+        descending = reverse if not by_time else not reverse
+        entries.sort(key=lambda p: self._ls_sort_key(p, by_time), reverse=descending)
+        return entries
+
+    @staticmethod
+    def _ls_format(entries: list, long: bool) -> str:
         if long:
             return "".join(f"{p.stat().st_mode:06o} {p.stat().st_size:>8} {p.name}\n" for p in entries)
-        return "  ".join(p.name for p in entries) + ("\n" if entries else "")
+        names = [p.name for p in entries]
+        return "  ".join(names) + ("\n" if names else "")
+
+    def _ls_flat(self, targets: list, show_all: bool, long: bool,
+                 by_time: bool, reverse: bool) -> str:
+        """List one or more targets; multiple targets get GNU-style headers."""
+        sections = []
+        for target in targets:
+            if target.is_dir() and not target.is_symlink():
+                entries = self._ls_entries(target, show_all, by_time, reverse)
+                body = self._ls_format(entries, long)
+            else:
+                body = f"{target.name}\n"
+            sections.append(f"{target}:\n{body}" if len(targets) > 1 else body)
+        return "\n".join(sections) if len(targets) > 1 else "".join(sections)
+
+    def _ls_recursive(self, targets: list, show_all: bool, long: bool,
+                      by_time: bool, reverse: bool) -> str:
+        """Recursive listing, depth-first, with `path:` headers (GNU -R shape).
+
+        An explicit stack keeps the walk iterative so a deep tree can never
+        trip the Python recursion limit, and symlinked directories are not
+        followed (prevents cycles, matches GNU ls -R default).
+        """
+        sections = []
+        for target in targets:
+            if not (target.is_dir() and not target.is_symlink()):
+                sections.append((None, f"{target.name}\n"))
+                continue
+            stack = [target]
+            while stack:
+                current = stack.pop()
+                entries = self._ls_entries(current, show_all, by_time, reverse)
+                sections.append((current, self._ls_format(entries, long)))
+                for entry in reversed(entries):
+                    if entry.is_dir() and not entry.is_symlink():
+                        stack.append(entry)
+        rendered = []
+        for header, body in sections:
+            rendered.append(f"{header}:\n{body}" if header is not None else body)
+        return "\n".join(rendered)
 
     def _cmd_mkdir(self, args: list[str]) -> str:
         parents = "-p" in args
@@ -562,24 +680,74 @@ class PythonShell:
             self.globals["__name__"], self.globals["__file__"], sys.argv = old_name, old_file, old_argv
 
     def _exec_zmux_command(self, command: str, args: list[str]) -> dict:
-        from zmux import cli, zpip
+        from zmux import cli, linuxenv, zpip
         out, err = self._make_sinks()
-        # A wheel download is the longest blocking thing zpip does; without a
-        # progress sink the terminal simply stops responding for its duration.
-        # The bar is written straight through (it uses \r to repaint in place,
-        # which a line-buffered sink would otherwise hold back).
-        previous_sink = zpip.progress_sink
+        # A wheel download (zpip) or rootfs download (linux-setup) is the
+        # longest blocking thing these commands do; without a progress sink
+        # the terminal simply stops responding for its duration. The bars are
+        # written straight through (they use \r to repaint in place, which a
+        # line-buffered sink would otherwise hold back).
+        previous_zpip = zpip.progress_sink
+        previous_linux = linuxenv.progress_sink
         if self.output_sink is not None:
-            zpip.progress_sink = lambda text: self.output_sink(
+            sink = lambda text: self.output_sink(
                 text.replace("\n", "\r\n").encode("utf-8", errors="replace")
             )
+            zpip.progress_sink = sink
+            linuxenv.progress_sink = sink
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = cli.main([command, *args])
         finally:
-            zpip.progress_sink = previous_sink
+            zpip.progress_sink = previous_zpip
+            linuxenv.progress_sink = previous_linux
         return self._result(self._drain(out), self._drain(err), code,
                             streamed=self._streamed())
+
+    def _exec_linux(self, command: str, args: list[str], timeout: float | None) -> dict:
+        """Run a command inside the proot'd Alpine userland.
+
+        ``git`` runs the real ``/usr/bin/git`` from the Alpine rootfs with
+        unchanged syntax — clone/branch/checkout/push behave exactly as they
+        do on any Linux box. ``linux``/``alpine`` run a shell command
+        (``/bin/sh -c ...``) for anything else (``apk add ...``,
+        ``python3``, ``ls -R`` inside the sandbox, ...).
+        """
+        from zmux import linuxenv
+        if not linuxenv.is_installed():
+            return self._result(
+                stderr="zmux: Alpine environment is not installed.\n"
+                       "  Run `linux-setup` once (downloads ~4 MiB, verifies SHA-512,\n"
+                       "  extracts into app-private storage). Then `git` works normally.\n",
+                code=1,
+            )
+        try:
+            if command == "git":
+                if not (linuxenv.rootfs_dir() / "usr" / "bin" / "git").is_file():
+                    return self._result(
+                        stderr=("zmux: git is not installed inside the Alpine "
+                                "environment yet.\n"
+                                "  Run: linux apk add git openssh-client\n"),
+                        code=1,
+                    )
+                guest_argv = ["/usr/bin/git", *args]
+            elif command in ("linux", "alpine"):
+                if not args:
+                    return self._result(
+                        stdout=("Alpine Linux inside ZMUX (proot).\n"
+                                "  linux <command...>   run a shell command, e.g. linux apk add git\n"
+                                "  git <args...>       real git, e.g. git clone <url>\n"
+                                "  linux-setup         install/repair the environment\n"
+                                "  gates               run the on-device acceptance tests\n"),
+                    )
+                script = " ".join(shlex.quote(a) for a in args)
+                guest_argv = ["/bin/sh", "-c", script]
+            else:  # pragma: no cover - dispatch only calls the three above
+                return self._result(stderr=f"zmux: unknown linux command {command}\n", code=2)
+            cmdline = linuxenv.build_command_line(guest_argv, self.cwd)
+        except RuntimeError as error:
+            return self._result(stderr=f"zmux: {error}\n", code=1)
+        return self._exec_subprocess(cmdline, timeout, env_extra=linuxenv.proot_env())
 
     def _find_executable(self, command: str) -> str | None:
         """Resolve ``command`` against the ZMUX PATH.
@@ -622,11 +790,12 @@ class PythonShell:
             return False
         return self._find_executable(command) is not None
 
-    def _exec_subprocess(self, line: str, timeout: float | None) -> dict:
+    def _exec_subprocess(self, line: str, timeout: float | None,
+                         env_extra: dict | None = None) -> dict:
         with self._procs_lock:
             self._subprocess_depth += 1
         try:
-            return self._exec_subprocess_inner(line, timeout)
+            return self._exec_subprocess_inner(line, timeout, env_extra)
         finally:
             with self._procs_lock:
                 self._subprocess_depth -= 1
@@ -670,7 +839,8 @@ class PythonShell:
         proc.wait(timeout=timeout)
         return "".join(chunks)
 
-    def _exec_subprocess_inner(self, line: str, timeout: float | None) -> dict:
+    def _exec_subprocess_inner(self, line: str, timeout: float | None,
+                               env_extra: dict | None = None) -> dict:
         # Parse pipelines ourselves; shell=True would reintroduce /system/bin/sh.
         lexer = shlex.shlex(line, posix=True, punctuation_chars="|<>")
         lexer.whitespace_split = True
@@ -715,9 +885,12 @@ class PythonShell:
                 # start_new_session gives every pipeline its own process group,
                 # so interrupt() can killpg() it without signalling our own
                 # server process (shared group would nuke the app itself).
+                env = build_env(self.cwd)
+                if env_extra:
+                    env = {**env, **env_extra}
                 proc = subprocess.Popen([executable, *stage[1:]], cwd=self.cwd, stdin=stdin,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                        env=build_env(self.cwd), start_new_session=True)
+                                        env=env, start_new_session=True)
                 if previous: previous.stdout.close()
                 processes.append(proc); previous = proc
                 # Register for Ctrl+C signalling (interrupt() kills the group).

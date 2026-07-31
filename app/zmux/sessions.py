@@ -67,12 +67,20 @@ class SessionManager:
         with self._lock:
             if len(self._sessions) >= self.MAX_SESSIONS:
                 raise ValueError(f"session limit reached ({self.MAX_SESSIONS})")
+            previous_active = self._active
             session_id = self._new_id()
             session = PTYTerminalSession(self.ws_server, emit=self._emit_for(session_id))
             self._sessions[session_id] = session
             self._order.append(session_id)
             if activate or self._active is None:
                 self._active = session_id
+            if activate and previous_active is not None and previous_active != session_id:
+                # A new tab is a *new page*: wipe the previous session's
+                # screen *before* the fresh session starts writing, exactly
+                # like switch(). Without this the new banner/prompt were
+                # appended over the old screen — "the tab did not change,
+                # there are just more prompts now".
+                self.ws_server.broadcast(b"\x1b[2J\x1b[H")
             session.start()
             return session_id
 

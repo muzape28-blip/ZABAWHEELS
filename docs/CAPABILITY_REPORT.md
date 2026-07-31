@@ -205,6 +205,12 @@ monochrome.
 `ls -R`, `ls -t`, `ls --color` all return `exit=0` and plain output — the flags
 are silently discarded rather than rejected.
 
+> **Update (2026-07-31): fixed.** `ls` now implements `-a -l -R -t -r` (with
+> GNU-style headers for recursive/multi-operand output) and rejects unknown
+> flags loudly (`ls: invalid option -- 'Z'`, exit 1). `ls -R` and `ls -t` are
+> no longer silent failures; the strictness principle now covers `ls` the way
+> it covers the shell-operator guards.
+
 ---
 
 ## 5. ZMUX vs bash — honest scorecard

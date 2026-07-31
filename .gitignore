@@ -105,3 +105,6 @@ app/staging/
 app/installed/
 app/artifacts/
 app/.zmux_*
+
+# PRoot cross-compile output (built fresh by CI; never committed)
+app/libs/

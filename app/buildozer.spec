@@ -19,13 +19,24 @@ p4a.bootstrap = webview
 p4a.port = 5000
 
 # Core requirements - minimal for terminal
-requirements = python3,flask,waitress,packaging,certifi,werkzeug,jinja2,itsdangerous,click,blinker,MarkupSafe
+requirements = python3,pyjnius,flask,waitress,packaging,certifi,werkzeug,jinja2,itsdangerous,click,blinker,MarkupSafe
 
 orientation = portrait
 fullscreen = 0
 
 # Android specific
 android.archs = armeabi-v7a, arm64-v8a
+
+# --- PRoot / Alpine sandbox ------------------------------------------------
+# libproot.so + libproot-loader*.so + libtalloc.so are cross-compiled by
+# scripts/build_proot_android.py and copied into app/libs/<abi>/ before the
+# build (the build-zmux-apk workflow does this). Buildozer copies them into
+# the p4a dist libs/<abi>/; p4a's gradle template packages that as jniLibs
+# with useLegacyPackaging=true, so they land in nativeLibraryDir — the only
+# app location Android allows exec() on (W^X). Empty globs are skipped, so
+# plain local builds without the .so files still work.
+android.add_libs_armeabi_v7a = libs/armeabi-v7a/*.so
+android.add_libs_arm64_v8a = libs/arm64-v8a/*.so
 android.accept_sdk_license = True
 android.api = 34
 android.minapi = 26

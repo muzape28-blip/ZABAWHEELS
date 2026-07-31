@@ -48,6 +48,18 @@
 - [ ] SHA-256 verified on install
 - [ ] Auth token required for API
 
+### Alpine Sandbox (PRoot) — run `gates` in the APK
+- [ ] G1 `ptmx`: `/dev/ptmx` openable (PTY possible?)
+- [ ] G2 `proot-exec`: `libproot.so` execs from `nativeLibraryDir` (W^X gate)
+- [ ] G3 `alpine-boot`: Alpine 3.22.5 boots inside proot
+- [ ] G4 `git-clone`: real `git clone` over HTTPS works
+- [ ] G5 `apk`: apk-tools runs in the guest
+- [ ] `linux-setup` downloads rootfs, verifies SHA-512, extracts atomically
+- [ ] `git clone` → `git branch` → `git checkout` normal workflow
+- [ ] `linux apk add <pkg>` installs inside the sandbox
+- [ ] Ctrl+C interrupts a long `git clone` / `linux` job without freezing
+- [ ] 8 sessions each running `git`/`linux` do not corrupt each other
+
 ### Performance
 - [ ] Terminal responsive on Android Go devices
 - [ ] No excessive memory usage

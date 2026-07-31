@@ -57,7 +57,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends git zip unzip tar curl autoconf automake libtool pkg-config zlib1g-dev libncurses5-dev libffi-dev libssl-dev cmake ninja-build
           python -m pip install --upgrade pip==23.2.1
-          python -m pip install buildozer==1.5.0 Cython==0.29.33 setuptools==68.2.2 wheel==0.41.2
+          python -m pip install buildozer==1.6.0 Cython==0.29.33 setuptools==68.2.2 wheel==0.41.2
 
       - name: Validate app source and tests
         run: |
@@ -95,6 +95,28 @@ jobs:
             ~/.gradle/wrapper
           key: ${{ runner.os }}-zmux-${{ hashFiles('app/buildozer.spec', 'toolchain/runtime-lock.json') }}
           restore-keys: ${{ runner.os }}-zmux-
+
+      - name: Ensure Android NDK r28c (shared by the PRoot build and buildozer)
+        run: |
+          NDK_DIR="$HOME/.buildozer/android/platform/android-ndk-r28c"
+          if [ ! -d "$NDK_DIR" ]; then
+            mkdir -p "$HOME/.buildozer/android/platform"
+            curl -sL -o /tmp/android-ndk.zip \
+              https://dl.google.com/android/repository/android-ndk-r28c-linux.zip
+            unzip -q /tmp/android-ndk.zip -d "$HOME/.buildozer/android/platform"
+            rm -f /tmp/android-ndk.zip
+          fi
+          test -x "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+
+      - name: Cross-compile PRoot + talloc for the Alpine sandbox
+        # This workflow's default working-directory is `app`, so the script
+        # lives one level up (../scripts) and the output goes to `libs/`
+        # (i.e. app/libs), matching buildozer.spec's android.add_libs_* globs.
+        run: |
+          python ../scripts/build_proot_android.py \
+            --ndk "$HOME/.buildozer/android/platform/android-ndk-r28c" \
+            --out libs \
+            --abis armeabi-v7a,arm64-v8a
 
       - name: Build signed-by-debug-key universal APK
         env:
