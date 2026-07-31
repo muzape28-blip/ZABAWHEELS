@@ -251,12 +251,16 @@ class _FakeWS:
     def __init__(self):
         self.data = bytearray()
         self.callbacks = {}
+        #: (monotonic timestamp, payload) per broadcast, so tests can assert
+        #: *when* output reached the client, not just that it eventually did.
+        self.events = []
 
     def register_callbacks(self, on_data, on_resize):
         self.callbacks = {"on_data": on_data, "on_resize": on_resize}
 
     def broadcast(self, payload):
         self.data.extend(payload)
+        self.events.append((time.monotonic(), bytes(payload)))
 
 
 def _wait_for(predicate, timeout=10.0):
@@ -379,3 +383,66 @@ class TestStdinAndHistory:
         time.sleep(0.1)
         interactive.write_input(b"echo clean_line\n")
         assert _wait_for(lambda: b"clean_line\r\n" in interactive.get_scrollback())
+
+class TestStreamingOutput:
+    """Output must reach the terminal while a command runs, not after it ends.
+
+    Regression tests for the batched-output bug: results were captured into a
+    StringIO and emitted only once execute() returned, so progressive commands
+    looked frozen and input() prompts were invisible until after the answer.
+    """
+
+    def test_progressive_output_arrives_during_command(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        interactive.ws_server.events.clear()
+        interactive.write_input(b"import time\n")
+        interactive.write_input(b"for i in range(3):\n    print('tick', i); time.sleep(0.5)\n\n")
+        assert _wait_for(lambda: b"tick 2" in interactive.get_scrollback(), timeout=20)
+
+        ticks = [ts for ts, payload in interactive.ws_server.events if b"tick" in payload]
+        assert len(ticks) >= 2, f"ticks were coalesced into one write: {ticks}"
+        # Three prints separated by 0.5s must span ~1s of wall clock. Batched
+        # output would deliver them in a single burst (spread ~0).
+        assert ticks[-1] - ticks[0] > 0.7, (
+            f"output was batched: all ticks within {ticks[-1] - ticks[0]:.2f}s"
+        )
+
+    def test_input_prompt_is_visible_before_stdin_is_answered(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        interactive.ws_server.events.clear()
+        interactive.write_input(b"answer = input('Your name? ')\n")
+        assert _wait_for(lambda: interactive._busy.is_set()), "input() never blocked"
+        # The prompt has no trailing newline, so only an explicit flush before
+        # the blocking read can put it on screen.
+        assert _wait_for(
+            lambda: b"Your name?" in b"".join(p for _, p in interactive.ws_server.events)
+        ), "prompt was not shown while waiting for input"
+        assert interactive._busy.is_set(), "should still be blocked on stdin"
+
+        interactive.write_input(b"Zaba\n")
+        assert _wait_for(lambda: not interactive._busy.is_set()), "input() never returned"
+        interactive.write_input(b"answer\n")
+        assert _wait_for(lambda: b"'Zaba'" in interactive.get_scrollback())
+
+    def test_builtin_command_output_is_rendered_exactly_once(self, interactive):
+        """Built-ins bypass the sink; they must still render, and not twice.
+
+        The scrollback holds the keystroke echo of the typed line *and* the
+        command's output, so the marker legitimately appears twice; the
+        output line itself ("marker" followed by CRLF at line start) once.
+        """
+        interactive.write_input(b"echo dedupe_marker\n")
+        # Wait for the *output* line, not the keystroke echo that precedes it.
+        assert _wait_for(lambda: b"\r\ndedupe_marker\r\n" in interactive.get_scrollback())
+        assert _wait_for(lambda: interactive.get_scrollback().endswith(b"$ "))
+        assert interactive.get_scrollback().count(b"\r\ndedupe_marker\r\n") == 1
+
+    def test_streamed_python_output_is_not_duplicated(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        # Split literal so the typed-line echo cannot match the printed value.
+        interactive.write_input(b"print('once' + '_only')\n")
+        assert _wait_for(lambda: b"once_only" in interactive.get_scrollback())
+        assert interactive.get_scrollback().count(b"once_only") == 1

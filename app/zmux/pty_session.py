@@ -32,8 +32,10 @@ Commands run on a dedicated worker thread so the input path stays live:
 from __future__ import annotations
 
 import codeop
+import contextlib
 import platform
 import queue
+import sys
 import threading
 from typing import Optional
 
@@ -61,6 +63,13 @@ class _QueueInput:
 
     def readline(self, _size: int = -1) -> str:
         session = self._session
+        # Push any partial line (typically the input() prompt itself, which
+        # has no trailing newline) before blocking. Without this the user is
+        # asked a question they cannot see and the terminal looks frozen.
+        stream = getattr(sys.stdout, "flush", None)
+        if stream is not None:
+            with contextlib.suppress(Exception):
+                sys.stdout.flush()
         while True:
             if session.shell._interrupt.is_set():
                 raise KeyboardInterrupt
@@ -382,14 +391,30 @@ class PTYTerminalSession:
         self._python_lines.clear()
 
     def _execute_and_render(self, source: str, force_python: bool = False) -> None:
+        """Run one line with output streaming live to the websocket.
+
+        ``output_sink`` makes the shell push text as it is produced, so a
+        progressive command is visible while it runs and — critically — an
+        ``input()`` prompt reaches the screen *before* the read blocks.
+        The result dict still carries the full text; it is deliberately not
+        re-emitted here or every line would appear twice.
+        """
         self.shell.stdin_provider = self._stdin
+        self.shell.output_sink = self._emit
         try:
             result = self.shell.execute(source, force_python=force_python)
         finally:
             self.shell.stdin_provider = None
-        output = (result.get("stdout", "") + result.get("stderr", "")).replace("\n", "\r\n")
-        if output:
-            self._emit(output.encode("utf-8", errors="replace"))
+            self.shell.output_sink = None
+        # Built-in commands (ls, echo, cd...) and zpip return their text
+        # without touching the sink, so they still need rendering here. The
+        # `streamed` tuple names what already reached the screen.
+        streamed = result.get("streamed", ())
+        pending = "".join(
+            result.get(name, "") for name in ("stdout", "stderr") if name not in streamed
+        )
+        if pending:
+            self._emit(pending.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", errors="replace"))
         self._emit_prompt()
 
     def _finish_command(self) -> None:

@@ -21,7 +21,9 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
+from zmux.env import build_env, build_path
 from zmux.paths import HOME_DIR
+from zmux.streams import StreamingWriter
 
 
 # --- Optional Rich rendering (DX polish) --------------------------------------
@@ -70,6 +72,11 @@ class PythonShell:
         #: Optional file-like stdin provider installed while user code runs;
         #: the websocket terminal feeds it so ``input()`` works.
         self.stdin_provider = None
+        #: Optional callback taking already-encoded terminal bytes. When set,
+        #: command output streams to it as it is produced instead of being
+        #: buffered until the command finishes. The returned result dict still
+        #: carries the complete text, so REST callers are unaffected.
+        self.output_sink = None
         #: Cooperative Ctrl+C: set by :meth:`interrupt`; checked by the stdin
         #: provider and combined with async KeyboardInterrupt injection.
         self._interrupt = threading.Event()
@@ -170,9 +177,19 @@ class PythonShell:
         except (OSError, ValueError) as exc:
             return self._result(stderr=f"{command}: {exc}\n", code=1)
 
-    def _result(self, stdout: str = "", stderr: str = "", code: int = 0) -> dict:
+    def _result(self, stdout: str = "", stderr: str = "", code: int = 0,
+                streamed: tuple = ()) -> dict:
+        """Build a terminal-style result.
+
+        ``streamed`` names the streams already pushed to :attr:`output_sink`
+        while the command ran (``"stdout"`` / ``"stderr"``). The interactive
+        terminal uses it to emit only what has *not* been shown yet, so
+        streamed output is never duplicated and non-streaming paths (built-in
+        commands, zpip) still render. REST callers ignore it and read the
+        complete text from ``stdout``/``stderr`` as before.
+        """
         return {"ok": code == 0, "stdout": stdout, "stderr": stderr,
-                "exit_code": code, "status": "idle"}
+                "exit_code": code, "status": "idle", "streamed": streamed}
 
     def _path(self, value: str) -> Path:
         value = os.path.expanduser(value)
@@ -313,8 +330,30 @@ class PythonShell:
             return buffer.getvalue()
         return traceback.format_exc()
 
+    def _make_sinks(self):
+        """Return (stdout, stderr) sinks honouring :attr:`output_sink`.
+
+        With a sink installed both streams stream live to the terminal; the
+        text is still accumulated so the result dict stays complete.
+        """
+        if self.output_sink is None:
+            return io.StringIO(), io.StringIO()
+        return StreamingWriter(self.output_sink), StreamingWriter(self.output_sink)
+
+    def _streamed(self) -> tuple:
+        """Streams already forwarded live (empty when no sink is installed)."""
+        return ("stdout", "stderr") if self.output_sink is not None else ()
+
+    @staticmethod
+    def _drain(stream) -> str:
+        """Flush a sink (if streaming) and return everything written to it."""
+        flush = getattr(stream, "flush", None)
+        if flush is not None:
+            flush()
+        return stream.getvalue()
+
     def _exec_python(self, source: str) -> dict:
-        out, err = io.StringIO(), io.StringIO()
+        out, err = self._make_sinks()
         try:
             # eval gives REPL-like expression output; exec handles statements.
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self._stdin_context():
@@ -326,18 +365,21 @@ class PythonShell:
                 else:
                     value = eval(code, self.globals, self.globals)
                     if value is not None: print(repr(value))
-            return self._result(out.getvalue(), err.getvalue())
+            return self._result(self._drain(out), self._drain(err), streamed=self._streamed())
         except KeyboardInterrupt:
             # Ctrl+C (async-injected or raised by user/stdin): mirror CPython's
             # own REPL — a one-line notice and exit status 130, no traceback.
-            return self._result(out.getvalue(), err.getvalue() + "KeyboardInterrupt\n", 130)
+            # Written through the sink so it streams like any other output.
+            err.write("KeyboardInterrupt\n")
+            return self._result(self._drain(out), self._drain(err), 130, streamed=self._streamed())
         except SystemExit as exc:
             # Quiet exit like the real REPL exiting a subshell: no traceback
             # spam; propagate the numeric code when one was given.
             code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
-            return self._result(out.getvalue(), err.getvalue(), code)
+            return self._result(self._drain(out), self._drain(err), code, streamed=self._streamed())
         except BaseException:
-            return self._result(out.getvalue(), err.getvalue() + self._format_traceback(), 1)
+            err.write(self._format_traceback())
+            return self._result(self._drain(out), self._drain(err), 1, streamed=self._streamed())
 
     def _exec_python_command(self, args: list[str]) -> dict:
         if not args or args[0] in {"--version", "-V"}:
@@ -365,9 +407,17 @@ class PythonShell:
         return self._result(out.getvalue(), err.getvalue(), code)
 
     def _find_executable(self, command: str) -> str | None:
+        """Resolve ``command`` against the ZMUX PATH.
+
+        Uses the same PATH the children receive (BIN_DIR first, then the
+        Android system directories), so the generated ``zpip``/``help``/
+        ``zmux-info`` wrappers in BIN_DIR are reachable here too. Previously
+        this searched a hardcoded list that omitted BIN_DIR entirely, making
+        those wrappers unresolvable from the pipeline executor.
+        """
         if "/" in command:
             return command if os.path.isfile(command) and os.access(command, os.X_OK) else None
-        for directory in ("/system/bin", "/system/xbin", "/vendor/bin", "/sbin", "/bin", "/usr/bin"):
+        for directory in build_path().split(os.pathsep):
             candidate = os.path.join(directory, command)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK): return candidate
         return None
@@ -382,6 +432,45 @@ class PythonShell:
         finally:
             with self._procs_lock:
                 self._subprocess_depth -= 1
+
+    def _read_stdout_streaming(self, proc, timeout: float | None, stream: bool) -> str:
+        """Read ``proc`` stdout to EOF, forwarding chunks to the terminal.
+
+        Returns the complete text so the REST result stays identical. When no
+        output sink is installed (REST calls) or the pipeline redirects to a
+        file, this simply accumulates without emitting.
+
+        ``readline()`` blocks, so the read runs on a helper thread and the
+        caller waits with a deadline: ``timeout`` must keep working exactly as
+        it did under ``communicate(timeout=...)``, which this replaced.
+        """
+        sink = self.output_sink if stream else None
+        chunks: list = []
+        handle = proc.stdout
+
+        def pump() -> None:
+            try:
+                # Line-oriented: the smallest unit a terminal can usefully
+                # render, and it avoids splitting escape sequences mid-line.
+                for chunk in iter(handle.readline, ""):
+                    chunks.append(chunk)
+                    if sink is not None:
+                        sink(chunk.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", "replace"))
+            except (ValueError, OSError):
+                pass  # handle closed underneath us (timeout kill path)
+
+        reader = threading.Thread(target=pump, daemon=True, name="ZMUX-Stdout-Reader")
+        reader.start()
+        reader.join(timeout=timeout)
+        if reader.is_alive():
+            # Still producing past the deadline: surface the same error the
+            # previous communicate(timeout=...) call raised, and let the
+            # caller's handler kill the pipeline.
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        with contextlib.suppress(Exception):
+            handle.close()
+        proc.wait(timeout=timeout)
+        return "".join(chunks)
 
     def _exec_subprocess_inner(self, line: str, timeout: float | None) -> dict:
         # Parse pipelines ourselves; shell=True would reintroduce /system/bin/sh.
@@ -430,7 +519,7 @@ class PythonShell:
                 # server process (shared group would nuke the app itself).
                 proc = subprocess.Popen([executable, *stage[1:]], cwd=self.cwd, stdin=stdin,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                        start_new_session=True)
+                                        env=build_env(self.cwd), start_new_session=True)
                 if previous: previous.stdout.close()
                 processes.append(proc); previous = proc
                 # Register for Ctrl+C signalling (interrupt() kills the group).
@@ -451,7 +540,14 @@ class PythonShell:
                     stderr_parts.append(stream.read())
                 reader = threading.Thread(target=drain, daemon=True)
                 reader.start(); stderr_threads.append(reader)
-            stdout, _ = processes[-1].communicate(timeout=timeout)
+            # Stream the final stage's stdout instead of communicate(): a
+            # long-running child (ping, logcat, a build) must appear live in
+            # the terminal, not arrive in one block when it exits. Redirected
+            # output still goes to the file, never to the screen.
+            did_stream = self.output_sink is not None and output_file is None
+            stdout = self._read_stdout_streaming(
+                processes[-1], timeout, stream=output_file is None
+            )
             for proc in processes[:-1]: proc.wait(timeout=timeout)
             for reader in stderr_threads: reader.join(timeout=1)
             if output_file:
@@ -467,7 +563,10 @@ class PythonShell:
                 if sig == 9:
                     hint += " — SIGKILL; on Android 12+ this is often the OS phantom-process limit"
                 stderr_parts.append(hint + "]\n")
-            return self._result(stdout, "".join(stderr_parts), code)
+            # Only stdout was forwarded live; stderr is collected by the
+            # drain threads and rendered by the caller after the fact.
+            return self._result(stdout, "".join(stderr_parts), code,
+                                streamed=("stdout",) if did_stream else ())
         except subprocess.TimeoutExpired:
             for proc in processes: proc.kill()
             return self._result(stderr=f"Command timed out after {timeout}s\n", code=1)
