@@ -40,8 +40,12 @@ Packaging chain (verified against the pinned p4a commit):
    shipping the file as `libtalloc.so` made `libproot.so` die at exec time
    with `CANNOT LINK EXECUTABLE …: library "libtalloc.so.2" not found`.
    The build script now rewrites the NEEDED/SONAME strings in place to
-   `libtalloc.so` (same byte length, ELF offsets stay valid) and then fails
-   the build if any `DT_NEEDED` cannot be satisfied by the packaged files.
+   `libtalloc.so` using a strictly length-preserving substitution
+   (`libtalloc.so\0\0`, 14 bytes — the naive `libtalloc.so\0` form is 13
+   bytes and silently corrupts the whole ELF; see
+   `docs/DEVICE_FAILURE_ANALYSIS.md` "Update 3"), enforces the size
+   invariant in code, and then fails the build if any `DT_NEEDED` cannot be
+   satisfied by the packaged files or if the talloc binding is wrong.
 2. `buildozer.spec` → `android.add_libs_*` copies them into the p4a dist
    `libs/<abi>/` (verified in buildozer 1.5.0/1.6.0 `targets/android.py`).
 3. p4a's `build.tmpl.gradle` packages `jniLibs.srcDir 'libs'` and — already

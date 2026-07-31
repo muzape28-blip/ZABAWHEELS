@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — the real proot bug: talloc NEEDED rewrite corrupted the ELF (2026-08-01)
+- **Root cause of the on-device `empty/missing DT_HASH/DT_GNU_HASH`
+  failure.** The in-place rewrite of `libtalloc.so.2` → `libtalloc.so` in
+  `scripts/build_proot_android.py` used a 13-byte replacement
+  (`b"libtalloc.so\x00"`) for a 14-byte needle — "libtalloc.so" is 12
+  characters, not 13 — so the file shrank by one byte and **every section
+  header, program header and string after it shifted**, producing a
+  misaligned `.dynamic` (garbage `unused DT entry` warnings) and
+  `empty/missing DT_HASH/DT_GNU_HASH` at exec time. Reproduced locally by
+  building talloc + proot from the pinned sources: `readelf` confirmed the
+  1-byte size change and the resulting "extends past end of file" error.
+- **Fix:** the replacement is now `b"libtalloc.so\x00\x00"` (14 bytes,
+  length-preserving). Verified locally: size unchanged, `NEEDED:
+  [libtalloc.so]`, `GNU_HASH` intact, `readelf` clean.
+- **Hard invariants added:** the build script asserts needle/replacement
+  length equality and fails the build if patching ever changes the file
+  size; `verify_needed()` now also requires the final `libproot.so` to
+  parse and to bind exactly `libtalloc.so`.
+- **`zmux-info`/`gates` now report an unreadable/corrupted `libproot.so`
+  explicitly** ("Proot status: ... corrupted build — reinstall"), so a
+  broken binary is never silently ignored on the phone.
+- Tests: 360 passed, 25 skipped (length-invariant, size-preserving patch,
+  corrupted-ELF detection via `elfscan`).
 ### Fixed — stale-APK root cause: on-device proof of the shipped binary (2026-08-01)
 - **"Fixed APK still failing" traced to a stale APK.** The device's
   `gates` output said `[PASS] ptx`, but this repo has always named that gate

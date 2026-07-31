@@ -244,6 +244,62 @@ perlu tahu SHA. Uninstall total (`Settings > Apps > ZMUX > Uninstall`) lalu
 install APK dari PR terbaru sebelum menjalankan verifikasi, karena update
 dengan data lama bisa menyimpan sisa build lama.
 
+## Update 3 — akar masalah sesungguhnya: patch 1-byte-short merusak ELF (2026-08-01)
+
+Test lanjutan user (APK build terbaru) menunjukkan **`libtalloc.so.2 not
+found` sudah hilang** (artinya NEEDED berhasil diubah menjadi
+`libtalloc.so`), tapi muncul error baru:
+
+```
+CANNOT LINK EXECUTABLE ".../libproot.so": empty/missing DT_HASH/DT_GNU_HASH
+WARNING: linker: ... unused DT entry: unknown (type 0xab000 arg 0x1000005)
+```
+
+**Akar masalah: patch string-nya salah panjang.** `patch_talloc_names()`
+mengganti `b"libtalloc.so.2"` (14 byte) dengan `b"libtalloc.so\x00"` —
+tapi **"libtalloc.so" hanya 12 karakter**, jadi replacement-nya 13 byte.
+File menyusut 1 byte, dan **seluruh section header / program header /
+string setelah titik itu bergeser 1 byte** → `.dynamic` terbaca miring
+(warning `unused DT entry` dengan tag sampah) dan linker tidak menemukan
+hash table (`empty/missing DT_HASH/DT_GNU_HASH`).
+
+**Reproduksi lokal (build talloc 2.4.2 + proot 4dba3af dari sumber, gcc
+host):**
+
+```
+size before: 235872 | after: 235871   <- 1 byte hilang!
+readelf: Error: Reading 1856 bytes extends past end of file for section headers
+```
+
+Setelah diganti dengan `b"libtalloc.so\x00\x00"` (14 byte, panjang sama):
+
+```
+size before: 235872 | after: 235872   <- tidak berubah
+NEEDED: [libtalloc.so]  GNU_HASH: utuh  readelf: bersih
+```
+
+**Fix yang diterapkan:**
+
+| Perubahan | Efek |
+|---|---|
+| Replacement → `b"libtalloc.so\x00\x00"` (14 byte) | Panjang identik → tidak ada pergeseran; diverifikasi lokal + readelf bersih |
+| `patch_talloc_names()` gagal keras kalau ukuran file berubah | Bug kelas ini tidak akan pernah lolos lagi ke APK |
+| `verify_needed()` mengharuskan `libproot.so` parse bersih + binding talloc persis `libtalloc.so` | CI menolak artifact yang korup |
+| `zmux-info` & `gates` menampilkan "Proot status: ... corrupted build" kalau binary tidak bisa dibaca | APK korup langsung terlihat di HP, tidak diam-diam |
+
+**Mengapa APK lama tetap gagal padahal sudah "build ulang":** user
+meng-install di atas data lama → kode Python dari `private.tar` lama yang
+terbawa (bukti: `zmux-info` tidak menampilkan baris `Proot NEEDED:`).
+Sekarang baris itu selalu muncul (atau menampilkan pesan corrupted).
+
+**Langkah verifikasi final:**
+
+1. **Uninstall total** ZMUX (Settings → Apps → ZMUX → Uninstall).
+2. Install APK dari build CI terbaru (commit dengan fix ini).
+3. `zmux-info` → harus ada baris `Proot NEEDED: libtalloc.so` (tanpa STALE,
+   tanpa status corrupted).
+4. `gates` → G2/G3/G5 PASS.
+
 ## Yang perlu dilakukan user (setelah APK baru)
 
 1. **Uninstall ZMUX lama dulu** (data lama bisa membingungkan), lalu install

@@ -164,7 +164,9 @@ def runtime_fingerprint() -> dict:
     # On-device proof of which proot binary is actually shipped: read the
     # DT_NEEDED of libproot.so from nativeLibraryDir. A stale binary that
     # still asks for "libtalloc.so.2" is the classic "fixed build still
-    # fails" trap; printing the real NEEDED list makes it visible.
+    # fails" trap; a binary that fails to parse was corrupted by a non
+    # length-preserving rewrite (see scripts/build_proot_android.py). Both
+    # are reported explicitly instead of silently dropping the section.
     try:
         from zmux import elfscan, linuxenv
         lib_dir = linuxenv.native_library_dir()
@@ -178,8 +180,17 @@ def runtime_fingerprint() -> dict:
                     (n for n in needed if n.startswith("libtalloc")), None
                 ),
             }
-    except Exception:
-        pass
+        elif proot:
+            fp["proot"] = {
+                "binary": proot,
+                "error": "libproot.so is present but unreadable as ELF "
+                         "(corrupted build — reinstall the latest APK)",
+            }
+    except Exception as error:
+        fp["proot"] = {
+            "binary": proot or "(unknown)",
+            "error": f"could not read libproot.so ({type(error).__name__}: {error})",
+        }
     return fp
 
 
@@ -1077,14 +1088,19 @@ def format_fingerprint(fp: dict) -> str:
         *(
             []
             if "proot" not in fp
-            else [f"Proot NEEDED:       {', '.join(fp['proot']['needed']) or '(none)'}"]
+            else [f"Proot NEEDED:       {', '.join(fp['proot'].get('needed') or []) or '(none)'}"]
         ),
         *(
             []
             if "proot" not in fp
-            else [f"Proot talloc:       {fp['proot']['talloc'] or '(none)'}"
+            else [f"Proot talloc:       {fp['proot'].get('talloc') or '(none)'}"
                   + ("" if fp["proot"].get("talloc") == "libtalloc.so"
                      else "  [STALE — reinstall the latest build]")]
+        ),
+        *(
+            []
+            if "proot" not in fp or not fp["proot"].get("error")
+            else [f"Proot status:      {fp['proot']['error']}"]
         ),
         f"Python version:     {fp['python']['version']}",
         f"Implementation:     {fp['python']['implementation']}",

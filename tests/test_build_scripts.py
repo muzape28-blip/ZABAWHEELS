@@ -123,3 +123,40 @@ def test_all_channel_index_is_merged_before_writing(tmp_path, monkeypatch):
     assert set(armv7["packages"]) == {"alpha"}
     assert set(arm64["packages"]) == {"beta"}
     assert set(packages["packages"]) == {"alpha", "beta"}
+
+
+class TestTallocNeedRewrite:
+    """The talloc NEEDED rewrite must preserve byte length exactly.
+
+    Regression: a naive b"libtalloc.so\\x00" replacement is 13 bytes vs the
+    14-byte needle, shrinking the file by one byte and shifting every section
+    header — the shipped binary then failed on-device with
+    "empty/missing DT_HASH/DT_GNU_HASH" and garbage DT entries.
+    """
+
+    def test_needle_and_replacement_are_same_length(self):
+        from scripts.build_proot_android import (
+            TALLOC_NEEDED,
+            TALLOC_NEEDED_REPLACEMENT,
+        )
+        assert len(TALLOC_NEEDED) == 14
+        assert len(TALLOC_NEEDED_REPLACEMENT) == len(TALLOC_NEEDED)
+
+    def test_patch_preserves_file_size(self, tmp_path):
+        from scripts.build_proot_android import patch_talloc_names
+        lib = tmp_path / "libproot.so"
+        payload = b"\x7fELF" + b"prefix libtalloc.so.2 suffix" + b"\x00" * 64
+        lib.write_bytes(payload)
+        patch_talloc_names(tmp_path)
+        patched = lib.read_bytes()
+        assert len(patched) == len(payload)
+        assert b"libtalloc.so.2" not in patched
+        assert b"libtalloc.so\x00\x00" in patched
+
+    def test_patch_would_fail_loudly_if_length_changed(self, tmp_path, monkeypatch):
+        from scripts import build_proot_android as b
+        lib = tmp_path / "libproot.so"
+        lib.write_bytes(b"\x7fELF" + b"x libtalloc.so.2 y" + b"\x00" * 64)
+        monkeypatch.setattr(b, "TALLOC_NEEDED_REPLACEMENT", b"libtalloc.so\x00")
+        with pytest.raises(SystemExit, match="file size"):
+            b.patch_talloc_names(tmp_path)

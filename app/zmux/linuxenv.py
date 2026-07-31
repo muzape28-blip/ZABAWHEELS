@@ -536,7 +536,8 @@ def run_gates(report=None) -> dict:
     if proot:
         # Read the actual DT_NEEDED from the shipped binary: a stale APK that
         # still asks for "libtalloc.so.2" is the classic "fixed build still
-        # fails" trap, and this makes it visible on the phone itself.
+        # fails" trap, and a binary that fails to parse was corrupted by a
+        # non length-preserving rewrite. Both are visible on the phone itself.
         stale_hint = ""
         try:
             from zmux import elfscan
@@ -550,7 +551,12 @@ def run_gates(report=None) -> dict:
                 )
             elif talloc_entry is None:
                 stale_hint = f" — NOTE: no libtalloc dependency found in {needed}"
-        except Exception:
+        except Exception as scan_error:
+            stale_hint = (
+                " — UNREADABLE ELF: libproot.so does not parse "
+                f"({type(scan_error).__name__}). This is a corrupted build — "
+                "reinstall the latest APK"
+            )
             needed = []
         try:
             env = dict(os.environ)

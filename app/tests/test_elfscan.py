@@ -67,3 +67,20 @@ def test_soname_of_shared_library():
                 assert ".so" in soname
                 return
     pytest.skip("no standard shared library found on this host")
+
+
+def test_corrupted_short_rewrite_is_detected(host_elf, tmp_path):
+    """A 1-byte-short string rewrite (the old talloc patch bug) shifts every
+    section header; the parser must raise so zmux-info/gates can report the
+    build as corrupted instead of silently omitting the proot section."""
+    corrupt = tmp_path / "corrupt.so"
+    corrupt.write_bytes(open(host_elf, "rb").read())
+    data = corrupt.read_bytes()
+    needle = b"libc.so.6"
+    if needle not in data:
+        pytest.skip("host ELF has no libc.so.6 string to corrupt")
+    short = data.replace(needle, b"libc.so\x00")  # 9 -> 8 bytes: file shrinks
+    assert len(short) == len(data) - 1
+    corrupt.write_bytes(short)
+    with pytest.raises(elfscan.ElfError):
+        elfscan.elf_dynamic_needed(str(corrupt))

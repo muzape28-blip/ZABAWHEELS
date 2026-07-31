@@ -60,12 +60,22 @@ LOADER32_ABI = {"arm64-v8a": "armeabi-v7a", "armeabi-v7a": None}
 #:     CANNOT LINK EXECUTABLE ".../lib/arm/libproot.so":
 #:     library "libtalloc.so.2" not found: needed by main executable
 #:
-#: Fix: rewrite the string in place (same byte length, ELF offsets stay valid)
-#: to plain "libtalloc.so" — the approach the proot-embedding community uses —
-#: and package the library under that name. The runtime linker then finds it
-#: via LD_LIBRARY_PATH=nativeLibraryDir.
-TALLOC_NEEDED = b"libtalloc.so.2"
-TALLOC_NEEDED_REPLACEMENT = b"libtalloc.so\x00"
+#: Fix: rewrite the string in place to plain "libtalloc.so" and package the
+#: library under that name.
+#:
+#: CRITICAL: the replacement MUST be exactly the same byte length as the
+#: needle. "libtalloc.so" is 12 chars; a naive replacement of
+#: "libtalloc.so.2" (14 bytes) with b"libtalloc.so\\x00" (13 bytes) shrinks the
+#: file by one byte, shifting every section/program header and string after
+#: it — the linker then reads a misaligned .dynamic (garbage DT entries) and
+#: fails with "empty/missing DT_HASH/DT_GNU_HASH" (this exact bug shipped once
+#: and failed on-device). The two-NUL form keeps the length identical.
+TALLOC_NEEDED = b"libtalloc.so.2"                  # 14 bytes
+TALLOC_NEEDED_REPLACEMENT = b"libtalloc.so\x00\x00"  # 14 bytes — must match!
+
+assert len(TALLOC_NEEDED) == len(TALLOC_NEEDED_REPLACEMENT), (
+    "talloc NEEDED rewrite must preserve byte length"
+)
 
 #: Libraries the Android bionic linker always provides; DT_NEEDED entries for
 #: these must not be packaged next to proot.
@@ -287,7 +297,12 @@ def patch_talloc_names(out: Path) -> None:
     NEEDED string ``libtalloc.so.2`` (talloc's SONAME), and ``libtalloc.so``
     carries the same string as its own SONAME. Android's linker matches
     DT_NEEDED against exact filenames, so both are rewritten in place to
-    ``libtalloc.so`` — same byte length, every ELF offset stays valid.
+    ``libtalloc.so``.
+
+    The replacement is length-preserving (see TALLOC_NEEDED_REPLACEMENT) —
+    any size change would silently corrupt the whole ELF. This is enforced
+    here as a hard invariant: if the file size ever changes, the build dies
+    instead of shipping a broken binary.
     """
     for name in ("libproot.so", "libtalloc.so"):
         path = out / name
@@ -297,17 +312,32 @@ def patch_talloc_names(out: Path) -> None:
         count = data.count(TALLOC_NEEDED)
         if count == 0:
             continue
-        path.write_bytes(data.replace(TALLOC_NEEDED, TALLOC_NEEDED_REPLACEMENT))
+        patched = data.replace(TALLOC_NEEDED, TALLOC_NEEDED_REPLACEMENT)
+        if len(patched) != len(data):
+            raise SystemExit(
+                f"[patch] {name}: FAILED — replacement changed the file size "
+                f"({len(data)} -> {len(patched)} bytes). The talloc NEEDED "
+                "rewrite must preserve byte length; refusing to ship a "
+                "corrupted binary."
+            )
+        path.write_bytes(patched)
         print(f"[patch] {name}: rewrote {count}× 'libtalloc.so.2' -> "
               f"'libtalloc.so' (SONAME/DT_NEEDED)", flush=True)
 
 
 def verify_needed(out: Path, tc: Path) -> None:
-    """Fail the build if any packaged .so needs a library we do not ship.
+    """Fail the build if any packaged .so is broken or needs a missing library.
 
     Uses ``llvm-readelf`` so the check runs on the exact artifacts CI packs
-    into the APK. Catches soname/version drift (e.g. talloc 3.x recording
-    ``libtalloc.so.3``) at build time instead of on the user's phone.
+    into the APK. Two failure classes are caught here instead of on the
+    user's phone:
+
+    1. Unresolvable DT_NEEDED (soname/version drift, e.g. talloc 3.x
+       recording ``libtalloc.so.3``).
+    2. A file that no longer parses — the classic symptom of a non
+       length-preserving string rewrite (a one-byte shrink shifts every
+       section header, producing "empty/missing DT_HASH/DT_GNU_HASH" and
+       garbage DT entries at exec time).
     """
     shipped = {p.name for p in out.glob("*.so")}
     problems: list = []
@@ -335,7 +365,25 @@ def verify_needed(out: Path, tc: Path) -> None:
             "Unresolvable DT_NEEDED in proot artifacts:\n  "
             + "\n  ".join(problems)
         )
-    print(f"[verify] all DT_NEEDED entries of {sorted(shipped)} resolve", flush=True)
+    # Belt-and-braces: the exact talloc binding must be the plain name, and
+    # libproot.so must parse cleanly (a corrupted rewrite would show up here).
+    for lib in ("libproot.so", "libtalloc.so"):
+        path = out / lib
+        if not path.is_file():
+            continue
+        result = subprocess.run(
+            [str(tc / "llvm-readelf"), "-d", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        needed = _NEEDED_RE.findall(result.stdout)
+        talloc_entry = next((n for n in needed if n.startswith("libtalloc")), None)
+        if talloc_entry != "libtalloc.so":
+            raise SystemExit(
+                f"[verify] {lib} talloc binding is {talloc_entry!r}, "
+                "expected 'libtalloc.so' — the rewrite did not apply"
+            )
+    print(f"[verify] all DT_NEEDED entries of {sorted(shipped)} resolve; "
+          f"talloc binding is 'libtalloc.so'", flush=True)
 
 
 def main() -> int:
