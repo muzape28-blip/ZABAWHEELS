@@ -32,12 +32,15 @@ Commands run on a dedicated worker thread so the input path stays live:
 from __future__ import annotations
 
 import codeop
+import contextlib
 import platform
 import queue
+import sys
 import threading
 from typing import Optional
 
-from zmux.paths import HOME_DIR, display_path, seed_examples
+from zmux import crash
+from zmux.paths import HOME_DIR, RC_FILENAME, display_path, read_rc_lines, seed_examples
 from zmux.python_shell import PythonShell
 
 
@@ -61,6 +64,13 @@ class _QueueInput:
 
     def readline(self, _size: int = -1) -> str:
         session = self._session
+        # Push any partial line (typically the input() prompt itself, which
+        # has no trailing newline) before blocking. Without this the user is
+        # asked a question they cannot see and the terminal looks frozen.
+        stream = getattr(sys.stdout, "flush", None)
+        if stream is not None:
+            with contextlib.suppress(Exception):
+                sys.stdout.flush()
         while True:
             if session.shell._interrupt.is_set():
                 raise KeyboardInterrupt
@@ -106,8 +116,19 @@ class PTYTerminalSession:
 
     HISTORY_LIMIT = 500
 
-    def __init__(self, ws_server):
+    def __init__(self, ws_server, emit=None):
         self.ws_server = ws_server
+        #: Where output goes. The session manager injects a callback that
+        #: forwards to the websocket only while this session is on screen, so
+        #: background sessions keep running without corrupting the display.
+        #: Defaults to broadcasting directly (single-session / test use).
+        self._emit_output = emit if emit is not None else ws_server.broadcast
+        #: True when this session owns the connection outright and may claim
+        #: the websocket's input callbacks. Under the session manager, routing
+        #: is the manager's job and a background session must never steal it.
+        #: (Tracked explicitly: comparing bound methods with `is` is always
+        #: False, since each attribute access builds a new method object.)
+        self._owns_ws = emit is None
         self.shell = PythonShell()
         self.is_running = False
         self.process = None  # Compatibility: no shell process is spawned.
@@ -136,7 +157,11 @@ class PTYTerminalSession:
             if self.is_running:
                 return
             self.is_running = True
-            self.ws_server.register_callbacks(on_data=self.write_input, on_resize=self.resize)
+            # Only a session that owns the websocket outright registers here.
+            # Under the session manager, routing belongs to the manager, so
+            # a newly created background session must not steal input.
+            if self._owns_ws:
+                self.ws_server.register_callbacks(on_data=self.write_input, on_resize=self.resize)
             self._exec_thread = threading.Thread(
                 target=self._exec_loop, daemon=True, name="ZMUX-Terminal-Exec"
             )
@@ -146,7 +171,36 @@ class PTYTerminalSession:
                 banner += "Examples for a quick start: examples/\r\n"
             banner += "Type 'python' to enter the REPL, 'help' for commands.\r\n"
             self._emit(banner.encode("utf-8"))
+            self._run_rc()
             self._emit_prompt()
+
+    def _run_rc(self) -> None:
+        """Execute ``~/.zmuxrc`` before the first prompt, if present.
+
+        ZMUX has no login shell, so this is the only hook users have for
+        aliases, imports or environment tweaks. Failures are reported but
+        never prevent the terminal from starting.
+        """
+        lines = read_rc_lines(HOME_DIR)
+        if not lines:
+            return
+        self.shell.output_sink = self._emit
+        try:
+            for line in lines:
+                try:
+                    result = self.shell.execute(line)
+                except Exception as error:  # a bad rc must not kill startup
+                    self._emit(f"{RC_FILENAME}: {error}\r\n".encode("utf-8", errors="replace"))
+                    continue
+                streamed = result.get("streamed", ())
+                pending = "".join(
+                    result.get(name, "") for name in ("stdout", "stderr")
+                    if name not in streamed
+                )
+                if pending:
+                    self._emit(pending.replace("\n", "\r\n").encode("utf-8", errors="replace"))
+        finally:
+            self.shell.output_sink = None
 
     def stop(self) -> None:
         with self.lock:
@@ -168,11 +222,13 @@ class PTYTerminalSession:
             return bytes(self.scrollback_buffer)
 
     def _emit(self, data: bytes) -> None:
+        # Scrollback is always recorded, even when this session is in the
+        # background — that is what makes switching back able to repaint.
         with self.buffer_lock:
             self.scrollback_buffer.extend(data)
             if len(self.scrollback_buffer) > self.scrollback_max_size:
                 del self.scrollback_buffer[: -self.scrollback_max_size]
-        self.ws_server.broadcast(data)
+        self._emit_output(data)
 
     def _prompt(self) -> str:
         if self._mode == "repl":
@@ -322,7 +378,7 @@ class PTYTerminalSession:
         # python/python3 with arguments (`python file.py`, `python -c ...`)
         # route to the real script runner; the bare-word REPL entry was
         # already intercepted in _submit_line and never reaches the worker.
-        return set(self.shell.commands) | {"pip", "zpip", "help", "zmux-info", "python", "python3"}
+        return set(self.shell.commands) | {"pip", "zpip", "help", "zmux-info", "zmux-setup-storage", "python", "python3"}
 
     def _exec_loop(self) -> None:
         """Single worker: executes queued command lines one at a time."""
@@ -352,6 +408,9 @@ class PTYTerminalSession:
                 self.shell._interrupt.set()
                 self._emit_prompt()
             except Exception as error:  # never let the worker die
+                # Keeping the worker alive is right, but silently discarding
+                # the traceback made real bugs unreportable — persist it.
+                crash.record("terminal-exec", type(error), error, error.__traceback__)
                 self._emit(f"[session error: {error}]\r\n".encode("utf-8", errors="replace"))
                 self._emit_prompt()
             finally:
@@ -382,14 +441,30 @@ class PTYTerminalSession:
         self._python_lines.clear()
 
     def _execute_and_render(self, source: str, force_python: bool = False) -> None:
+        """Run one line with output streaming live to the websocket.
+
+        ``output_sink`` makes the shell push text as it is produced, so a
+        progressive command is visible while it runs and — critically — an
+        ``input()`` prompt reaches the screen *before* the read blocks.
+        The result dict still carries the full text; it is deliberately not
+        re-emitted here or every line would appear twice.
+        """
         self.shell.stdin_provider = self._stdin
+        self.shell.output_sink = self._emit
         try:
             result = self.shell.execute(source, force_python=force_python)
         finally:
             self.shell.stdin_provider = None
-        output = (result.get("stdout", "") + result.get("stderr", "")).replace("\n", "\r\n")
-        if output:
-            self._emit(output.encode("utf-8", errors="replace"))
+            self.shell.output_sink = None
+        # Built-in commands (ls, echo, cd...) and zpip return their text
+        # without touching the sink, so they still need rendering here. The
+        # `streamed` tuple names what already reached the screen.
+        streamed = result.get("streamed", ())
+        pending = "".join(
+            result.get(name, "") for name in ("stdout", "stderr") if name not in streamed
+        )
+        if pending:
+            self._emit(pending.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", errors="replace"))
         self._emit_prompt()
 
     def _finish_command(self) -> None:
@@ -419,6 +494,12 @@ _pty_session: Optional[PTYTerminalSession] = None
 
 
 def get_pty_session(ws_server) -> PTYTerminalSession:
+    """Return the single legacy session.
+
+    Superseded by :mod:`zmux.sessions`, which supports several sessions and
+    is what the server and websocket layer now use. Kept for callers that
+    only ever want one terminal (and for existing tests).
+    """
     global _pty_session
     if _pty_session is None:
         _pty_session = PTYTerminalSession(ws_server)

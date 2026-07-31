@@ -18,12 +18,12 @@
 |-----------|--------|-------|
 | Terminal UI (HTML/CSS/JS) | Implemented | Mobile-friendly, xterm.js terminal |
 | Flask WebView Server | Implemented | Dual IPv4/IPv6 loopback, auth-protected |
-| Execution Engine (PTY / subprocess) | Implemented | POSIX openpty with automatic standard pipe fallback |
+| Execution Engine (virtual terminal) | Implemented | Embedded CPython + real child processes. No PTY: see README "Terminal model" |
 | Built-in Commands | Implemented | cd, pwd, clear, help, exit |
 | Python Execution | Implemented | python, python -c, python script.py |
-| stdin/stdout/stderr | Implemented | WebSocket real-time binary streaming |
+| stdin/stdout/stderr | Implemented | Live streaming; `input()` prompts render before the read blocks |
 | Ctrl+C / Stop | Implemented | SIGINT with process group cleanup |
-| Command History | Implemented | Client-side, up/down arrows |
+| Command History | Implemented | Per session, up/down arrows |
 | Working Directory | Implemented | Persistent, path-traversal protected |
 
 ### Package Manager (zpip)
@@ -85,12 +85,14 @@
 - [ ] Device testing (ARMv7 + ARM64)
 - [ ] Native package builds
 
-### v1.1.0 (Planned)
-- [ ] PTY support for full interactive REPL
-- [ ] Session management (multiple tabs)
-- [ ] File browser for working directory
-- [ ] Improved stdin handling
+### v1.1.0 (In progress)
+- [x] Session management (multiple tabs, isolated cwd/globals/history)
+- [x] Improved stdin handling (live prompts, streaming output)
+- [x] Virtual keys with sticky Ctrl modifier
+- [x] `~/.zmuxrc` startup file
 - [ ] Command auto-completion
+- [ ] File browser for working directory
+- [ ] Foreground service so sessions survive backgrounding
 
 ### v1.2.0 (Planned)
 - [ ] SSH client integration
@@ -100,9 +102,9 @@
 
 ## Honest Limitations
 
-1. **Android SELinux PTY Restrictions**: While real POSIX PTY sessions (`os.openpty`) are implemented, Android SELinux policies on some Android 14 Go devices restrict `/dev/ptmx` access. ZMUX automatically detects this and falls back to standard line-buffered pipe sessions.
+1. **No PTY at all**: ZMUX is a virtual terminal — there is no `os.openpty()`, no `/dev/ptmx` and no `/system/bin/sh` login shell. Consequence: full-screen TUI programs (`vim`, `htop`, `less`) and job control do not work. This avoids the SELinux `/dev/ptmx` restrictions seen on Android Go devices entirely, at the cost of TUI support. Earlier revisions of this file claimed an `openpty` engine with pipe fallback; that code never existed and the claim has been removed.
 
-2. **Shell access**: Built-in `cd` is restricted to app-private home storage; subprocess commands (`/system/bin/sh`) can access any directories permitted by the Android OS.
+2. **Shell access**: Built-in `cd` is restricted to app-private home storage; child processes started by absolute path can access whatever the Android OS permits.
 
 3. **Native packages**: Many native packages (e.g. NumPy) are not yet cross-compiled in the ZABAWHEELS index. ZMUX will display an honest error if a native wheel is unavailable for your ABI.
 
@@ -118,6 +120,12 @@
 - Not marking packages as stable without device testing
 
 ## Recent Changes (2026-07-29)
+
+> **Correction (2026-07-31):** the PTY entry below was inaccurate when written. The
+> codebase has never contained `os.openpty()` or a pipe-fallback path. The
+> `start_new_session=True` change was real and is still in effect for child
+> processes; the "PTY" and "fallback" framing was not. Kept here unedited for an
+> honest record, with this note. See README "Terminal model" for the real design.
 
 ### Fixed — Deep ARMv7a (Infinix Smart 9 HD) Force-Close & Freeze Elimination
 - **PTY Process Spawn & Signal Safety (`armeabi-v7a`):** Replaced Python `preexec_fn=os.setsid` after `fork()` with C-level POSIX `start_new_session=True` across PTY and fallback sessions to prevent Bionic libc pthread deadlocks and `SIGSEGV` force-close crashes on 32-bit ARMv7 Android 14. Added automatic fallback to standard pipe sessions when `os.openpty()` is denied by SELinux permissions.

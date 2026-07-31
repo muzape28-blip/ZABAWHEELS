@@ -18,16 +18,50 @@ ZMUX is a lightweight terminal emulator for Android devices that allows you to:
 ### What ZMUX is NOT
 - **Not an IDE or code editor** — ZMUX is purely a command-line terminal environment.
 - **Not Zabacode with a new name** — All legacy IDE features (code editors, AI assistants, theme marketplaces) were removed during refactoring.
-- **Not a simulated terminal** — Commands execute via real subprocesses and pseudo-terminals (PTY) with actual exit codes and streaming I/O.
+- **Not a fake terminal** — Nothing is hardcoded or mocked. Python runs in the real embedded CPython runtime, external programs are real child processes with real exit codes, and output streams as it is produced.
+- **Not a Unix PTY terminal** — ZMUX is a *virtual* terminal: there is no `/dev/ptmx`, no `openpty()`, and no `/system/bin/sh` login shell. See [Terminal model](#terminal-model) for what that does and does not give you.
 - **Not claiming Termux-level root/system access** — ZMUX operates strictly within Android's standard app-private security sandbox.
 
 ---
 
+## Terminal model
+
+ZMUX is a **virtual terminal**, not a Unix PTY terminal. This is a deliberate design
+choice for a Python-for-Android (p4a) app, and it is worth being precise about, because
+earlier versions of this README described a POSIX `openpty()` engine that the code has
+never contained.
+
+**How it actually works.** The front-end is xterm.js. Keystrokes travel over a WebSocket to
+a Python line-discipline layer (`pty_session.py`) that handles echo, backspace, history, and
+Ctrl+C. Completed lines go to `python_shell.py`, which either evaluates them in the embedded
+CPython runtime or spawns a real child process by absolute path.
+
+**What that gives you**
+- Python that behaves like Python: real `exec`/`eval`, persistent globals, real tracebacks.
+- Real child processes with real exit codes, real signals, real pipelines and redirection.
+- Live streaming output and working `input()`.
+- No dependency on `/dev/ptmx`, which some Android Go / SELinux configurations deny to apps.
+
+**What it does not give you**
+- **No full-screen TUI programs.** `vim`, `htop`, `nano`, `less` need a real TTY and will not
+  work. This is the main trade-off.
+- **No job control.** No `&`, `fg`, `bg`, `Ctrl+Z`.
+- **No login shell semantics.** Nothing sources `/etc/profile`; ZMUX reads `~/.zmuxrc` instead.
+- Programs that call `isatty()` on a *child* process see a pipe, so some colourise by default
+  and others do not.
+
+If you need a full PTY with TUI support, [Termux](https://github.com/termux/termux-app) is the
+right tool and we will not pretend otherwise. ZMUX optimises for a different point: a small,
+reproducible, Python-first terminal with a verifying package manager.
+
 ## Key Features
 
 ### Real Terminal Execution Engine
-- ✅ **PTY & Subprocess Support:** Interactive execution with automatic fallback to standard pipes when POSIX pseudo-terminals are restricted by Android SELinux policies.
-- ✅ **Real-Time Streaming I/O:** Bi-directional WebSocket communication between the xterm.js frontend and Python backend.
+- ✅ **Embedded CPython Execution:** Python source runs in-process in the runtime bundled with the APK; external programs are spawned as real child processes by absolute path.
+- ✅ **Real-Time Streaming I/O:** Output reaches the screen as it is produced — a loop that prints every half second renders every half second, and `input()` prompts appear *before* the read blocks.
+- ✅ **Bi-directional WebSocket:** Binary streaming between the xterm.js frontend and the Python backend.
+- ✅ **Multiple Sessions:** Up to 8 tabs, each with its own working directory, Python globals and history. Background sessions keep running; switching replays that session's scrollback.
+- ✅ **Virtual Keys:** Two-row key bar with a sticky Ctrl modifier (so `Ctrl+C`, `Ctrl+R`, `Ctrl+L` are typeable) and hold-to-repeat arrows.
 - ✅ **Process Control:** Ctrl+C / Stop support to cancel running processes cleanly.
 - ✅ **Signal & Thread Safety:** Hardened for 32-bit ARMv7 Android (`armeabi-v7a`) and 64-bit ARM (`arm64-v8a`) architectures to prevent force closes or Bionic libc pthread deadlocks.
 - ✅ **Persistent Working Directory:** Maintains current working directory across commands with path traversal protection.
@@ -50,11 +84,11 @@ exit          # Exit terminal session
 
 ### Secure Package Manager (`zpip`)
 ```bash
-zpip search <name>             # Search curated ZABAWHEELS package index
+zpip search <name>             # Search curated index ([installed] marks what you have)
 zpip info <name>               # View package details and compatibility
 zpip install <name>            # Install verified package
 zpip install <name> <version>  # Install specific package version
-zpip list                      # List installed packages
+zpip list                      # List installed packages (dependencies marked)
 zpip verify <name>             # Verify installation integrity against manifest
 zpip uninstall <name>          # Cleanly remove package and owned files
 zpip doctor                    # Diagnose system health and runtime fingerprint
@@ -118,7 +152,11 @@ ZMUX Terminal
 │   ├── server.py          # Flask HTTP WebView server
 │   ├── ws_server.py       # Pure-Python RFC-6455 WebSocket server
 │   ├── terminal.py        # Subprocess execution engine
-│   ├── pty_session.py     # POSIX PTY session manager with pipe fallback
+│   ├── pty_session.py     # Virtual terminal session (line discipline, history, Ctrl+C)
+│   ├── sessions.py        # Multiple sessions, tab routing, scrollback replay
+│   ├── streams.py         # Live output streaming to the websocket
+│   ├── env.py             # Child-process environment builder
+│   ├── crash.py           # Worker-thread crash logging
 │   ├── zpip.py            # Transactional hash-verifying package manager
 │   ├── security.py        # Token authentication
 │   ├── keystore.py        # Encrypted local storage
@@ -140,9 +178,10 @@ ZMUX Terminal
 ## Honest Limitations
 
 To maintain transparency, ZMUX documents its limitations clearly:
-1. **Android SELinux Restrictions:** On some Android 14 Go Edition devices, access to `/dev/ptmx` is restricted by SELinux. ZMUX automatically detects this and falls back to a standard pipe-based shell session.
-2. **Directory Scope:** Built-in `cd` commands restrict navigation to app-private storage for security. Subprocess commands (`/system/bin/sh`) can access any directories permitted by the Android OS.
-3. **Native Package Availability:** Complex native packages (such as NumPy) require cross-compiled wheels matching the specific Android ABI (`armeabi-v7a` or `arm64-v8a`). `zpip` will display an honest error if a package is not yet built for your runtime.
+1. **No PTY, therefore no TUI programs.** ZMUX is a virtual terminal (see [Terminal model](#terminal-model)). `vim`, `htop`, `less` and other full-screen programs will not work. There is no job control.
+2. **Directory Scope:** Built-in `cd` is restricted to app-private storage. Child processes started by absolute path can access whatever the Android OS permits.
+3. **Native Package Availability:** Native packages (such as NumPy) require cross-compiled wheels matching the specific Android ABI (`armeabi-v7a` or `arm64-v8a`). `zpip` will display an honest error if a package is not yet built for your runtime.
+4. **Executable wrappers are unverified on Android 10+.** `paths.py` generates `#!/system/bin/sh` wrappers in app-private storage. Since targetSdk 29, Android blocks `exec()` on files in the app home directory (a W^X violation); binaries are expected to live in `nativeLibraryDir`. These wrappers may therefore fail to execute on modern devices. They are a convenience only — every ZMUX command also resolves in-process — but the mechanism has not yet been verified on a physical device.
 
 ---
 

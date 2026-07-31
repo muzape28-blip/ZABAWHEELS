@@ -20,9 +20,10 @@ import subprocess
 import sys
 
 #: Commands handled by this module (mirrors zmux.paths.CLI_COMMANDS).
-COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip")
+COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip", "zmux-setup-storage")
 
-_USAGE = "usage: python -m zmux.cli <zpip|help|zmux-info|clear|pip> [args...]"
+_USAGE = ("usage: python -m zmux.cli "
+          "<zpip|help|zmux-info|clear|pip|zmux-setup-storage> [args...]")
 
 _PIP_FALLBACK = """pip is not available inside this ZMUX runtime.
 Use the ZMUX package manager instead:
@@ -48,6 +49,14 @@ def _cmd_clear() -> int:
     """Clear the terminal: home cursor, clear screen and scrollback buffer."""
     sys.stdout.write("\033[H\033[2J\033[3J")
     return 0
+
+
+def _cmd_setup_storage() -> int:
+    """Grant and link shared Android storage into ~/storage."""
+    from zmux import storage
+    result = storage.setup()
+    print(storage.format_setup(result))
+    return 0 if result.get("ok") else 1
 
 
 def _cmd_zmux_info() -> int:
@@ -97,6 +106,8 @@ def main(argv=None) -> int:
         return _cmd_clear()
     if command == "zmux-info":
         return _cmd_zmux_info()
+    if command == "zmux-setup-storage":
+        return _cmd_setup_storage()
     if command == "zpip":
         return _cmd_zpip(args)
     if command == "pip":

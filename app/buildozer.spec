@@ -30,7 +30,12 @@ android.accept_sdk_license = True
 android.api = 34
 android.minapi = 26
 android.ndk_api = 26
-android.permissions = INTERNET
+# INTERNET is used at runtime unconditionally (loopback WebView + zpip).
+# The storage permissions are DECLARED but never requested until the user
+# runs `zmux-setup-storage`; without that, ZMUX stays fully sandboxed.
+# maxSdkVersion=28: from Android 10 these legacy permissions grant nothing
+# (scoped storage), so requesting them on newer releases is noise.
+android.permissions = INTERNET, (name=android.permission.READ_EXTERNAL_STORAGE;maxSdkVersion=28), (name=android.permission.WRITE_EXTERNAL_STORAGE;maxSdkVersion=28)
 android.uses_cleartext_traffic = True
 android.allow_backup = False
 android.orientation = portrait

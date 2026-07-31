@@ -181,13 +181,45 @@ def _request_json(url: str, timeout: int = 25) -> dict:
     return value
 
 
-def _download(url: str, expected_hash: str, destination: Path) -> tuple:
+#: Optional callback receiving progress text (already carriage-returned) while
+#: a wheel downloads. Set by the terminal so installs are not a silent block;
+#: left None for REST/CLI callers, where the download stays quiet.
+progress_sink = None
+
+#: Minimum interval between progress repaints, so a fast link does not spend
+#: all its time writing to the websocket (rpkg throttles the same way).
+_PROGRESS_INTERVAL = 0.1
+
+
+def _render_progress(name: str, done: int, total: int, started: float) -> str:
+    """One-line download progress bar: name, size, rate, bar, percent."""
+    elapsed = max(time.monotonic() - started, 1e-6)
+    rate = done / 1024 / elapsed
+    label = name if len(name) <= 18 else name[:15] + "..."
+    if total > 0:
+        fraction = min(done / total, 1.0)
+        filled = int(20 * fraction)
+        bar = "#" * filled + "-" * (20 - filled)
+        pct = f"{fraction * 100:3.0f}%"
+    else:  # server sent no Content-Length
+        bar = "-" * 20
+        pct = "  ?%"
+    return (
+        f"\x1b[2K\r{label:<18} {done / 1048576:5.1f} MiB "
+        f"{rate:6.1f} KiB/s [{bar}] {pct}"
+    )
+
+
+def _download(url: str, expected_hash: str, destination: Path, label: str = "") -> tuple:
     if not url.startswith("https://"):
         raise ValueError("Only HTTPS wheel downloads are accepted")
     if not _SHA256.fullmatch(expected_hash):
         raise ValueError("A valid SHA-256 is required")
     request = urllib.request.Request(url, headers={"User-Agent": f"ZMUX/{APP_VERSION}"})
     digest, total = hashlib.sha256(), 0
+    sink = progress_sink
+    started = time.monotonic()
+    last_paint = 0.0
     with urllib.request.urlopen(request, timeout=90, context=get_ssl_context()) as response:
         announced = int(response.headers.get("Content-Length", "0") or 0)
         if announced > MAX_WHEEL_BYTES:
@@ -202,6 +234,14 @@ def _download(url: str, expected_hash: str, destination: Path) -> tuple:
                     raise ValueError("Wheel exceeds the 100 MiB safety limit")
                 digest.update(chunk)
                 output.write(chunk)
+                if sink is not None:
+                    now = time.monotonic()
+                    if now - last_paint >= _PROGRESS_INTERVAL:
+                        sink(_render_progress(label or "downloading", total, announced, started))
+                        last_paint = now
+    if sink is not None:
+        # Final repaint at 100%, then end the line so the next output starts clean.
+        sink(_render_progress(label or "downloading", total, total, started) + "\n")
     actual = digest.hexdigest()
     if actual != expected_hash:
         destination.unlink(missing_ok=True)
@@ -371,11 +411,96 @@ def _probe_pypi(name: str) -> dict:
 
 
 def _import_name(name: str) -> str:
+    """Best-effort guess of the import name from the distribution name.
+
+    Only a fallback. The authoritative answer lives *inside* the artifact and
+    is read by :func:`_discover_modules`; guessing is wrong for a large class
+    of real packages (``markdown-it-py`` imports ``markdown_it``,
+    ``python-dateutil`` imports ``dateutil``).
+    """
     aliases = {
         "beautifulsoup4": "bs4", "pillow": "PIL", "python-dotenv": "dotenv",
         "pyyaml": "yaml", "pyjwt": "jwt",
     }
     return aliases.get(name, name.replace("-", "_"))
+
+
+def _modules_from_paths(paths, package: str) -> list:
+    """Derive importable top-level names from a list of archive/relative paths.
+
+    Skips ``.dist-info``/``.data`` metadata trees, private names and anything
+    that is not a valid identifier. Returns packages (directories with
+    ``__init__.py``) and top-level modules (``foo.py``), preferring a name
+    that resembles the distribution so the smoke test stays meaningful.
+    """
+    packages: set = set()
+    modules: set = set()
+    for raw in paths:
+        parts = PurePosixPath(raw).parts
+        if not parts:
+            continue
+        head = parts[0]
+        if head.endswith((".dist-info", ".data")) or head.startswith("."):
+            continue
+        if len(parts) > 1:
+            if parts[1] == "__init__.py" and head.isidentifier():
+                packages.add(head)
+        elif head.endswith(".py"):
+            stem = head[:-3]
+            if stem.isidentifier() and stem != "__init__":
+                modules.add(stem)
+    candidates = sorted(packages) + sorted(modules - packages)
+    if not candidates:
+        return []
+    # Prefer a candidate related to the distribution name; several packages
+    # ship helper top-levels (attrs ships both `attr` and `attrs`).
+    normalised = package.replace("-", "_").replace(".", "_").lower()
+    for candidate in candidates:
+        if candidate.lower() == normalised:
+            return [candidate, *[c for c in candidates if c != candidate]]
+    for candidate in candidates:
+        low = candidate.lower()
+        if normalised.startswith(low) or low.startswith(normalised):
+            return [candidate, *[c for c in candidates if c != candidate]]
+    return candidates
+
+
+def _discover_modules(staging: Path, package: str) -> list:
+    """Importable names actually provided by an unpacked wheel.
+
+    Reads, in order of authority:
+
+    1. ``*.dist-info/top_level.txt`` — the packaging tool's own declaration;
+    2. the extracted tree, if that file is absent (it is optional and modern
+       wheels frequently omit it).
+
+    Falls back to :func:`_import_name` only when the artifact reveals nothing.
+    """
+    try:
+        for info in staging.glob("*.dist-info"):
+            top_level = info / "top_level.txt"
+            if top_level.is_file():
+                declared = [
+                    line.strip()
+                    for line in top_level.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if line.strip() and line.strip().isidentifier()
+                ]
+                if declared:
+                    ordered = _modules_from_paths(
+                        [f"{name}/__init__.py" for name in declared], package
+                    )
+                    return ordered or declared
+    except OSError:
+        pass
+    try:
+        relative = [
+            str(path.relative_to(staging))
+            for path in staging.rglob("*")
+            if path.is_file()
+        ]
+    except OSError:
+        relative = []
+    return _modules_from_paths(relative, package) or [_import_name(package)]
 
 
 def _smoke_test_in_process(staging: Path, module: str) -> None:
@@ -395,8 +520,11 @@ def _smoke_test_in_process(staging: Path, module: str) -> None:
                 sys.modules.pop(mod, None)
 
 
-def _smoke_test(staging: Path, package: str) -> None:
-    module = _import_name(package)
+def _smoke_test(staging: Path, package: str, module: str | None = None) -> None:
+    # Read the real top-level name out of the artifact; guessing from the
+    # distribution name breaks for markdown-it-py, python-dateutil and many
+    # others, which failed installs that would otherwise have succeeded.
+    module = module or _discover_modules(staging, package)[0]
     if _is_android():
         _smoke_test_in_process(staging, module)
         return
@@ -493,10 +621,14 @@ def install(
                 )
         artifact = manifest.get("artifact") or {}
         wheel.parent.mkdir(parents=True, exist_ok=True)
-        size, digest = _download(str(artifact.get("url", "")), str(artifact.get("sha256", "")), wheel)
+        label = f"{package}-{manifest.get('version', '')}".rstrip("-")
+        size, digest = _download(
+            str(artifact.get("url", "")), str(artifact.get("sha256", "")), wheel, label
+        )
         staging.mkdir(parents=True)
         files = _extract(wheel, staging)
-        _smoke_test(staging, package)
+        modules = _discover_modules(staging, package)
+        _smoke_test(staging, package, modules[0])
 
         db = _load_db()
         old = db.get(package) if isinstance(db.get(package), dict) else {}
@@ -538,6 +670,12 @@ def install(
             target = USER_PACKAGES_DIR / obsolete
             if target.is_file():
                 target.unlink()
+        # "explicit" = the user asked for this by name; a package pulled in
+        # only as a dependency is implicit (_stack is non-empty for those).
+        # Re-installing a dependency by name promotes it to explicit, and a
+        # package never silently loses the flag. This is what makes a future
+        # `zpip autoremove` possible and what `zpip list` reports.
+        previously_explicit = bool(old.get("explicit")) if old else False
         db[package] = {
             "version": manifest.get("version", ""),
             "runtime_id": manifest.get("runtime_id", ""),
@@ -547,6 +685,10 @@ def install(
             "sha256": digest,
             "size": size,
             "transaction": transaction,
+            # Recorded from the artifact so `zpip verify` re-imports the name
+            # the wheel really provides instead of re-deriving a guess.
+            "modules": modules,
+            "explicit": previously_explicit or not _stack,
         }
         _save_db(db)
         importlib.invalidate_caches()
@@ -606,6 +748,10 @@ def verify(name: str) -> dict:
     if not isinstance(record, dict):
         return {"ok": False, "error": f"{package} is not managed by zpip"}
     missing = [item for item in record.get("files", []) if not (USER_PACKAGES_DIR / item).is_file()]
+    # Prefer the module names captured from the artifact at install time;
+    # only fall back to guessing for records written before they were stored.
+    recorded = record.get("modules") or []
+    module = recorded[0] if recorded else _import_name(package)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(USER_PACKAGES_DIR) + os.pathsep + env.get("PYTHONPATH", "")
     try:
@@ -615,14 +761,14 @@ def verify(name: str) -> dict:
                 if str(USER_PACKAGES_DIR) not in sys.path:
                     sys.path.insert(0, str(USER_PACKAGES_DIR))
                 importlib.invalidate_caches()
-                importlib.import_module(_import_name(package))
+                importlib.import_module(module)
                 import_ok = True
                 error = ""
             finally:
                 sys.path[:] = old_path
         else:
             result = subprocess.run(
-                [sys.executable, "-c", f"import importlib; importlib.import_module({_import_name(package)!r})"],
+                [sys.executable, "-c", f"import importlib; importlib.import_module({module!r})"],
                 env=env, capture_output=True, text=True, timeout=30,
             )
             import_ok = result.returncode == 0
@@ -633,7 +779,7 @@ def verify(name: str) -> dict:
             if str(USER_PACKAGES_DIR) not in sys.path:
                 sys.path.insert(0, str(USER_PACKAGES_DIR))
             importlib.invalidate_caches()
-            importlib.import_module(_import_name(package))
+            importlib.import_module(module)
             import_ok = True
             error = ""
         except Exception as exc:
@@ -819,9 +965,14 @@ def format_output(command, result):
     if action == "list":
         pkgs = result.get("packages", {})
         if pkgs:
-            return "\n".join(
-                f"{name} {record.get('version', '')}" for name, record in pkgs.items()
-            ), 0
+            lines = []
+            for name, record in pkgs.items():
+                version = record.get("version", "")
+                # Mark dependencies so users can tell what they asked for
+                # from what was pulled in underneath it.
+                suffix = "" if record.get("explicit", True) else "  (dependency)"
+                lines.append(f"{name} {version}{suffix}")
+            return "\n".join(lines), 0
         return "No packages installed", 0
     if action == "search":
         results = result.get("results", [])

@@ -7,10 +7,12 @@ path.
 """
 from __future__ import annotations
 
+import builtins
 import contextlib
 import io
 import os
 import platform
+import re
 import shlex
 import shutil
 import signal
@@ -21,7 +23,9 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
+from zmux.env import build_env, build_path
 from zmux.paths import HOME_DIR
+from zmux.streams import StreamingWriter
 
 
 # --- Optional Rich rendering (DX polish) --------------------------------------
@@ -70,6 +74,11 @@ class PythonShell:
         #: Optional file-like stdin provider installed while user code runs;
         #: the websocket terminal feeds it so ``input()`` works.
         self.stdin_provider = None
+        #: Optional callback taking already-encoded terminal bytes. When set,
+        #: command output streams to it as it is produced instead of being
+        #: buffered until the command finishes. The returned result dict still
+        #: carries the complete text, so REST callers are unaffected.
+        self.output_sink = None
         #: Cooperative Ctrl+C: set by :meth:`interrupt`; checked by the stdin
         #: provider and combined with async KeyboardInterrupt injection.
         self._interrupt = threading.Event()
@@ -134,6 +143,50 @@ class PythonShell:
         if epoch is None or epoch == self._interrupt_epoch:
             self._interrupt.clear()
 
+    #: Shell operators ZMUX does not implement, mapped to what to tell the
+    #: user. Previously these were passed through to the child as ordinary
+    #: arguments, which failed *silently*: `/bin/true && touch x` reported
+    #: exit 0 and never created x. Failing loudly is strictly better than
+    #: pretending to have run something.
+    UNSUPPORTED_OPERATORS = (
+        ("&&", "'&&' (conditional AND)"),
+        ("||", "'||' (conditional OR)"),
+        ("2>&1", "'2>&1' (stream merging)"),
+        (";", "';' (command sequencing)"),
+        ("&", "'&' (background jobs)"),
+        ("`", "'`...`' (command substitution)"),
+        ("$(", "'$(...)' (command substitution)"),
+    )
+
+    def _unsupported_operator(self, parts: list[str], line: str):
+        """Return an error result when the line uses an operator we lack.
+
+        Operates on the *tokenised* line so quoted text is never flagged:
+        ``echo "a && b"`` is a legitimate single argument. ``$(`` and
+        backticks are checked inside tokens too, since those substitute
+        without needing whitespace.
+        """
+        tokens = set(parts)
+        for operator, description in self.UNSUPPORTED_OPERATORS:
+            hit = operator in tokens
+            if not hit and operator in ("`", "$("):
+                hit = any(operator in token for token in parts)
+            if not hit and operator == ";":
+                # `a; b` tokenises as "a;" — a trailing ; fused to a word.
+                hit = any(token.endswith(";") for token in parts)
+            if hit:
+                return self._result(
+                    stderr=(
+                        f"zmux: {description} is not supported — ZMUX has no shell "
+                        f"language.\n"
+                        f"  Supported: pipelines (|), redirection (> >> <), quoting.\n"
+                        f"  For shell logic use Python instead, e.g. "
+                        f"subprocess.run(...) or run commands one per line.\n"
+                    ),
+                    code=2,
+                )
+        return None
+
     def execute(self, line: str, timeout: float | None = None, force_python: bool = False) -> dict:
         line = line.strip()
         if not line:
@@ -149,6 +202,15 @@ class PythonShell:
         if not parts:
             return self._result()
         command = parts[0]
+        # Only guard lines that are actually command invocations. Python
+        # source legitimately contains ';', '&' and '&&'-like text, and must
+        # keep falling through to the interpreter.
+        if command in self.commands or command in {
+            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage"
+        } or self._is_external_command(command):
+            rejection = self._unsupported_operator(parts, line)
+            if rejection is not None:
+                return rejection
         try:
             # Operators need the pipeline/redirection executor even when the
             # first word is also a Python-backed built-in (for example
@@ -159,20 +221,30 @@ class PythonShell:
                 return self._result(stdout=self.commands[command](parts[1:]))
             if command in {"python", "python3"}:
                 return self._exec_python_command(parts[1:])
-            if command in {"pip", "zpip", "help", "zmux-info"}:
+            if command in {"pip", "zpip", "help", "zmux-info", "zmux-setup-storage"}:
                 return self._exec_zmux_command(command, parts[1:])
             # A known external executable is run as a command. Everything else
             # is genuine Python source. (Lines containing |, >, < already went
             # to _exec_subprocess above — no need to test for them twice.)
             if self._is_external_command(command):
                 return self._exec_subprocess(line, timeout)
-            return self._exec_python(line)
+            return self._exec_python(line, origin=line)
         except (OSError, ValueError) as exc:
             return self._result(stderr=f"{command}: {exc}\n", code=1)
 
-    def _result(self, stdout: str = "", stderr: str = "", code: int = 0) -> dict:
+    def _result(self, stdout: str = "", stderr: str = "", code: int = 0,
+                streamed: tuple = ()) -> dict:
+        """Build a terminal-style result.
+
+        ``streamed`` names the streams already pushed to :attr:`output_sink`
+        while the command ran (``"stdout"`` / ``"stderr"``). The interactive
+        terminal uses it to emit only what has *not* been shown yet, so
+        streamed output is never duplicated and non-streaming paths (built-in
+        commands, zpip) still render. REST callers ignore it and read the
+        complete text from ``stdout``/``stderr`` as before.
+        """
         return {"ok": code == 0, "stdout": stdout, "stderr": stderr,
-                "exit_code": code, "status": "idle"}
+                "exit_code": code, "status": "idle", "streamed": streamed}
 
     def _path(self, value: str) -> Path:
         value = os.path.expanduser(value)
@@ -280,6 +352,38 @@ class PythonShell:
         return ""
 
     @contextlib.contextmanager
+    def _chdir_context(self):
+        """Run in-process Python with the process cwd set to ``self.cwd``.
+
+        Without this, ``cd`` only moved a *variable*: subprocesses got the new
+        directory via ``Popen(cwd=...)``, but ``open("x.txt")`` inside user
+        Python code still resolved against the process working directory. A
+        user could write a file in Python and then find that ``ls`` and
+        ``cat`` could not see it — two filesystems in one session.
+
+        Known limitation: ``os.chdir`` is process-wide, while ZMUX runs
+        several sessions in one process. Two sessions executing Python file
+        I/O at the *same instant* can race. Serialising them with a lock was
+        rejected: a background ``while True`` loop would then freeze every
+        other tab, which is worse. Subprocesses are unaffected either way
+        (they receive an explicit ``cwd=``).
+        """
+        target = str(self.cwd)
+        try:
+            previous = os.getcwd()
+        except OSError:      # cwd deleted underneath us
+            previous = str(HOME_DIR)
+        try:
+            os.chdir(target)
+        except OSError:
+            pass             # unreadable dir: fall back to the old behaviour
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                os.chdir(previous)
+
+    @contextlib.contextmanager
     def _stdin_context(self):
         """Point sys.stdin at the installed provider while user code runs.
 
@@ -313,11 +417,86 @@ class PythonShell:
             return buffer.getvalue()
         return traceback.format_exc()
 
-    def _exec_python(self, source: str) -> dict:
-        out, err = io.StringIO(), io.StringIO()
+    def _make_sinks(self):
+        """Return (stdout, stderr) sinks honouring :attr:`output_sink`.
+
+        With a sink installed both streams stream live to the terminal; the
+        text is still accumulated so the result dict stays complete.
+        """
+        if self.output_sink is None:
+            return io.StringIO(), io.StringIO()
+        return StreamingWriter(self.output_sink), StreamingWriter(self.output_sink)
+
+    def _streamed(self) -> tuple:
+        """Streams already forwarded live (empty when no sink is installed)."""
+        return ("stdout", "stderr") if self.output_sink is not None else ()
+
+    @staticmethod
+    def _drain(stream) -> str:
+        """Flush a sink (if streaming) and return everything written to it."""
+        flush = getattr(stream, "flush", None)
+        if flush is not None:
+            flush()
+        return stream.getvalue()
+
+    #: Command name: a bare word, optionally with dots/dashes/slashes.
+    _COMMAND_WORD = re.compile(r"^[\w.@/-]+$")
+    #: Argument: anything a real command takes (flags, URLs, paths, globs)
+    #: with no whitespace. Lone Python operators are rejected separately, so
+    #: `undefined_var + 1` and `x = = 5` remain Python and report genuine
+    #: errors instead of being mistaken for commands.
+    _COMMAND_ARG = re.compile(r"^[\w.@/:~=+*?,%#\[\]{}-]+$")
+    #: Tokens that only ever appear in Python expressions, never as a bare
+    #: command argument.
+    _PYTHON_OPERATORS = frozenset(
+        "+ - * / // % ** = == != < > <= >= | & ^ ~ @ := and or not in is if else for".split()
+    )
+
+    def _looks_like_command(self, source: str) -> bool:
+        """True when a failed Python line was probably a mistyped command.
+
+        `gti status` is not valid Python and not a known program; reporting
+        `SyntaxError: invalid syntax` for it is unhelpful, because the user
+        was typing a shell command. Real Python (assignments, calls, literals)
+        must never be diverted, so this only matches bare-word lines.
+        """
+        stripped = source.strip()
+        if not stripped or "\n" in stripped:
+            return False
+        tokens = stripped.split()
+        first = tokens[0]
+        if not self._COMMAND_WORD.match(first):
+            return False
+        for token in tokens[1:]:
+            # A `-x`/`--flag` argument is unambiguous: Python would read the
+            # dash as an operator, but no expression starts an operand that
+            # way, so it marks the line as a command invocation.
+            if token.startswith("-") and len(token) > 1 and token[1] not in "0123456789":
+                continue
+            # A standalone Python operator means this is an expression.
+            if token in self._PYTHON_OPERATORS or not self._COMMAND_ARG.match(token):
+                return False
+        # Anything Python could legitimately resolve is not a typo.
+        if first in self.globals or first in dir(builtins):
+            return False
+        if first in self.commands or first in {
+            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage", "exit", "quit"
+        }:
+            return False
+        import keyword
+        return not keyword.iskeyword(first) and not keyword.issoftkeyword(first)
+
+    def _exec_python(self, source: str, origin: str | None = None) -> dict:
+        """Execute Python source.
+
+        ``origin`` marks a line that arrived through *shell* mode, where a
+        syntax error more likely means a mistyped command than broken Python.
+        """
+        out, err = self._make_sinks()
         try:
             # eval gives REPL-like expression output; exec handles statements.
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self._stdin_context():
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                    self._stdin_context(), self._chdir_context():
                 try:
                     code = compile(source, "<zmux>", "eval")
                 except SyntaxError:
@@ -326,18 +505,43 @@ class PythonShell:
                 else:
                     value = eval(code, self.globals, self.globals)
                     if value is not None: print(repr(value))
-            return self._result(out.getvalue(), err.getvalue())
+            return self._result(self._drain(out), self._drain(err), streamed=self._streamed())
         except KeyboardInterrupt:
             # Ctrl+C (async-injected or raised by user/stdin): mirror CPython's
             # own REPL — a one-line notice and exit status 130, no traceback.
-            return self._result(out.getvalue(), err.getvalue() + "KeyboardInterrupt\n", 130)
+            # Written through the sink so it streams like any other output.
+            err.write("KeyboardInterrupt\n")
+            return self._result(self._drain(out), self._drain(err), 130, streamed=self._streamed())
         except SystemExit as exc:
             # Quiet exit like the real REPL exiting a subshell: no traceback
             # spam; propagate the numeric code when one was given.
             code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
-            return self._result(out.getvalue(), err.getvalue(), code)
+            return self._result(self._drain(out), self._drain(err), code, streamed=self._streamed())
+        except (SyntaxError, NameError) as error:
+            # In shell mode a bare-word line that is neither a program nor
+            # valid Python is a mistyped command; say so the way a shell does
+            # (exit 127) instead of a confusing SyntaxError/NameError.
+            # A single unknown word (`foo`) is a NameError; a word with
+            # arguments (`gti status`) is a SyntaxError. Both mean the same
+            # thing to someone typing at a shell prompt.
+            if origin is not None and self._looks_like_command(origin):
+                name = origin.strip().split()[0]
+                # For a NameError, confirm the undefined name really came from
+                # this line's command word before claiming "not found" — but
+                # allow the leading fragment too, since Python parses
+                # `git-foo` as `git - foo` and reports only `git`.
+                head = re.split(r"[.\-/@]", name)[0]
+                if isinstance(error, SyntaxError) or name in str(error) or (
+                    head and f"'{head}'" in str(error)
+                ):
+                    err.write(f"zmux: {name}: command not found\n")
+                    return self._result(self._drain(out), self._drain(err), 127,
+                                        streamed=self._streamed())
+            err.write(self._format_traceback())
+            return self._result(self._drain(out), self._drain(err), 1, streamed=self._streamed())
         except BaseException:
-            return self._result(out.getvalue(), err.getvalue() + self._format_traceback(), 1)
+            err.write(self._format_traceback())
+            return self._result(self._drain(out), self._drain(err), 1, streamed=self._streamed())
 
     def _exec_python_command(self, args: list[str]) -> dict:
         if not args or args[0] in {"--version", "-V"}:
@@ -358,21 +562,65 @@ class PythonShell:
             self.globals["__name__"], self.globals["__file__"], sys.argv = old_name, old_file, old_argv
 
     def _exec_zmux_command(self, command: str, args: list[str]) -> dict:
-        from zmux import cli
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main([command, *args])
-        return self._result(out.getvalue(), err.getvalue(), code)
+        from zmux import cli, zpip
+        out, err = self._make_sinks()
+        # A wheel download is the longest blocking thing zpip does; without a
+        # progress sink the terminal simply stops responding for its duration.
+        # The bar is written straight through (it uses \r to repaint in place,
+        # which a line-buffered sink would otherwise hold back).
+        previous_sink = zpip.progress_sink
+        if self.output_sink is not None:
+            zpip.progress_sink = lambda text: self.output_sink(
+                text.replace("\n", "\r\n").encode("utf-8", errors="replace")
+            )
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main([command, *args])
+        finally:
+            zpip.progress_sink = previous_sink
+        return self._result(self._drain(out), self._drain(err), code,
+                            streamed=self._streamed())
 
     def _find_executable(self, command: str) -> str | None:
+        """Resolve ``command`` against the ZMUX PATH.
+
+        Uses the same PATH the children receive (BIN_DIR first, then the
+        Android system directories), so the generated ``zpip``/``help``/
+        ``zmux-info`` wrappers in BIN_DIR are reachable here too. Previously
+        this searched a hardcoded list that omitted BIN_DIR entirely, making
+        those wrappers unresolvable from the pipeline executor.
+        """
         if "/" in command:
             return command if os.path.isfile(command) and os.access(command, os.X_OK) else None
-        for directory in ("/system/bin", "/system/xbin", "/vendor/bin", "/sbin", "/bin", "/usr/bin"):
+        for directory in build_path().split(os.pathsep):
             candidate = os.path.join(directory, command)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK): return candidate
         return None
 
-    def _is_external_command(self, command: str) -> bool: return self._find_executable(command) is not None
+    #: Words that must never be treated as external programs, even when a
+    #: same-named binary exists on PATH. `import` is the notorious one: it is
+    #: ImageMagick's screenshot tool *and* the most common Python statement
+    #: there is, so `import math` used to run ImageMagick and fail with
+    #: "unable to open X server". The others are equally common statement
+    #: keywords that ship as binaries on some systems.
+    PYTHON_KEYWORD_GUARD = frozenset({
+        "import", "from", "print", "exec", "eval", "assert", "del", "pass",
+        "raise", "return", "yield", "lambda", "with", "while", "for", "if",
+        "else", "elif", "try", "except", "finally", "class", "def", "global",
+        "nonlocal", "not", "and", "or", "is", "in", "break", "continue",
+        "async", "await", "match", "case", "true", "false", "none",
+    })
+
+    def _is_external_command(self, command: str) -> bool:
+        """True when ``command`` should be run as an external program.
+
+        Python statement keywords are excluded so shell mode's Python escape
+        hatch keeps working regardless of what happens to be installed on the
+        device's PATH.
+        """
+        if command in self.PYTHON_KEYWORD_GUARD:
+            return False
+        return self._find_executable(command) is not None
 
     def _exec_subprocess(self, line: str, timeout: float | None) -> dict:
         with self._procs_lock:
@@ -382,6 +630,45 @@ class PythonShell:
         finally:
             with self._procs_lock:
                 self._subprocess_depth -= 1
+
+    def _read_stdout_streaming(self, proc, timeout: float | None, stream: bool) -> str:
+        """Read ``proc`` stdout to EOF, forwarding chunks to the terminal.
+
+        Returns the complete text so the REST result stays identical. When no
+        output sink is installed (REST calls) or the pipeline redirects to a
+        file, this simply accumulates without emitting.
+
+        ``readline()`` blocks, so the read runs on a helper thread and the
+        caller waits with a deadline: ``timeout`` must keep working exactly as
+        it did under ``communicate(timeout=...)``, which this replaced.
+        """
+        sink = self.output_sink if stream else None
+        chunks: list = []
+        handle = proc.stdout
+
+        def pump() -> None:
+            try:
+                # Line-oriented: the smallest unit a terminal can usefully
+                # render, and it avoids splitting escape sequences mid-line.
+                for chunk in iter(handle.readline, ""):
+                    chunks.append(chunk)
+                    if sink is not None:
+                        sink(chunk.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", "replace"))
+            except (ValueError, OSError):
+                pass  # handle closed underneath us (timeout kill path)
+
+        reader = threading.Thread(target=pump, daemon=True, name="ZMUX-Stdout-Reader")
+        reader.start()
+        reader.join(timeout=timeout)
+        if reader.is_alive():
+            # Still producing past the deadline: surface the same error the
+            # previous communicate(timeout=...) call raised, and let the
+            # caller's handler kill the pipeline.
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        with contextlib.suppress(Exception):
+            handle.close()
+        proc.wait(timeout=timeout)
+        return "".join(chunks)
 
     def _exec_subprocess_inner(self, line: str, timeout: float | None) -> dict:
         # Parse pipelines ourselves; shell=True would reintroduce /system/bin/sh.
@@ -430,7 +717,7 @@ class PythonShell:
                 # server process (shared group would nuke the app itself).
                 proc = subprocess.Popen([executable, *stage[1:]], cwd=self.cwd, stdin=stdin,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                        start_new_session=True)
+                                        env=build_env(self.cwd), start_new_session=True)
                 if previous: previous.stdout.close()
                 processes.append(proc); previous = proc
                 # Register for Ctrl+C signalling (interrupt() kills the group).
@@ -451,7 +738,14 @@ class PythonShell:
                     stderr_parts.append(stream.read())
                 reader = threading.Thread(target=drain, daemon=True)
                 reader.start(); stderr_threads.append(reader)
-            stdout, _ = processes[-1].communicate(timeout=timeout)
+            # Stream the final stage's stdout instead of communicate(): a
+            # long-running child (ping, logcat, a build) must appear live in
+            # the terminal, not arrive in one block when it exits. Redirected
+            # output still goes to the file, never to the screen.
+            did_stream = self.output_sink is not None and output_file is None
+            stdout = self._read_stdout_streaming(
+                processes[-1], timeout, stream=output_file is None
+            )
             for proc in processes[:-1]: proc.wait(timeout=timeout)
             for reader in stderr_threads: reader.join(timeout=1)
             if output_file:
@@ -467,7 +761,10 @@ class PythonShell:
                 if sig == 9:
                     hint += " — SIGKILL; on Android 12+ this is often the OS phantom-process limit"
                 stderr_parts.append(hint + "]\n")
-            return self._result(stdout, "".join(stderr_parts), code)
+            # Only stdout was forwarded live; stderr is collected by the
+            # drain threads and rendered by the caller after the fact.
+            return self._result(stdout, "".join(stderr_parts), code,
+                                streamed=("stdout",) if did_stream else ())
         except subprocess.TimeoutExpired:
             for proc in processes: proc.kill()
             return self._result(stderr=f"Command timed out after {timeout}s\n", code=1)

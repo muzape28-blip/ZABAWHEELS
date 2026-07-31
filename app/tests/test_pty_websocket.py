@@ -16,6 +16,30 @@ from zmux.ws_server import WebSocketServer
 from zmux.pty_session import PTYTerminalSession, get_pty_session
 
 
+def _read_http_response(sock, timeout=5.0):
+    """Read exactly the HTTP response head and decode only that.
+
+    The server sends the 101 handshake and then, immediately, the active
+    session's scrollback as a *binary* WebSocket frame. A single
+    ``recv(2048).decode("utf-8")`` can therefore capture both and blow up with
+    ``UnicodeDecodeError: invalid start byte`` on 0x82 — the binary frame
+    header. That is what made these tests fail intermittently in CI: whether
+    the two writes coalesce into one TCP segment depends on timing and on
+    whether a previous test left scrollback behind.
+
+    Reading up to (and only up to) the CRLFCRLF header terminator makes the
+    tests independent of that race.
+    """
+    sock.settimeout(timeout)
+    buffer = b""
+    while b"\r\n\r\n" not in buffer:
+        chunk = sock.recv(1)
+        if not chunk:
+            break
+        buffer += chunk
+    return buffer.decode("utf-8", errors="replace")
+
+
 def test_websocket_server_handshake():
     """Test that unauthorized token is rejected with 401, and valid token gets 101 Switching Protocols."""
     # Find an open port by binding port=0
@@ -42,7 +66,7 @@ def test_websocket_server_handshake():
         )
         sock.sendall(bad_handshake.encode("utf-8"))
 
-        response = sock.recv(2048).decode("utf-8")
+        response = _read_http_response(sock)
         assert "401 Unauthorized" in response
         sock.close()
 
@@ -60,7 +84,7 @@ def test_websocket_server_handshake():
         )
         sock2.sendall(good_handshake.encode("utf-8"))
 
-        response2 = sock2.recv(2048).decode("utf-8")
+        response2 = _read_http_response(sock2)
         assert "101 Switching Protocols" in response2
         assert "Sec-WebSocket-Accept" in response2
         sock2.close()
@@ -165,7 +189,7 @@ def test_websocket_start_with_prebound_listener():
             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
             "Sec-WebSocket-Version: 13\r\n\r\n"
         ).encode("utf-8"))
-        response = sock.recv(2048).decode("utf-8")
+        response = _read_http_response(sock)
         assert "101 Switching Protocols" in response
         sock.close()
     finally:
@@ -201,7 +225,7 @@ def test_websocket_start_with_multiple_listeners():
                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
                 "Sec-WebSocket-Version: 13\r\n\r\n"
             ).encode("utf-8"))
-            response = sock.recv(2048).decode("utf-8")
+            response = _read_http_response(sock)
             assert "101 Switching Protocols" in response
             sock.close()
     finally:
@@ -251,12 +275,16 @@ class _FakeWS:
     def __init__(self):
         self.data = bytearray()
         self.callbacks = {}
+        #: (monotonic timestamp, payload) per broadcast, so tests can assert
+        #: *when* output reached the client, not just that it eventually did.
+        self.events = []
 
     def register_callbacks(self, on_data, on_resize):
         self.callbacks = {"on_data": on_data, "on_resize": on_resize}
 
     def broadcast(self, payload):
         self.data.extend(payload)
+        self.events.append((time.monotonic(), bytes(payload)))
 
 
 def _wait_for(predicate, timeout=10.0):
@@ -379,3 +407,117 @@ class TestStdinAndHistory:
         time.sleep(0.1)
         interactive.write_input(b"echo clean_line\n")
         assert _wait_for(lambda: b"clean_line\r\n" in interactive.get_scrollback())
+
+class TestStreamingOutput:
+    """Output must reach the terminal while a command runs, not after it ends.
+
+    Regression tests for the batched-output bug: results were captured into a
+    StringIO and emitted only once execute() returned, so progressive commands
+    looked frozen and input() prompts were invisible until after the answer.
+    """
+
+    def test_progressive_output_arrives_during_command(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        interactive.ws_server.events.clear()
+        interactive.write_input(b"import time\n")
+        interactive.write_input(b"for i in range(3):\n    print('tick', i); time.sleep(0.5)\n\n")
+        assert _wait_for(lambda: b"tick 2" in interactive.get_scrollback(), timeout=20)
+
+        ticks = [ts for ts, payload in interactive.ws_server.events if b"tick" in payload]
+        assert len(ticks) >= 2, f"ticks were coalesced into one write: {ticks}"
+        # Three prints separated by 0.5s must span ~1s of wall clock. Batched
+        # output would deliver them in a single burst (spread ~0).
+        assert ticks[-1] - ticks[0] > 0.7, (
+            f"output was batched: all ticks within {ticks[-1] - ticks[0]:.2f}s"
+        )
+
+    def test_input_prompt_is_visible_before_stdin_is_answered(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        interactive.ws_server.events.clear()
+        interactive.write_input(b"answer = input('Your name? ')\n")
+        assert _wait_for(lambda: interactive._busy.is_set()), "input() never blocked"
+        # The prompt has no trailing newline, so only an explicit flush before
+        # the blocking read can put it on screen.
+        assert _wait_for(
+            lambda: b"Your name?" in b"".join(p for _, p in interactive.ws_server.events)
+        ), "prompt was not shown while waiting for input"
+        assert interactive._busy.is_set(), "should still be blocked on stdin"
+
+        interactive.write_input(b"Zaba\n")
+        assert _wait_for(lambda: not interactive._busy.is_set()), "input() never returned"
+        interactive.write_input(b"answer\n")
+        assert _wait_for(lambda: b"'Zaba'" in interactive.get_scrollback())
+
+    def test_builtin_command_output_is_rendered_exactly_once(self, interactive):
+        """Built-ins bypass the sink; they must still render, and not twice.
+
+        The scrollback holds the keystroke echo of the typed line *and* the
+        command's output, so the marker legitimately appears twice; the
+        output line itself ("marker" followed by CRLF at line start) once.
+        """
+        interactive.write_input(b"echo dedupe_marker\n")
+        # Wait for the *output* line, not the keystroke echo that precedes it.
+        assert _wait_for(lambda: b"\r\ndedupe_marker\r\n" in interactive.get_scrollback())
+        assert _wait_for(lambda: interactive.get_scrollback().endswith(b"$ "))
+        assert interactive.get_scrollback().count(b"\r\ndedupe_marker\r\n") == 1
+
+    def test_streamed_python_output_is_not_duplicated(self, interactive):
+        interactive.write_input(b"python\n")
+        assert _wait_for(lambda: b">>> " in interactive.get_scrollback())
+        # Split literal so the typed-line echo cannot match the printed value.
+        interactive.write_input(b"print('once' + '_only')\n")
+        assert _wait_for(lambda: b"once_only" in interactive.get_scrollback())
+        assert interactive.get_scrollback().count(b"once_only") == 1
+
+
+def test_handshake_read_is_not_corrupted_by_trailing_scrollback():
+    """Regression: the 101 head must be readable when a binary frame follows.
+
+    The server replays the active session's scrollback as a binary WebSocket
+    frame immediately after the handshake. When both land in one TCP segment,
+    decoding the whole read as UTF-8 raised
+    `UnicodeDecodeError: invalid start byte` on 0x82 (the frame header) —
+    an intermittent CI failure that depended purely on timing and on whether
+    an earlier test had left scrollback behind.
+    """
+    import socket as _socket
+    from zmux.sessions import get_manager, reset_manager
+
+    reset_manager()
+    listener = _socket.socket()
+    listener.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(5)
+    port = listener.getsockname()[1]
+
+    server = WebSocketServer(host="127.0.0.1", port=port)
+    server.start(listeners=[listener])
+    time.sleep(0.2)
+    client = None
+    try:
+        # Guarantee there IS scrollback to replay, so the race is forced
+        # rather than waited for.
+        get_manager(server).active._emit(b"y" * 400)
+        time.sleep(0.2)
+
+        client = _socket.create_connection(("127.0.0.1", port))
+        client.sendall((
+            f"GET /?token={AUTH_TOKEN} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        ).encode("utf-8"))
+        # Let the handshake and the binary frame coalesce before reading.
+        time.sleep(0.4)
+        response = _read_http_response(client)
+        assert "101 Switching Protocols" in response
+        assert "\ufffd" not in response, "binary frame bytes leaked into the header read"
+    finally:
+        if client:
+            client.close()
+        server.stop()
+        reset_manager()

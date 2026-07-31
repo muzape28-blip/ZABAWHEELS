@@ -192,13 +192,15 @@ class WebSocketServer:
             with self.clients_lock:
                 self.clients.add(sock)
 
-            # Send initial scrollback replay if available to provide persistent terminal state on reload
+            # Replay the active session's scrollback so a reload, rotation or
+            # reconnect restores the screen instead of showing a blank terminal.
             try:
-                from zmux.pty_session import get_pty_session
-                session = get_pty_session(self)
-                scrollback = session.get_scrollback()
+                from zmux.sessions import get_manager
+                session = get_manager(self).active
+                scrollback = session.get_scrollback() if session else b""
                 if scrollback:
                     self._send_frame(sock, 2, scrollback)
+                self._send_sessions_state()
             except Exception as e:
                 print(f"[WARN] Failed to send initial scrollback: {e}")
 
@@ -221,16 +223,20 @@ class WebSocketServer:
 
     def _handle_client_message(self, payload: bytes) -> None:
         """Parse incoming websocket message and route it appropriately."""
-        # Try to parse as JSON first (for control actions like resize)
+        # Try to parse as JSON first (control actions: resize, session mgmt)
         try:
             msg_str = payload.decode("utf-8")
             if msg_str.strip().startswith("{") and msg_str.strip().endswith("}"):
                 data = json.loads(msg_str)
-                if data.get("action") == "resize":
+                action = data.get("action")
+                if action == "resize":
                     cols = int(data.get("cols", 80))
                     rows = int(data.get("rows", 24))
                     if self.on_resize_callback:
                         self.on_resize_callback(cols, rows)
+                    return
+                if action in ("session.new", "session.switch", "session.close", "session.list"):
+                    self._handle_session_action(action, data)
                     return
         except Exception:
             pass
@@ -238,6 +244,37 @@ class WebSocketServer:
         # Otherwise, treat as raw interactive terminal input
         if self.on_data_callback:
             self.on_data_callback(payload)
+
+    def _handle_session_action(self, action: str, data: dict) -> None:
+        """Create / switch / close terminal sessions on the client's behalf."""
+        from zmux.sessions import get_manager
+
+        manager = get_manager(self)
+        try:
+            if action == "session.new":
+                manager.switch(manager.create())
+            elif action == "session.switch":
+                manager.switch(str(data.get("id", "")))
+            elif action == "session.close":
+                manager.close(str(data.get("id", "")))
+        except ValueError as error:
+            # e.g. session cap reached — tell the user rather than failing mute.
+            self.broadcast(f"\r\n[zmux: {error}]\r\n".encode("utf-8"))
+        self._send_sessions_state()
+
+    def _send_sessions_state(self) -> None:
+        """Push the tab strip state to every client."""
+        from zmux.sessions import get_manager
+
+        payload = json.dumps({"type": "sessions", **get_manager(self).snapshot()})
+        message = payload.encode("utf-8")
+        with self.clients_lock:
+            clients = list(self.clients)
+        for client in clients:
+            try:
+                self._send_frame(client, 1, message)  # text frame
+            except Exception:
+                self._unregister_client(client)
 
     def _verify_token(self, request_line: str) -> bool:
         """Constant-time token verification from request query parameters."""

@@ -103,7 +103,7 @@ for directory in [
 # ---------------------------------------------------------------------------
 
 #: Commands that get an executable shell wrapper inside BIN_DIR.
-CLI_COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip")
+CLI_COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip", "zmux-setup-storage")
 
 #: Wrapper template shared by every ZMUX command. Each script re-enters the
 #: Python runtime via ``python -m zmux.cli "$0" "$@"`` so the typed command
@@ -174,6 +174,25 @@ except OSError:
 # Small shared display/example helpers
 # ---------------------------------------------------------------------------
 
+def ensure_user_packages_importable() -> None:
+    """Put ``USER_PACKAGES_DIR`` on ``sys.path`` for the running interpreter.
+
+    ``zpip install`` writes there and child processes see it through
+    ``PYTHONPATH``, but the in-process REPL — the primary way people use
+    ZMUX — did not: ``zpip install X`` reported success and ``import X``
+    then failed with ModuleNotFoundError. Idempotent; called at import time.
+    """
+    import sys
+    entry = str(USER_PACKAGES_DIR)
+    if entry not in sys.path:
+        # After "" / the script dir, so a local file still wins, but ahead of
+        # the stdlib-adjacent entries that follow.
+        sys.path.insert(1, entry)
+
+
+ensure_user_packages_importable()
+
+
 def display_path(cwd: Path, home: Path = HOME_DIR) -> str:
     """Render ``cwd`` relative to ``home`` (``~`` style) for prompt display."""
     try:
@@ -211,6 +230,29 @@ EXAMPLE_SCRIPTS: dict[str, str] = {
 }
 
 _EXAMPLES_MARKER = ".examples_seeded"
+
+#: User startup file, executed line by line when a session starts.
+#: ZMUX has no login shell, so nothing sources /etc/profile or .bashrc;
+#: this is the equivalent hook (cf. Rin's ENV=$HOME/.mkshrc).
+RC_FILENAME = ".zmuxrc"
+
+
+def read_rc_lines(home: Path = HOME_DIR) -> list:
+    """Return executable lines from ``~/.zmuxrc`` (comments/blanks stripped).
+
+    Never raises: a broken or unreadable rc file must not stop the terminal
+    from starting.
+    """
+    try:
+        raw = (Path(home) / RC_FILENAME).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    lines = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            lines.append(stripped)
+    return lines
 
 
 def seed_examples(home: Path = HOME_DIR) -> Path | None:
