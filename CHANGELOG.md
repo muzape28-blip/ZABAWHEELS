@@ -8,6 +8,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — silent-failure class bugs (see docs/POST_FIX_REPORT.md)
+- **`cd` now moves in-process Python too.** It previously updated only a
+  variable: subprocesses received `cwd=` but `open()` in user code resolved
+  against the process directory, so a file written in Python was invisible to
+  `ls` and `cat`. `_chdir_context()` wraps in-process execution with
+  `os.chdir()` and restores it afterwards.
+- **Unsupported shell operators fail loudly.** `&&`, `||`, `;`, `&`, `2>&1`,
+  backticks and `$(...)` were passed to the child as ordinary arguments:
+  `/bin/true && touch x` reported **exit 0 and never created x**, and `2>&1`
+  created a file literally named `&1`. They now return exit 2 with an
+  explanation. The check runs on tokenised input, so quoted text
+  (`echo 'a && b'`) and Python source (`x = 1; y = 2`) are unaffected.
+- **Module names are read from the artifact, not guessed.** `_import_name()`
+  derived the import name via a dash-to-underscore substitution, which is
+  wrong for `markdown-it-py` (imports `markdown_it`) and `python-dateutil`
+  (imports `dateutil`) — so `zpip install rich` failed on a dependency.
+  `_discover_modules()` reads `dist-info/top_level.txt`, falling back to the
+  extracted tree, and records the result so `zpip verify` re-imports the same
+  name.
+- **Mistyped commands report `command not found`** (exit 127) instead of a
+  Python `SyntaxError`/`NameError`. The classifier only matches bare command
+  words and flag-style arguments, so `undefined_var + 1` and `x = = 5` still
+  raise genuine Python errors.
+- **Installed packages are importable in the REPL.** `USER_PACKAGES_DIR` was
+  exported to child processes via `PYTHONPATH` but never added to the running
+  interpreter's `sys.path`: `zpip install X` reported success and the very
+  next `import X` raised `ModuleNotFoundError`.
+
+### Added — `zmux-setup-storage`
+- Opt-in shared-storage access, modelled on `termux-setup-storage`. Links the
+  Android shared directories into `~/storage`.
+- **This costs the "INTERNET only" permission claim.** The storage permissions
+  are declared with `maxSdkVersion=28` (from Android 10 they grant nothing
+  under scoped storage) and are **never requested** until the user runs the
+  command, so ZMUX stays fully sandboxed by default.
+- Reports honestly when scoped storage blocks a directory instead of failing
+  silently.
+
 ### Documentation — Correction of an inaccurate claim
 - **ZMUX has no PTY, and the documentation said it did.** `README.md`,
   `ROADMAP_STATUS.md` and `REFACTOR_REPORT.md` described "POSIX PTY sessions
