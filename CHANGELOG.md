@@ -8,6 +8,113 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Documentation — Correction of an inaccurate claim
+- **ZMUX has no PTY, and the documentation said it did.** `README.md`,
+  `ROADMAP_STATUS.md` and `REFACTOR_REPORT.md` described "POSIX PTY sessions
+  (`os.openpty`) with automatic fallback to standard pipes when SELinux denies
+  `/dev/ptmx`". No such code has ever existed — there is no `openpty`, no
+  `/dev/ptmx`, no `termios` and no fallback path anywhere in `app/zmux/`. The
+  module docstring in `pty_session.py` was accurate; the user-facing docs were
+  not. Added a **Terminal model** section to the README stating what ZMUX is (a
+  virtual terminal over the embedded CPython runtime) and what that costs:
+  **no full-screen TUI programs (`vim`, `htop`, `less`), no job control, no
+  login shell**. The incorrect historical changelog entry in `ROADMAP_STATUS.md`
+  is annotated rather than rewritten, so the record of the error survives.
+- **Documented that the `BIN_DIR` shell wrappers are unverified on Android 10+.**
+  Since targetSdk 29, Android blocks `exec()` on files in the app home directory
+  (a W^X violation); executables are expected to live in `nativeLibraryDir`.
+  The `#!/system/bin/sh` wrappers `paths.py` generates may therefore fail to run
+  on modern devices. Every ZMUX command also resolves in-process, so this is a
+  convenience path — but the claim is now honest about being untested.
+
+### Added — Multiple terminal sessions
+- **Up to 8 sessions with tabs** (`app/zmux/sessions.py`). Each owns its own
+  `PythonShell`, and therefore its own working directory, Python globals,
+  command history and running command. Only the active session writes to the
+  websocket; background sessions keep executing and keep recording their own
+  scrollback, so a long job continues while you work elsewhere. Switching clears
+  the screen and replays the target session's scrollback instead of interleaving
+  output. Closing the active tab activates its right-hand neighbour; closing the
+  last one opens a fresh session so the user is never left with a dead terminal.
+  Resize applies to every session, not just the visible one.
+- **Session protocol over the existing websocket**: `session.new`,
+  `session.switch`, `session.close`, `session.list`, plus a `{"type":"sessions"}`
+  state frame pushed on connect and after every change. The backend owns all
+  state; the front-end renders a tab strip and sends intents. Sessions busy in
+  the background show a dot.
+
+### Added — Live output streaming
+- **Command output now reaches the terminal while the command runs**
+  (`app/zmux/streams.py`). Output was previously captured into `io.StringIO` and
+  emitted only after `execute()` returned, so a progressive command looked frozen
+  and then dumped everything at once. `StreamingWriter` pushes complete lines as
+  they are written and flushes partial lines past 256 characters, so prompts,
+  `print(..., end="")` output and `\r`-repainting progress bars all render.
+  Measured: three prints separated by 0.5 s now arrive at t=0.0/0.5/1.0 s.
+- **`input()` prompts are visible again.** `input("Your name? ")` wrote its
+  prompt into the captured buffer and then blocked, so users were asked a
+  question they could not see and the terminal appeared hung — the interactive
+  stdin support added in the previous release was effectively unusable. The
+  stdin provider now flushes pending output before blocking.
+- **Subprocess stdout streams too.** `communicate()` replaced with a `readline`
+  pump on a helper thread, so `ping`/`logcat`-style commands appear live rather
+  than arriving in one block on exit. Timeout semantics are preserved via a join
+  deadline.
+- REST callers are unaffected: the result dict still carries the complete text.
+  A new `streamed` key names which streams already reached the screen so the
+  renderer never double-prints, and non-streaming paths (built-in commands,
+  `zpip`) still render normally.
+
+### Added — Virtual keys, startup file, crash visibility
+- **Two-row virtual key bar with a sticky Ctrl modifier** (`terminal.html`). The
+  toolbar was 13 hardcoded `onclick` buttons with no modifier support at all, so
+  `Ctrl+C`, `Ctrl+R`, `Ctrl+L` and `Ctrl+Z` were untypeable. Keys are now
+  generated from a `KEY_ROWS` array (the data-driven shape Termux uses for its
+  JSON extra-keys config, so a user-supplied layout can be added later without
+  touching markup). Tap CTRL to latch, tap a key to apply; the latch also covers
+  soft-keyboard input, so `Ctrl+<letter>` works however the letter is typed.
+  Arrows and backspace auto-repeat when held (400 ms delay, 55 ms interval).
+- **`~/.zmuxrc`** runs line by line before the first prompt. ZMUX has no login
+  shell, so this is the only hook for imports, variables and aliases. A broken
+  rc file reports the error and startup continues.
+- **Worker-thread crashes are now recorded** (`app/zmux/crash.py`):
+  `threading.excepthook` and `sys.unraisablehook` persist tracebacks to
+  `logs/zmux_crash.log` with size-bounded rotation. The command worker's blanket
+  `except Exception` kept the terminal alive but discarded the traceback
+  entirely; it now records before resuming.
+
+### Added — Package manager UX (`zpip`)
+- **Download progress bar** — name, MiB, KiB/s, 20-character bar and percent,
+  repainted in place at most every 100 ms. A wheel download is the longest
+  blocking operation `zpip` performs and it previously reported nothing, so
+  `zpip install` looked like a hang. Rendered only when a progress sink is
+  installed, so REST and CLI output stay free of escape codes.
+- **Explicit vs dependency tracking.** The install database records whether a
+  package was requested by name or pulled in as a dependency. `zpip list` marks
+  dependencies; re-installing one by name promotes it, and the flag is never
+  silently lost. Records predating the flag default to explicit. This is the
+  prerequisite for a future `zpip autoremove`.
+- **`zpip search` marks packages that are already installed.**
+
+### Fixed
+- **`import math` executed ImageMagick's `import` binary** instead of importing
+  the module (`app/zmux/python_shell.py`). `_is_external_command()` consulted
+  `PATH` for every first word, and ImageMagick ships an `import` screenshot
+  tool, so the most common statement in Python failed with `unable to open X
+  server` on any system where it is installed. Python statement keywords are now
+  guarded against external-command resolution.
+- **The child-process environment was built and then thrown away.**
+  `TerminalSession._build_env()` assigned `self._env` and nothing ever read it;
+  the only `subprocess.Popen` in the codebase passed no `env=` at all, so
+  children inherited the raw app environment without `TERM`, `LANG`, the
+  ZMUX `PATH` or `PYTHONPATH`. Consolidated into `app/zmux/env.py`, now actually
+  passed to children, with `COLORTERM`, `TMPDIR` and `PWD` added and the Android
+  zygote passthrough variables documented.
+- **`_find_executable()` never searched `BIN_DIR`**, so the `zpip`, `help`,
+  `zmux-info`, `clear` and `pip` wrappers generated by `paths.py` were
+  unresolvable from the pipeline executor. It now resolves against the same
+  `PATH` handed to child processes.
+
 ### Security
 - **Removed `0.0.0.0` (wildcard-interface) bind fallback for both the HTTP and WebSocket listeners** (`app/zmux/server.py`). `/` serves the WebView `AUTH_TOKEN` unauthenticated (the page's JavaScript needs it), so any device on the same LAN could previously have fetched the token and driven `/api/exec` whenever the fallback triggered. Listeners are now strictly loopback (`127.0.0.1` / `localhost` / `::1`), restoring the documented security boundary.
 - **Native wheel libraries are installed read-only** (`app/zmux/zpip.py`): `.so` files committed to `user_packages/` are now `chmod 0o444`. Android 14+ "safer dynamic code loading" requires dynamically loaded files to be read-only (warning on targetSdk 34, hard `UnsatisfiedLinkError: Attempt to load writable file` enforced on newer targets). Same fix Termux applied to `termux-am`.

@@ -1,6 +1,8 @@
 # Harta Karun — Reference Mining Report
 
-**Status:** discussion document, no code changed yet.
+**Status:** ✅ Waves A, B, C, D implemented (2026-07-31). See
+[IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) for what shipped, what
+changed versus this plan, and what is still open.
 **Date:** 2026-07-31
 **References mined:**
 
