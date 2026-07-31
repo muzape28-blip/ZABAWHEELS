@@ -8,11 +8,9 @@ protections that **are** in the app itself:
 - `gates` now reads the shipped `libproot.so` `DT_NEEDED` on the phone
   (`app/zmux/elfscan.py`) and says "STALE BINARY" when it still needs
   `libtalloc.so.2`.
-- `zmux-info` / `gates` print the `build_marker.txt` SHA when present.
+- `zmux-info` prints `Proot NEEDED: …` and flags `[STALE — reinstall]`.
 - The build script already fails CI if any `DT_NEEDED` cannot be satisfied
   by the packaged files (`verify_needed` in `scripts/build_proot_android.py`).
-- Stale CI caches (old p4a dists with the unfixed binaries) have been
-  deleted via the GitHub API, so the next build is cold and correct.
 
 **To apply this patch:** grant the GitHub App `workflows: write` in
 `Settings → GitHub Apps → Arena` (or push it yourself from a token with that
@@ -20,35 +18,19 @@ permission), then:
 
 ```bash
 cd ZABAWHEELS
-git apply docs/workflow_verify_steps.patch
+git apply docs/WORKFLOW_VERIFY_STEPS.patch
 git add .github/workflows/build-zmux-apk.yml
 git commit -m "CI: verify APK contents, bust proot cache, record build marker"
 git push
 ```
 
-```diff
-    is fine: buildozer's build_package() copies android.add_libs_* into
-    dist/libs/<abi> at every build with an overwriting copyfile, so the .so
-    files do land in the APK; the failure was the DT_NEEDED name vs the
-    shipped filename. But the actions/cache keyed on buildozer.spec + lock
-    only, so a stale p4a dist (with old libproot.so) could be reused even
-    after a proot fix.
-    
-    Changes:
-    - Cache key now includes scripts/build_proot_android.py.
-    - New 'Verify APK contents' step fails the build unless the final APK's
-      libproot.so (both ABIs) needs libtalloc.so (never .so.2), libtalloc.so
-      is shipped, and the runtime self-heal marker + build SHA are inside
-      private.tar.
-    - CI writes app/build_marker.txt (git SHA + run id); zmux-info and gates
-      print it so the installed build is provable on-device.
-    - Runtime self-heal is now bidirectional (libtalloc.so.2-only or
-      libtalloc.so-only APKs both get the missing alias).
-    - Tests: 351 passed (buildinfo, bidirectional mirror, workflow-yaml
-      covered by existing infra tests). Docs updated.
-    
-    Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+(If you edit the file by hand instead of applying the patch: three changes —
+(1) cache `key` gains `'scripts/build_proot_android.py'` in its hashFiles,
+(2) a "Record build marker" step writes `build_marker.txt` before buildozer,
+(3) a "Verify APK contents" step after the build unzips the APK and fails on
+stale `libtalloc.so.2` NEEDED entries.)
 
+```diff
 diff --git a/.github/workflows/build-zmux-apk.yml b/.github/workflows/build-zmux-apk.yml
 index 280169b..73d0493 100644
 --- a/.github/workflows/build-zmux-apk.yml
@@ -135,4 +117,3 @@ index 280169b..73d0493 100644
        - name: Name and checksum APK
          id: artifact
          run: |
-```
