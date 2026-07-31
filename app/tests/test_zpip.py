@@ -53,11 +53,17 @@ class TestZpipDispatch:
         assert result["ok"]
         assert "packages" in result
 
-    def test_search_command(self):
-        from zmux.zpip import dispatch
-        result = dispatch("zpip search requests")
+    def test_search_command(self, monkeypatch):
+        from zmux import zpip
+        # Network-free: stub the two sources instead of touching the wire.
+        monkeypatch.setattr(zpip, "_fetch_curated_catalog",
+                            lambda: ({"requests": {"name": "requests", "version": "2.32.3",
+                                                   "summary": "HTTP", "channel": "stable"}}, "live"))
+        monkeypatch.setattr(zpip, "_probe_pypi", lambda name: None)
+        result = zpip.dispatch("zpip search requests")
         assert result["ok"]
         assert "results" in result
+        assert result["results"][0]["name"] == "requests"
 
     def test_doctor_command(self):
         from zmux.zpip import dispatch

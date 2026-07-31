@@ -27,7 +27,7 @@ _USAGE = ("usage: python -m zmux.cli "
 
 _PIP_FALLBACK = """pip is not available inside this ZMUX runtime.
 Use the ZMUX package manager instead:
-  zpip search <name>      Search for packages
+  zpip search <query>     Search curated index, installs, and PyPI
   zpip info <name>        Show package info
   zpip install <name>     Install a package
   zpip list               List installed packages

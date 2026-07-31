@@ -49,7 +49,7 @@ Filesystem commands:
   directly by absolute path; ZMUX never starts /system/bin/sh.
 
 ZMUX Package Manager:
-  zpip search <name>      Search for packages
+  zpip search <query>     Search curated index, installs, and PyPI
   zpip info <name>        Show package info
   zpip install <name>     Install package
   zpip list               List installed packages

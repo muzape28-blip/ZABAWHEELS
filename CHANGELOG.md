@@ -212,6 +212,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `files_demo.py`, `zpip_demo.py`), seeded once behind a marker so user
   edits are never overwritten; seeding failure never blocks startup.
 
+### Added — Real package search (PR 4)
+- **`zpip search` now answers from real sources instead of a hardcoded list
+  of 13 package names** (`app/zmux/zpip.py`). Results merge, per query:
+  - the **curated ZABAWHEELS catalog** for the running runtime/ABI
+    (`<index>/runtimes/<runtime_id>/<abi>.json`), fetched with an 8 s budget
+    and cached on disk (`cache/catalogs/`, 1 h freshness) — the source
+    status is always disclosed as `live` / `cache` / `stale` / `unavailable`;
+  - the **installed database** (always available, fully offline);
+  - an **exact-name PyPI probe** for single-token queries that are valid
+    package names and not an exact curated hit — PyPI has no search API any
+    more, so an exact probe is the only honest thing zpip can offer there,
+    and its result is labeled `[pypi]` (uncurated).
+- **Multi-word queries** (`zpip search http client`) match every token (AND)
+  against name (separator-insensitive: `http_toolbox` ↔ `http-toolbox`) and
+  summary. Ranking: exact name match first, then name matches, then
+  summary-only matches; ties resolve curated > pypi > installed so the
+  richest metadata wins. Entries also flag packages that are already
+  installed (`[curated,installed]`).
+- **`ZMUX_OFFLINE=1`**: search never touches the network — it answers from
+  the installed database plus the on-disk catalog cache and says so. A
+  missing/empty index yields an honest empty result instead of the old
+  pretend-list, and unreachable sources are printed as notes under the
+  results instead of failing the command.
+
 ### Fixed (kept from earlier unreleased work)
 - **Transparent Unix Shell Integration for ZMUX Built-in Commands:** typing `zpip`, `help`, `zmux-info`, `clear`, or `pip` inside the real Android PTY shell no longer fails with `/system/bin/sh: <cmd>: inaccessible or not found`. `/system/bin/sh` only executes binaries and scripts found on `$PATH`, so ZMUX now ships native shell entrypoints:
   - Added `app/zmux/cli.py`, a CLI entrypoint (`python -m zmux.cli <cmd> [args...]`) that implements the command handlers: `help` prints the formatted ZMUX terminal help text, `clear` emits `\033[H\033[2J\033[3J`, `zmux-info` prints the formatted runtime fingerprint, `zpip` dispatches through the package manager with cleanly formatted output, and `pip` invokes standard pip when a runnable interpreter exists or prints guidance to use `zpip` otherwise.
