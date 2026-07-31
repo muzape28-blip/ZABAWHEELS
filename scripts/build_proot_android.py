@@ -366,20 +366,33 @@ def verify_needed(out: Path, tc: Path) -> None:
             + "\n  ".join(problems)
         )
     # Belt-and-braces: the exact talloc binding must be the plain name, and
-    # libproot.so must parse cleanly (a corrupted rewrite would show up here).
-    for lib in ("libproot.so", "libtalloc.so"):
-        path = out / lib
-        if not path.is_file():
-            continue
+    # the files must parse cleanly (a corrupted rewrite would show up here).
+    # libproot.so *needs* libtalloc.so (DT_NEEDED); libtalloc.so *is* the
+    # library, so its binding is its SONAME, not a NEEDED entry.
+    proot_path = out / "libproot.so"
+    if proot_path.is_file():
         result = subprocess.run(
-            [str(tc / "llvm-readelf"), "-d", str(path)],
+            [str(tc / "llvm-readelf"), "-d", str(proot_path)],
             capture_output=True, text=True, check=True,
         )
         needed = _NEEDED_RE.findall(result.stdout)
         talloc_entry = next((n for n in needed if n.startswith("libtalloc")), None)
         if talloc_entry != "libtalloc.so":
             raise SystemExit(
-                f"[verify] {lib} talloc binding is {talloc_entry!r}, "
+                f"[verify] libproot.so talloc binding is {talloc_entry!r}, "
+                "expected 'libtalloc.so' — the rewrite did not apply"
+            )
+    talloc_path = out / "libtalloc.so"
+    if talloc_path.is_file():
+        result = subprocess.run(
+            [str(tc / "llvm-readelf"), "-d", str(talloc_path)],
+            capture_output=True, text=True, check=True,
+        )
+        soname_match = re.search(r"SONAME.*\[([^\]]+)\]", result.stdout)
+        soname = soname_match.group(1) if soname_match else None
+        if soname != "libtalloc.so":
+            raise SystemExit(
+                f"[verify] libtalloc.so SONAME is {soname!r}, "
                 "expected 'libtalloc.so' — the rewrite did not apply"
             )
     print(f"[verify] all DT_NEEDED entries of {sorted(shipped)} resolve; "
