@@ -27,6 +27,10 @@ def _write_crash_log() -> None:
 
 if __name__ == "__main__":
     try:
+        # Worker threads (command executor, websocket loops) do the real work;
+        # without these hooks their crashes never reach disk.
+        from zmux.crash import install as install_crash_hooks
+        install_crash_hooks()
         from zmux.server import run_server
         run_server()
     except Exception:

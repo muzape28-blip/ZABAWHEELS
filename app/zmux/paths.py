@@ -212,6 +212,29 @@ EXAMPLE_SCRIPTS: dict[str, str] = {
 
 _EXAMPLES_MARKER = ".examples_seeded"
 
+#: User startup file, executed line by line when a session starts.
+#: ZMUX has no login shell, so nothing sources /etc/profile or .bashrc;
+#: this is the equivalent hook (cf. Rin's ENV=$HOME/.mkshrc).
+RC_FILENAME = ".zmuxrc"
+
+
+def read_rc_lines(home: Path = HOME_DIR) -> list:
+    """Return executable lines from ``~/.zmuxrc`` (comments/blanks stripped).
+
+    Never raises: a broken or unreadable rc file must not stop the terminal
+    from starting.
+    """
+    try:
+        raw = (Path(home) / RC_FILENAME).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    lines = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            lines.append(stripped)
+    return lines
+
 
 def seed_examples(home: Path = HOME_DIR) -> Path | None:
     """Drop the example scripts into ``home/examples`` once (marker-guarded).

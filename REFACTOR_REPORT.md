@@ -53,7 +53,9 @@ app/tools/*                      # Obsolete IDE build scripts
 app/zmux/
 ├── __init__.py          # Package metadata
 ├── terminal.py          # Execution engine (subprocess & streaming)
-├── pty_session.py       # POSIX pseudo-terminal manager with standard pipe fallback
+├── pty_session.py       # Virtual terminal session (line discipline, history, Ctrl+C)
+├── streams.py           # Live output streaming to the websocket
+├── env.py               # Child-process environment builder
 ├── server.py            # Flask HTTP WebView backend
 ├── ws_server.py         # Pure-Python RFC-6455 WebSocket server
 ├── zpip.py              # Transactional hash-verifying package manager
@@ -65,8 +67,8 @@ app/zmux/
 
 ### Key Capabilities
 ✅ **Real Interactive Terminal Execution**
-- POSIX PTY sessions (`os.openpty`) with automatic fallback to standard pipes when SELinux denies `/dev/ptmx` access
-- Real-time stdout/stderr binary streaming over RFC-6455 WebSockets
+- Virtual terminal driven by the embedded CPython runtime (no PTY; see README "Terminal model")
+- Real-time stdout/stderr streaming over RFC-6455 WebSockets, emitted as output is produced
 - Full interactive stdin support
 - Exit code tracking and command status reporting
 - Clean Ctrl+C (SIGINT) / Stop process control

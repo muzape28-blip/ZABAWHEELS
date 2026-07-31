@@ -39,7 +39,8 @@ import sys
 import threading
 from typing import Optional
 
-from zmux.paths import HOME_DIR, display_path, seed_examples
+from zmux import crash
+from zmux.paths import HOME_DIR, RC_FILENAME, display_path, read_rc_lines, seed_examples
 from zmux.python_shell import PythonShell
 
 
@@ -155,7 +156,36 @@ class PTYTerminalSession:
                 banner += "Examples for a quick start: examples/\r\n"
             banner += "Type 'python' to enter the REPL, 'help' for commands.\r\n"
             self._emit(banner.encode("utf-8"))
+            self._run_rc()
             self._emit_prompt()
+
+    def _run_rc(self) -> None:
+        """Execute ``~/.zmuxrc`` before the first prompt, if present.
+
+        ZMUX has no login shell, so this is the only hook users have for
+        aliases, imports or environment tweaks. Failures are reported but
+        never prevent the terminal from starting.
+        """
+        lines = read_rc_lines(HOME_DIR)
+        if not lines:
+            return
+        self.shell.output_sink = self._emit
+        try:
+            for line in lines:
+                try:
+                    result = self.shell.execute(line)
+                except Exception as error:  # a bad rc must not kill startup
+                    self._emit(f"{RC_FILENAME}: {error}\r\n".encode("utf-8", errors="replace"))
+                    continue
+                streamed = result.get("streamed", ())
+                pending = "".join(
+                    result.get(name, "") for name in ("stdout", "stderr")
+                    if name not in streamed
+                )
+                if pending:
+                    self._emit(pending.replace("\n", "\r\n").encode("utf-8", errors="replace"))
+        finally:
+            self.shell.output_sink = None
 
     def stop(self) -> None:
         with self.lock:
@@ -361,6 +391,9 @@ class PTYTerminalSession:
                 self.shell._interrupt.set()
                 self._emit_prompt()
             except Exception as error:  # never let the worker die
+                # Keeping the worker alive is right, but silently discarding
+                # the traceback made real bugs unreportable — persist it.
+                crash.record("terminal-exec", type(error), error, error.__traceback__)
                 self._emit(f"[session error: {error}]\r\n".encode("utf-8", errors="replace"))
                 self._emit_prompt()
             finally:

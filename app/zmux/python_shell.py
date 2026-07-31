@@ -422,7 +422,30 @@ class PythonShell:
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK): return candidate
         return None
 
-    def _is_external_command(self, command: str) -> bool: return self._find_executable(command) is not None
+    #: Words that must never be treated as external programs, even when a
+    #: same-named binary exists on PATH. `import` is the notorious one: it is
+    #: ImageMagick's screenshot tool *and* the most common Python statement
+    #: there is, so `import math` used to run ImageMagick and fail with
+    #: "unable to open X server". The others are equally common statement
+    #: keywords that ship as binaries on some systems.
+    PYTHON_KEYWORD_GUARD = frozenset({
+        "import", "from", "print", "exec", "eval", "assert", "del", "pass",
+        "raise", "return", "yield", "lambda", "with", "while", "for", "if",
+        "else", "elif", "try", "except", "finally", "class", "def", "global",
+        "nonlocal", "not", "and", "or", "is", "in", "break", "continue",
+        "async", "await", "match", "case", "true", "false", "none",
+    })
+
+    def _is_external_command(self, command: str) -> bool:
+        """True when ``command`` should be run as an external program.
+
+        Python statement keywords are excluded so shell mode's Python escape
+        hatch keeps working regardless of what happens to be installed on the
+        device's PATH.
+        """
+        if command in self.PYTHON_KEYWORD_GUARD:
+            return False
+        return self._find_executable(command) is not None
 
     def _exec_subprocess(self, line: str, timeout: float | None) -> dict:
         with self._procs_lock:
