@@ -274,3 +274,30 @@ class TestWebSocketProtocol:
                 sock.close()
             server.stop()
             reset_manager()
+
+
+class TestCallbackOwnership:
+    """A managed session must never hijack the websocket's input callbacks.
+
+    Regression: ownership was detected by comparing a stored bound method
+    with `ws.broadcast` using `is`, which is always False (each attribute
+    access creates a new bound-method object). Standalone sessions therefore
+    silently failed to register their callbacks.
+    """
+
+    def test_standalone_session_registers_its_callbacks(self):
+        from zmux.pty_session import PTYTerminalSession
+        ws = _FakeWS()
+        session = PTYTerminalSession(ws)
+        session.start()
+        try:
+            assert ws.callbacks.get("on_data") is not None, "standalone session must register"
+            assert ws.callbacks["on_data"] == session.write_input
+        finally:
+            session.stop()
+
+    def test_managed_session_does_not_register(self, manager):
+        ws = manager.ws_server
+        ws.callbacks.clear()
+        manager.create()
+        assert ws.callbacks == {}, "managed session stole the websocket callbacks"

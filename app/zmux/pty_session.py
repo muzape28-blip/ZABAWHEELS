@@ -123,6 +123,12 @@ class PTYTerminalSession:
         #: background sessions keep running without corrupting the display.
         #: Defaults to broadcasting directly (single-session / test use).
         self._emit_output = emit if emit is not None else ws_server.broadcast
+        #: True when this session owns the connection outright and may claim
+        #: the websocket's input callbacks. Under the session manager, routing
+        #: is the manager's job and a background session must never steal it.
+        #: (Tracked explicitly: comparing bound methods with `is` is always
+        #: False, since each attribute access builds a new method object.)
+        self._owns_ws = emit is None
         self.shell = PythonShell()
         self.is_running = False
         self.process = None  # Compatibility: no shell process is spawned.
@@ -154,7 +160,7 @@ class PTYTerminalSession:
             # Only a session that owns the websocket outright registers here.
             # Under the session manager, routing belongs to the manager, so
             # a newly created background session must not steal input.
-            if self._emit_output is self.ws_server.broadcast:
+            if self._owns_ws:
                 self.ws_server.register_callbacks(on_data=self.write_input, on_resize=self.resize)
             self._exec_thread = threading.Thread(
                 target=self._exec_loop, daemon=True, name="ZMUX-Terminal-Exec"
