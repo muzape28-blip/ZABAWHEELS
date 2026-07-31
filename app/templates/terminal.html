@@ -60,6 +60,21 @@ body {
   letter-spacing: 0.05em;
 }
 #topbar .title::before { content: '> '; }
+/* Virtual-key bar visibility toggle, right beside the title. */
+#keys-toggle {
+  margin-left: 10px;
+  background: transparent;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 8px;            /* generous tap target */
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#keys-toggle.active { color: var(--green); border-color: var(--green); }
 #status {
   margin-left: auto;
   font-size: 11px;
@@ -70,9 +85,9 @@ body {
 #tabs {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   padding: 0 8px 0 12px;
-  height: 34px;
+  height: 42px;
   background: var(--bg-input);
   border-bottom: 1px solid #30363d;
   flex-shrink: 0;
@@ -83,9 +98,12 @@ body {
 .tab {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 4px 8px;
-  font-size: 11px;
+  padding: 8px 14px;           /* big enough to tap confidently on a phone */
+  min-width: 44px;
+  min-height: 32px;
+  font-size: 12px;
   font-family: var(--mono);
   color: var(--text-dim);
   background: #21262d;
@@ -95,15 +113,31 @@ body {
   white-space: nowrap;
   flex-shrink: 0;
   -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  position: relative;
+  overflow: hidden;
 }
 .tab.active { color: var(--green); border-color: var(--green); background: #12261a; }
 /* A dot marks a session that is running something while you are elsewhere. */
 .tab .busy { width: 6px; height: 6px; border-radius: 50%; background: var(--yellow); }
-.tab .close { color: var(--text-dim); font-weight: 700; padding: 0 2px; }
-.tab .close:active { color: var(--red); }
+/* Hold-to-close: while the finger is down the tab flashes red and a
+   progress bar fills; at 100% the session closes. Releasing (or sliding
+   the finger away) before that cancels — a plain tap still switches. */
+.tab.holding { color: var(--red); border-color: var(--red); background: #2d1215; }
+.tab.holding::after {
+  content: '';
+  position: absolute;
+  left: 0; bottom: 0;
+  height: 3px; width: 0;
+  background: var(--red);
+  animation: tab-hold-progress 1.5s linear forwards;
+}
+@keyframes tab-hold-progress { from { width: 0; } to { width: 100%; } }
 #tab-new {
   color: var(--text-bright); background: transparent; border: 1px dashed #30363d;
-  border-radius: 4px; padding: 4px 10px; font-size: 13px; cursor: pointer; flex-shrink: 0;
+  border-radius: 4px; padding: 8px 12px; min-height: 32px; font-size: 13px;
+  cursor: pointer; flex-shrink: 0;
 }
 #status-dot {
   display: inline-block;
@@ -145,6 +179,9 @@ body {
   gap: 5px;
   flex-shrink: 0;
 }
+/* Hidden via the topbar toggle; display:none (not height:0) so the flex
+   layout hands every pixel back to the terminal before fitTerminal(). */
+#toolbar.hidden { display: none; }
 .key-row {
   display: flex;
   gap: 5px;
@@ -213,6 +250,9 @@ body {
 
 <div id="topbar">
   <span class="title">ZMUX</span>
+  <button id="keys-toggle" type="button" class="active"
+          title="Show/hide the virtual key bar"
+          aria-label="Toggle virtual key bar">KEYS</button>
   <span id="status"><span id="status-dot" class="idle"></span><span id="status-text">connected</span></span>
 </div>
 
@@ -284,7 +324,8 @@ function initTerminal() {
     }
   });
 
-  term.open(document.getElementById('terminal-container'));
+  const container = document.getElementById('terminal-container');
+  term.open(container);
   term.focus();
 
   // Route soft-keyboard input through the modifier latch, so a latched CTRL
@@ -295,15 +336,76 @@ function initTerminal() {
     ws.send(data);
   });
 
-  // Aggressive scrolling: output should follow the cursor unless the user
-  // deliberately scrolled up to read. xterm reports the viewport offset on
-  // any scroll (user or programmatic); moving UP means the user is reading.
+  // Scroll-follow, terminal-style:
+  //   * scrolling UP is bounded by the first scrollback line (xterm does it),
+  //   * scrolling DOWN is always free — reaching the bottom re-arms follow,
+  //   * new output NEVER yanks the viewport while the user reads history.
+  // The old code latched `userScrolledUp` on any upward scrollTop movement,
+  // which misfired on programmatic jumps (a `\x1b[2J` clear collapses the
+  // viewport to 0; a resize reflow shifts offsets) and froze follow mode.
+  // Now only real input (wheel / touch-drag / PageUp) marks "reading", and
+  // onScroll only ever UN-latches when the bottom is reached again.
   userScrolledUp = false;
   lastScrollTop = 0;
   term.onScroll((scrollTop) => {
-    if (scrollTop < lastScrollTop) userScrolledUp = true;
+    if (scrollTop >= (term.buffer.active.baseY || 0)) userScrolledUp = false;
     lastScrollTop = scrollTop;
   });
+  bindScrollIntent(container);
+}
+
+// True while there is output above the viewport to scroll into.
+function hasScrollback() {
+  return !!(term && term.buffer && (term.buffer.active.baseY || 0) > 0);
+}
+
+// Mark "user is reading history" exclusively from genuine user gestures.
+function bindScrollIntent(container) {
+  const viewport = container.querySelector('.xterm-viewport') || container;
+  viewport.addEventListener('wheel', (e) => {
+    if (e.deltaY < 0 && hasScrollback()) userScrolledUp = true;
+  }, { passive: true });
+
+  // Touch: dragging a finger DOWN pulls earlier output into view.
+  let lastTouchY = null;
+  viewport.addEventListener('touchstart', (e) => {
+    if (e.touches && e.touches.length) lastTouchY = e.touches[0].clientY;
+  }, { passive: true });
+  viewport.addEventListener('touchmove', (e) => {
+    if (lastTouchY === null || !e.touches || !e.touches.length) return;
+    const y = e.touches[0].clientY;
+    if (y - lastTouchY > 8 && hasScrollback()) userScrolledUp = true;
+    lastTouchY = y;
+  }, { passive: true });
+
+  // Desktop nicety: keyboard scrolling (Shift+PageUp inside xterm).
+  container.addEventListener('keydown', (e) => {
+    if (e.key === 'PageUp' && hasScrollback()) userScrolledUp = true;
+  });
+}
+
+// Every output payload (binary or text) flows through here. A payload that
+// clears the screen (`\x1b[2J` — the `clear` builtin, session switches)
+// repaints from scratch: snap back to live output and re-arm follow,
+// otherwise the viewport appears glued to stale history.
+function writeTerminalOutput(data, containsClearScreen) {
+  term.write(data);
+  if (containsClearScreen) {
+    userScrolledUp = false;
+    lastScrollTop = 0;
+    term.scrollToBottom();
+  } else if (!userScrolledUp) {
+    term.scrollToBottom();
+  }
+}
+
+// Scan a binary frame for ESC [ 2 J without decoding the whole buffer.
+function bytesContainClearScreen(bytes) {
+  for (let i = 0; i + 4 <= bytes.length; i++) {
+    if (bytes[i] === 0x1b && bytes[i + 1] === 0x5b &&
+        bytes[i + 2] === 0x32 && bytes[i + 3] === 0x4a) return true;
+  }
+  return false;
 }
 
 // Connect to secure WebSocket server (port passed dynamically by backend)
@@ -353,13 +455,13 @@ function connectWebSocket() {
     if (event.data instanceof Blob) {
       // Binary frame: raw terminal output.
       event.data.arrayBuffer().then((buf) => {
-        term.write(new Uint8Array(buf));
-        if (!userScrolledUp) term.scrollToBottom();
+        const bytes = new Uint8Array(buf);
+        writeTerminalOutput(bytes, bytesContainClearScreen(bytes));
       });
     } else {
       // Text frame: a control message (session state), or plain output.
       if (handleControlMessage(event.data)) return;
-      term.write(event.data);
+      writeTerminalOutput(event.data, event.data.indexOf('\x1b[2J') !== -1);
     }
   };
 
@@ -444,6 +546,68 @@ function sendAction(payload) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
 }
 
+/* Hold ~1.5s on a tab to close its session; a plain tap switches.
+   The tiny per-tab "×" button was removed: on a phone it sat millimetres
+   from the switch target and ate mis-taps. The backend already survives
+   every close — closing the last session opens a fresh one on its own. */
+const HOLD_TO_CLOSE_MS = 1500;    /* matches the CSS progress-bar fill */
+const HOLD_CANCEL_PX = 12;        /* finger travel that aborts the hold */
+const HOLD_SUPPRESS_CLICK_MS = 450;
+let suppressTabClick = false;
+
+function attachTabHold(tab, sessionId) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+
+  const cancelHold = () => {
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    tab.classList.remove('holding');
+  };
+  const fire = () => {
+    timer = null;
+    tab.classList.remove('holding');
+    if (navigator.vibrate) {
+      try { navigator.vibrate(40); } catch (e) { /* haptics are optional */ }
+    }
+    /* The finger is still down; lifting it produces a click that must not
+       switch back into the tab we just closed. */
+    suppressTabClick = true;
+    setTimeout(() => { suppressTabClick = false; }, HOLD_SUPPRESS_CLICK_MS);
+    sendAction({ action: 'session.close', id: sessionId });
+  };
+  const startHold = (x, y) => {
+    cancelHold();
+    startX = x; startY = y;
+    tab.classList.add('holding');
+    timer = setTimeout(fire, HOLD_TO_CLOSE_MS);
+  };
+  const trackMove = (x, y) => {
+    if (timer === null) return;
+    if (Math.abs(x - startX) > HOLD_CANCEL_PX ||
+        Math.abs(y - startY) > HOLD_CANCEL_PX) cancelHold();
+  };
+
+  /* Touch listeners stay passive so the strip keeps scrolling natively;
+     the movement check above is what tells a scroll from a hold. */
+  tab.addEventListener('touchstart', (e) => {
+    if (!e.touches || !e.touches.length) return;
+    startHold(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  tab.addEventListener('touchmove', (e) => {
+    if (!e.touches || !e.touches.length) return;
+    trackMove(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  tab.addEventListener('touchend', cancelHold);
+  tab.addEventListener('touchcancel', cancelHold);
+
+  /* Desktop parity (mouse hold), and easier testing. */
+  tab.addEventListener('mousedown', (e) => startHold(e.clientX, e.clientY));
+  tab.addEventListener('mousemove', (e) => trackMove(e.clientX, e.clientY));
+  tab.addEventListener('mouseup', cancelHold);
+  tab.addEventListener('mouseleave', cancelHold);
+}
+
 function renderTabs(state) {
   const bar = document.getElementById('tabs');
   bar.innerHTML = '';
@@ -452,6 +616,7 @@ function renderTabs(state) {
   list.forEach((session, index) => {
     const tab = document.createElement('div');
     tab.className = 'tab' + (session.id === state.active ? ' active' : '');
+    tab.title = 'Tap to switch — hold to close';
 
     if (session.busy && session.id !== state.active) {
       const dot = document.createElement('span');
@@ -461,21 +626,15 @@ function renderTabs(state) {
 
     const label = document.createElement('span');
     label.textContent = String(index + 1);
-    label.addEventListener('click', () => sendAction({ action: 'session.switch', id: session.id }));
     tab.appendChild(label);
 
-    // Only offer a close affordance when there is more than one session;
-    // closing the last one just respawns an empty terminal.
-    if (list.length > 1) {
-      const close = document.createElement('span');
-      close.className = 'close';
-      close.textContent = '×';
-      close.addEventListener('click', (e) => {
-        e.stopPropagation();
-        sendAction({ action: 'session.close', id: session.id });
-      });
-      tab.appendChild(close);
-    }
+    // The whole tab is the tap target (big enough for thumbs now).
+    tab.addEventListener('click', () => {
+      if (suppressTabClick) { suppressTabClick = false; return; }
+      sendAction({ action: 'session.switch', id: session.id });
+    });
+    attachTabHold(tab, session.id);
+
     bar.appendChild(tab);
   });
 
@@ -654,11 +813,52 @@ function fitTerminal() {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Virtual-key bar visibility (the ESC/CTRL/Tab/^C rows).
+ *
+ * The bar can steal the last terminal rows on small screens, so the
+ * topbar toggle shows/hides it. The preference survives restarts via
+ * localStorage; default stays VISIBLE (nothing the user relies on ever
+ * disappears on its own). Every toggle refits the terminal so the row
+ * count reflects the newly free space on the next render.
+ * ------------------------------------------------------------------ */
+const KEYS_BAR_PREF = 'zmux.keysBar.visible';
+
+function keysBarPreference() {
+  try { return localStorage.getItem(KEYS_BAR_PREF) !== '0'; }
+  catch (e) { return true; }   // private mode etc. -> default: visible
+}
+
+function applyKeysBar(visible) {
+  const bar = document.getElementById('toolbar');
+  const btn = document.getElementById('keys-toggle');
+  if (bar) bar.classList.toggle('hidden', !visible);
+  if (btn) btn.classList.toggle('active', visible);
+}
+
+function initKeysToggle() {
+  const btn = document.getElementById('keys-toggle');
+  applyKeysBar(keysBarPreference());
+  if (!btn) return;
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const bar = document.getElementById('toolbar');
+    const visible = !bar || bar.classList.contains('hidden');
+    try { localStorage.setItem(KEYS_BAR_PREF, visible ? '1' : '0'); } catch (e) {}
+    applyKeysBar(visible);
+    // The flex layout reacts synchronously to display:none, so the
+    // refit right below already measures the final height.
+    fitTerminal();
+    if (term) term.focus();
+  });
+}
+
 // Boot sequence
 function boot() {
   bootStatus.textContent = 'Initializing terminal UI...';
   initTerminal();
   buildVirtualKeys();
+  initKeysToggle();
 
   bootStatus.textContent = 'Connecting to secure backend shell...';
   connectWebSocket();

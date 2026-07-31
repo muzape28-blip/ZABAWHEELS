@@ -8,6 +8,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — Python 3.14 rootfs extraction + terminal UX (2026-07-31)
+- **`linux-setup` works on Python 3.14 (on-device p4a runtime).** 3.14 made
+  `TarFile.extractall()` default to `filter="data"`, which refuses absolute
+  symlink targets (`./usr/bin/yes is a link to an absolute path`) — a
+  busybox-style minirootfs has ~306 of them, so installation died on the
+  phone while desktop CI (older default) passed. `_safe_extract()` now
+  passes `filter="fully_trusted"` explicitly — honest, because member names
+  are already validated (no absolute names, no `..`, size cap) and the
+  tarball is SHA-512-pinned to Alpine's official digest — with a
+  `TypeError` fallback for runtimes lacking the kwarg.
+  `app/tests/test_linuxenv_extract.py` runs the real pipeline (file://
+  mirror → sha512 → tarfile → disk), simulates the 3.14 filter surface,
+  and proves `install()` idempotency without touching the network.
+- **Tabs: hold-to-close replaces the tiny `×`.** The per-tab close button
+  sat millimetres from the switch target and ate mis-taps on phones. Tabs
+  are now bigger (≥44 px wide, roomier padding) and holding one for ~1.5 s
+  closes its session: the tab flashes red with a filling progress bar on
+  hold start, sliding the finger >12 px cancels, releasing early cancels,
+  a plain tap still switches, the post-close click is suppressed, and
+  `navigator.vibrate(40)` confirms when available. Closing the last tab
+  still respawns a fresh session (backend contract, unchanged).
+- **Scroll-follow no longer freezes.** `userScrolledUp` used to latch on
+  ANY upward `scrollTop` movement — including programmatic ones — so a
+  `\x1b[2J` clear or a resize reflow silently disabled follow forever. Now
+  only genuine user gestures (wheel-up, touch-drag toward history, PageUp)
+  mark "reading"; reaching the bottom always re-arms follow; and every
+  output payload containing `\x1b[2J` (`clear`, session switch) resets the
+  latch and snaps to live output. Bounded scroll-up / free scroll-down,
+  and the terminal never yanks the viewport while the user reads.
+- **Keyword bar can be hidden.** New `KEYS` toggle in the topbar next to
+  the `> ZMUX` title shows/hides the virtual-key rows (ESC/CTRL/Tab/^C…).
+  Default stays visible; the choice persists in `localStorage`
+  (`zmux.keysBar.visible`) and the terminal refits immediately so the row
+  count uses the freed space.
+- **UI behavior is executed, not eyeballed.** `app/tests/ui_harness.js`
+  (Node) runs the shipped `terminal.html` script verbatim against a
+  deterministic DOM/xterm/WebSocket surface, replaying synthetic touch,
+  wheel, and key sequences — 44 assertions, driven from pytest by
+  `app/tests/test_ui_behavior.py` (skipped only where Node is absent).
+
 ### Added — Alpine Linux sandbox (PRoot) for real `git` and shell commands
 - **`linux-setup` / `git` / `linux` / `alpine` commands** (`zmux/linuxenv.py`).
   ZMUX can now run a real Alpine 3.22.5 userland via PRoot: `git clone`,
