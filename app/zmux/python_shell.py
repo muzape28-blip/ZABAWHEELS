@@ -7,10 +7,12 @@ path.
 """
 from __future__ import annotations
 
+import builtins
 import contextlib
 import io
 import os
 import platform
+import re
 import shlex
 import shutil
 import signal
@@ -141,6 +143,50 @@ class PythonShell:
         if epoch is None or epoch == self._interrupt_epoch:
             self._interrupt.clear()
 
+    #: Shell operators ZMUX does not implement, mapped to what to tell the
+    #: user. Previously these were passed through to the child as ordinary
+    #: arguments, which failed *silently*: `/bin/true && touch x` reported
+    #: exit 0 and never created x. Failing loudly is strictly better than
+    #: pretending to have run something.
+    UNSUPPORTED_OPERATORS = (
+        ("&&", "'&&' (conditional AND)"),
+        ("||", "'||' (conditional OR)"),
+        ("2>&1", "'2>&1' (stream merging)"),
+        (";", "';' (command sequencing)"),
+        ("&", "'&' (background jobs)"),
+        ("`", "'`...`' (command substitution)"),
+        ("$(", "'$(...)' (command substitution)"),
+    )
+
+    def _unsupported_operator(self, parts: list[str], line: str):
+        """Return an error result when the line uses an operator we lack.
+
+        Operates on the *tokenised* line so quoted text is never flagged:
+        ``echo "a && b"`` is a legitimate single argument. ``$(`` and
+        backticks are checked inside tokens too, since those substitute
+        without needing whitespace.
+        """
+        tokens = set(parts)
+        for operator, description in self.UNSUPPORTED_OPERATORS:
+            hit = operator in tokens
+            if not hit and operator in ("`", "$("):
+                hit = any(operator in token for token in parts)
+            if not hit and operator == ";":
+                # `a; b` tokenises as "a;" — a trailing ; fused to a word.
+                hit = any(token.endswith(";") for token in parts)
+            if hit:
+                return self._result(
+                    stderr=(
+                        f"zmux: {description} is not supported — ZMUX has no shell "
+                        f"language.\n"
+                        f"  Supported: pipelines (|), redirection (> >> <), quoting.\n"
+                        f"  For shell logic use Python instead, e.g. "
+                        f"subprocess.run(...) or run commands one per line.\n"
+                    ),
+                    code=2,
+                )
+        return None
+
     def execute(self, line: str, timeout: float | None = None, force_python: bool = False) -> dict:
         line = line.strip()
         if not line:
@@ -156,6 +202,15 @@ class PythonShell:
         if not parts:
             return self._result()
         command = parts[0]
+        # Only guard lines that are actually command invocations. Python
+        # source legitimately contains ';', '&' and '&&'-like text, and must
+        # keep falling through to the interpreter.
+        if command in self.commands or command in {
+            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage"
+        } or self._is_external_command(command):
+            rejection = self._unsupported_operator(parts, line)
+            if rejection is not None:
+                return rejection
         try:
             # Operators need the pipeline/redirection executor even when the
             # first word is also a Python-backed built-in (for example
@@ -166,14 +221,14 @@ class PythonShell:
                 return self._result(stdout=self.commands[command](parts[1:]))
             if command in {"python", "python3"}:
                 return self._exec_python_command(parts[1:])
-            if command in {"pip", "zpip", "help", "zmux-info"}:
+            if command in {"pip", "zpip", "help", "zmux-info", "zmux-setup-storage"}:
                 return self._exec_zmux_command(command, parts[1:])
             # A known external executable is run as a command. Everything else
             # is genuine Python source. (Lines containing |, >, < already went
             # to _exec_subprocess above — no need to test for them twice.)
             if self._is_external_command(command):
                 return self._exec_subprocess(line, timeout)
-            return self._exec_python(line)
+            return self._exec_python(line, origin=line)
         except (OSError, ValueError) as exc:
             return self._result(stderr=f"{command}: {exc}\n", code=1)
 
@@ -297,6 +352,38 @@ class PythonShell:
         return ""
 
     @contextlib.contextmanager
+    def _chdir_context(self):
+        """Run in-process Python with the process cwd set to ``self.cwd``.
+
+        Without this, ``cd`` only moved a *variable*: subprocesses got the new
+        directory via ``Popen(cwd=...)``, but ``open("x.txt")`` inside user
+        Python code still resolved against the process working directory. A
+        user could write a file in Python and then find that ``ls`` and
+        ``cat`` could not see it — two filesystems in one session.
+
+        Known limitation: ``os.chdir`` is process-wide, while ZMUX runs
+        several sessions in one process. Two sessions executing Python file
+        I/O at the *same instant* can race. Serialising them with a lock was
+        rejected: a background ``while True`` loop would then freeze every
+        other tab, which is worse. Subprocesses are unaffected either way
+        (they receive an explicit ``cwd=``).
+        """
+        target = str(self.cwd)
+        try:
+            previous = os.getcwd()
+        except OSError:      # cwd deleted underneath us
+            previous = str(HOME_DIR)
+        try:
+            os.chdir(target)
+        except OSError:
+            pass             # unreadable dir: fall back to the old behaviour
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                os.chdir(previous)
+
+    @contextlib.contextmanager
     def _stdin_context(self):
         """Point sys.stdin at the installed provider while user code runs.
 
@@ -352,11 +439,64 @@ class PythonShell:
             flush()
         return stream.getvalue()
 
-    def _exec_python(self, source: str) -> dict:
+    #: Command name: a bare word, optionally with dots/dashes/slashes.
+    _COMMAND_WORD = re.compile(r"^[\w.@/-]+$")
+    #: Argument: anything a real command takes (flags, URLs, paths, globs)
+    #: with no whitespace. Lone Python operators are rejected separately, so
+    #: `undefined_var + 1` and `x = = 5` remain Python and report genuine
+    #: errors instead of being mistaken for commands.
+    _COMMAND_ARG = re.compile(r"^[\w.@/:~=+*?,%#\[\]{}-]+$")
+    #: Tokens that only ever appear in Python expressions, never as a bare
+    #: command argument.
+    _PYTHON_OPERATORS = frozenset(
+        "+ - * / // % ** = == != < > <= >= | & ^ ~ @ := and or not in is if else for".split()
+    )
+
+    def _looks_like_command(self, source: str) -> bool:
+        """True when a failed Python line was probably a mistyped command.
+
+        `gti status` is not valid Python and not a known program; reporting
+        `SyntaxError: invalid syntax` for it is unhelpful, because the user
+        was typing a shell command. Real Python (assignments, calls, literals)
+        must never be diverted, so this only matches bare-word lines.
+        """
+        stripped = source.strip()
+        if not stripped or "\n" in stripped:
+            return False
+        tokens = stripped.split()
+        first = tokens[0]
+        if not self._COMMAND_WORD.match(first):
+            return False
+        for token in tokens[1:]:
+            # A `-x`/`--flag` argument is unambiguous: Python would read the
+            # dash as an operator, but no expression starts an operand that
+            # way, so it marks the line as a command invocation.
+            if token.startswith("-") and len(token) > 1 and token[1] not in "0123456789":
+                continue
+            # A standalone Python operator means this is an expression.
+            if token in self._PYTHON_OPERATORS or not self._COMMAND_ARG.match(token):
+                return False
+        # Anything Python could legitimately resolve is not a typo.
+        if first in self.globals or first in dir(builtins):
+            return False
+        if first in self.commands or first in {
+            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage", "exit", "quit"
+        }:
+            return False
+        import keyword
+        return not keyword.iskeyword(first) and not keyword.issoftkeyword(first)
+
+    def _exec_python(self, source: str, origin: str | None = None) -> dict:
+        """Execute Python source.
+
+        ``origin`` marks a line that arrived through *shell* mode, where a
+        syntax error more likely means a mistyped command than broken Python.
+        """
         out, err = self._make_sinks()
         try:
             # eval gives REPL-like expression output; exec handles statements.
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self._stdin_context():
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                    self._stdin_context(), self._chdir_context():
                 try:
                     code = compile(source, "<zmux>", "eval")
                 except SyntaxError:
@@ -377,6 +517,28 @@ class PythonShell:
             # spam; propagate the numeric code when one was given.
             code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
             return self._result(self._drain(out), self._drain(err), code, streamed=self._streamed())
+        except (SyntaxError, NameError) as error:
+            # In shell mode a bare-word line that is neither a program nor
+            # valid Python is a mistyped command; say so the way a shell does
+            # (exit 127) instead of a confusing SyntaxError/NameError.
+            # A single unknown word (`foo`) is a NameError; a word with
+            # arguments (`gti status`) is a SyntaxError. Both mean the same
+            # thing to someone typing at a shell prompt.
+            if origin is not None and self._looks_like_command(origin):
+                name = origin.strip().split()[0]
+                # For a NameError, confirm the undefined name really came from
+                # this line's command word before claiming "not found" — but
+                # allow the leading fragment too, since Python parses
+                # `git-foo` as `git - foo` and reports only `git`.
+                head = re.split(r"[.\-/@]", name)[0]
+                if isinstance(error, SyntaxError) or name in str(error) or (
+                    head and f"'{head}'" in str(error)
+                ):
+                    err.write(f"zmux: {name}: command not found\n")
+                    return self._result(self._drain(out), self._drain(err), 127,
+                                        streamed=self._streamed())
+            err.write(self._format_traceback())
+            return self._result(self._drain(out), self._drain(err), 1, streamed=self._streamed())
         except BaseException:
             err.write(self._format_traceback())
             return self._result(self._drain(out), self._drain(err), 1, streamed=self._streamed())

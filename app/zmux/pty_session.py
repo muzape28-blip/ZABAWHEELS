@@ -378,7 +378,7 @@ class PTYTerminalSession:
         # python/python3 with arguments (`python file.py`, `python -c ...`)
         # route to the real script runner; the bare-word REPL entry was
         # already intercepted in _submit_line and never reaches the worker.
-        return set(self.shell.commands) | {"pip", "zpip", "help", "zmux-info", "python", "python3"}
+        return set(self.shell.commands) | {"pip", "zpip", "help", "zmux-info", "zmux-setup-storage", "python", "python3"}
 
     def _exec_loop(self) -> None:
         """Single worker: executes queued command lines one at a time."""

@@ -329,11 +329,96 @@ def resolve(name: str, version: str = None, channel: str = "stable") -> dict:
 
 
 def _import_name(name: str) -> str:
+    """Best-effort guess of the import name from the distribution name.
+
+    Only a fallback. The authoritative answer lives *inside* the artifact and
+    is read by :func:`_discover_modules`; guessing is wrong for a large class
+    of real packages (``markdown-it-py`` imports ``markdown_it``,
+    ``python-dateutil`` imports ``dateutil``).
+    """
     aliases = {
         "beautifulsoup4": "bs4", "pillow": "PIL", "python-dotenv": "dotenv",
         "pyyaml": "yaml", "pyjwt": "jwt",
     }
     return aliases.get(name, name.replace("-", "_"))
+
+
+def _modules_from_paths(paths, package: str) -> list:
+    """Derive importable top-level names from a list of archive/relative paths.
+
+    Skips ``.dist-info``/``.data`` metadata trees, private names and anything
+    that is not a valid identifier. Returns packages (directories with
+    ``__init__.py``) and top-level modules (``foo.py``), preferring a name
+    that resembles the distribution so the smoke test stays meaningful.
+    """
+    packages: set = set()
+    modules: set = set()
+    for raw in paths:
+        parts = PurePosixPath(raw).parts
+        if not parts:
+            continue
+        head = parts[0]
+        if head.endswith((".dist-info", ".data")) or head.startswith("."):
+            continue
+        if len(parts) > 1:
+            if parts[1] == "__init__.py" and head.isidentifier():
+                packages.add(head)
+        elif head.endswith(".py"):
+            stem = head[:-3]
+            if stem.isidentifier() and stem != "__init__":
+                modules.add(stem)
+    candidates = sorted(packages) + sorted(modules - packages)
+    if not candidates:
+        return []
+    # Prefer a candidate related to the distribution name; several packages
+    # ship helper top-levels (attrs ships both `attr` and `attrs`).
+    normalised = package.replace("-", "_").replace(".", "_").lower()
+    for candidate in candidates:
+        if candidate.lower() == normalised:
+            return [candidate, *[c for c in candidates if c != candidate]]
+    for candidate in candidates:
+        low = candidate.lower()
+        if normalised.startswith(low) or low.startswith(normalised):
+            return [candidate, *[c for c in candidates if c != candidate]]
+    return candidates
+
+
+def _discover_modules(staging: Path, package: str) -> list:
+    """Importable names actually provided by an unpacked wheel.
+
+    Reads, in order of authority:
+
+    1. ``*.dist-info/top_level.txt`` — the packaging tool's own declaration;
+    2. the extracted tree, if that file is absent (it is optional and modern
+       wheels frequently omit it).
+
+    Falls back to :func:`_import_name` only when the artifact reveals nothing.
+    """
+    try:
+        for info in staging.glob("*.dist-info"):
+            top_level = info / "top_level.txt"
+            if top_level.is_file():
+                declared = [
+                    line.strip()
+                    for line in top_level.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if line.strip() and line.strip().isidentifier()
+                ]
+                if declared:
+                    ordered = _modules_from_paths(
+                        [f"{name}/__init__.py" for name in declared], package
+                    )
+                    return ordered or declared
+    except OSError:
+        pass
+    try:
+        relative = [
+            str(path.relative_to(staging))
+            for path in staging.rglob("*")
+            if path.is_file()
+        ]
+    except OSError:
+        relative = []
+    return _modules_from_paths(relative, package) or [_import_name(package)]
 
 
 def _smoke_test_in_process(staging: Path, module: str) -> None:
@@ -353,8 +438,11 @@ def _smoke_test_in_process(staging: Path, module: str) -> None:
                 sys.modules.pop(mod, None)
 
 
-def _smoke_test(staging: Path, package: str) -> None:
-    module = _import_name(package)
+def _smoke_test(staging: Path, package: str, module: str | None = None) -> None:
+    # Read the real top-level name out of the artifact; guessing from the
+    # distribution name breaks for markdown-it-py, python-dateutil and many
+    # others, which failed installs that would otherwise have succeeded.
+    module = module or _discover_modules(staging, package)[0]
     if _is_android():
         _smoke_test_in_process(staging, module)
         return
@@ -457,7 +545,8 @@ def install(
         )
         staging.mkdir(parents=True)
         files = _extract(wheel, staging)
-        _smoke_test(staging, package)
+        modules = _discover_modules(staging, package)
+        _smoke_test(staging, package, modules[0])
 
         db = _load_db()
         old = db.get(package) if isinstance(db.get(package), dict) else {}
@@ -514,6 +603,9 @@ def install(
             "sha256": digest,
             "size": size,
             "transaction": transaction,
+            # Recorded from the artifact so `zpip verify` re-imports the name
+            # the wheel really provides instead of re-deriving a guess.
+            "modules": modules,
             "explicit": previously_explicit or not _stack,
         }
         _save_db(db)
@@ -574,6 +666,10 @@ def verify(name: str) -> dict:
     if not isinstance(record, dict):
         return {"ok": False, "error": f"{package} is not managed by zpip"}
     missing = [item for item in record.get("files", []) if not (USER_PACKAGES_DIR / item).is_file()]
+    # Prefer the module names captured from the artifact at install time;
+    # only fall back to guessing for records written before they were stored.
+    recorded = record.get("modules") or []
+    module = recorded[0] if recorded else _import_name(package)
     env = os.environ.copy()
     env["PYTHONPATH"] = str(USER_PACKAGES_DIR) + os.pathsep + env.get("PYTHONPATH", "")
     try:
@@ -583,14 +679,14 @@ def verify(name: str) -> dict:
                 if str(USER_PACKAGES_DIR) not in sys.path:
                     sys.path.insert(0, str(USER_PACKAGES_DIR))
                 importlib.invalidate_caches()
-                importlib.import_module(_import_name(package))
+                importlib.import_module(module)
                 import_ok = True
                 error = ""
             finally:
                 sys.path[:] = old_path
         else:
             result = subprocess.run(
-                [sys.executable, "-c", f"import importlib; importlib.import_module({_import_name(package)!r})"],
+                [sys.executable, "-c", f"import importlib; importlib.import_module({module!r})"],
                 env=env, capture_output=True, text=True, timeout=30,
             )
             import_ok = result.returncode == 0
@@ -601,7 +697,7 @@ def verify(name: str) -> dict:
             if str(USER_PACKAGES_DIR) not in sys.path:
                 sys.path.insert(0, str(USER_PACKAGES_DIR))
             importlib.invalidate_caches()
-            importlib.import_module(_import_name(package))
+            importlib.import_module(module)
             import_ok = True
             error = ""
         except Exception as exc:

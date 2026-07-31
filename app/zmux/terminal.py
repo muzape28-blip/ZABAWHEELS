@@ -60,6 +60,11 @@ ZMUX Package Manager:
 Runtime Info:
   zmux-info               Show runtime fingerprint
 
+Storage:
+  zmux-setup-storage      Request Android storage access and link the shared
+                          directories into ~/storage (opt-in; ZMUX stays
+                          sandboxed until you run it)
+
 Startup file:
   ~/.zmuxrc     Runs line by line when a session starts (imports, variables,
                 commands). ZMUX has no login shell, so this replaces .bashrc.
