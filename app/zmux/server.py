@@ -299,13 +299,14 @@ def run_server():
     # Start WebSocket and PTY servers (passing the live listener avoids a
     # second bind race and guarantees the port advertised to the UI exists).
     from zmux.ws_server import WebSocketServer
-    from zmux.pty_session import get_pty_session
+    from zmux.sessions import get_manager
 
     ws_server = WebSocketServer(host="127.0.0.1", port=ws_port)
     ws_server.start(listeners=ws_listeners)
 
-    pty_sess = get_pty_session(ws_server)
-    pty_sess.start()
+    # Creates the first session and owns input routing from here on.
+    manager = get_manager(ws_server)
+    ws_server.register_callbacks(on_data=manager.write_input, on_resize=manager.resize)
 
     try:
         serve(app, sockets=listeners, threads=4)

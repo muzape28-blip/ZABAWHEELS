@@ -60,6 +60,8 @@ reproducible, Python-first terminal with a verifying package manager.
 - ✅ **Embedded CPython Execution:** Python source runs in-process in the runtime bundled with the APK; external programs are spawned as real child processes by absolute path.
 - ✅ **Real-Time Streaming I/O:** Output reaches the screen as it is produced — a loop that prints every half second renders every half second, and `input()` prompts appear *before* the read blocks.
 - ✅ **Bi-directional WebSocket:** Binary streaming between the xterm.js frontend and the Python backend.
+- ✅ **Multiple Sessions:** Up to 8 tabs, each with its own working directory, Python globals and history. Background sessions keep running; switching replays that session's scrollback.
+- ✅ **Virtual Keys:** Two-row key bar with a sticky Ctrl modifier (so `Ctrl+C`, `Ctrl+R`, `Ctrl+L` are typeable) and hold-to-repeat arrows.
 - ✅ **Process Control:** Ctrl+C / Stop support to cancel running processes cleanly.
 - ✅ **Signal & Thread Safety:** Hardened for 32-bit ARMv7 Android (`armeabi-v7a`) and 64-bit ARM (`arm64-v8a`) architectures to prevent force closes or Bionic libc pthread deadlocks.
 - ✅ **Persistent Working Directory:** Maintains current working directory across commands with path traversal protection.
@@ -151,8 +153,10 @@ ZMUX Terminal
 │   ├── ws_server.py       # Pure-Python RFC-6455 WebSocket server
 │   ├── terminal.py        # Subprocess execution engine
 │   ├── pty_session.py     # Virtual terminal session (line discipline, history, Ctrl+C)
+│   ├── sessions.py        # Multiple sessions, tab routing, scrollback replay
 │   ├── streams.py         # Live output streaming to the websocket
 │   ├── env.py             # Child-process environment builder
+│   ├── crash.py           # Worker-thread crash logging
 │   ├── zpip.py            # Transactional hash-verifying package manager
 │   ├── security.py        # Token authentication
 │   ├── keystore.py        # Encrypted local storage

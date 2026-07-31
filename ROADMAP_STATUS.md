@@ -23,7 +23,7 @@
 | Python Execution | Implemented | python, python -c, python script.py |
 | stdin/stdout/stderr | Implemented | Live streaming; `input()` prompts render before the read blocks |
 | Ctrl+C / Stop | Implemented | SIGINT with process group cleanup |
-| Command History | Implemented | Client-side, up/down arrows |
+| Command History | Implemented | Per session, up/down arrows |
 | Working Directory | Implemented | Persistent, path-traversal protected |
 
 ### Package Manager (zpip)
@@ -85,12 +85,14 @@
 - [ ] Device testing (ARMv7 + ARM64)
 - [ ] Native package builds
 
-### v1.1.0 (Planned)
-- [ ] PTY support for full interactive REPL
-- [ ] Session management (multiple tabs)
-- [ ] File browser for working directory
-- [ ] Improved stdin handling
+### v1.1.0 (In progress)
+- [x] Session management (multiple tabs, isolated cwd/globals/history)
+- [x] Improved stdin handling (live prompts, streaming output)
+- [x] Virtual keys with sticky Ctrl modifier
+- [x] `~/.zmuxrc` startup file
 - [ ] Command auto-completion
+- [ ] File browser for working directory
+- [ ] Foreground service so sessions survive backgrounding
 
 ### v1.2.0 (Planned)
 - [ ] SSH client integration

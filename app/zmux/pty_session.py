@@ -116,8 +116,13 @@ class PTYTerminalSession:
 
     HISTORY_LIMIT = 500
 
-    def __init__(self, ws_server):
+    def __init__(self, ws_server, emit=None):
         self.ws_server = ws_server
+        #: Where output goes. The session manager injects a callback that
+        #: forwards to the websocket only while this session is on screen, so
+        #: background sessions keep running without corrupting the display.
+        #: Defaults to broadcasting directly (single-session / test use).
+        self._emit_output = emit if emit is not None else ws_server.broadcast
         self.shell = PythonShell()
         self.is_running = False
         self.process = None  # Compatibility: no shell process is spawned.
@@ -146,7 +151,11 @@ class PTYTerminalSession:
             if self.is_running:
                 return
             self.is_running = True
-            self.ws_server.register_callbacks(on_data=self.write_input, on_resize=self.resize)
+            # Only a session that owns the websocket outright registers here.
+            # Under the session manager, routing belongs to the manager, so
+            # a newly created background session must not steal input.
+            if self._emit_output is self.ws_server.broadcast:
+                self.ws_server.register_callbacks(on_data=self.write_input, on_resize=self.resize)
             self._exec_thread = threading.Thread(
                 target=self._exec_loop, daemon=True, name="ZMUX-Terminal-Exec"
             )
@@ -207,11 +216,13 @@ class PTYTerminalSession:
             return bytes(self.scrollback_buffer)
 
     def _emit(self, data: bytes) -> None:
+        # Scrollback is always recorded, even when this session is in the
+        # background — that is what makes switching back able to repaint.
         with self.buffer_lock:
             self.scrollback_buffer.extend(data)
             if len(self.scrollback_buffer) > self.scrollback_max_size:
                 del self.scrollback_buffer[: -self.scrollback_max_size]
-        self.ws_server.broadcast(data)
+        self._emit_output(data)
 
     def _prompt(self) -> str:
         if self._mode == "repl":
@@ -477,6 +488,12 @@ _pty_session: Optional[PTYTerminalSession] = None
 
 
 def get_pty_session(ws_server) -> PTYTerminalSession:
+    """Return the single legacy session.
+
+    Superseded by :mod:`zmux.sessions`, which supports several sessions and
+    is what the server and websocket layer now use. Kept for callers that
+    only ever want one terminal (and for existing tests).
+    """
     global _pty_session
     if _pty_session is None:
         _pty_session = PTYTerminalSession(ws_server)
