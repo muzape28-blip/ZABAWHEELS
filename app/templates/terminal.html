@@ -95,20 +95,25 @@ body {
   background-color: var(--bg) !important;
 }
 
-/* Bottom toolbar */
+/* Bottom toolbar — two rows of virtual keys */
 #toolbar {
   background: var(--bg-input);
   border-top: 1px solid #30363d;
-  padding: 8px;
+  padding: 6px;
   display: flex;
-  gap: 6px;
+  flex-direction: column;
+  gap: 5px;
   flex-shrink: 0;
+}
+.key-row {
+  display: flex;
+  gap: 5px;
   flex-wrap: nowrap;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
-#toolbar::-webkit-scrollbar { height: 4px; }
-#toolbar::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+.key-row::-webkit-scrollbar { height: 0; display: none; }
 
 .tool-btn {
   background: #21262d;
@@ -125,6 +130,13 @@ body {
 }
 .tool-btn:active { background: #30363d; }
 .tool-btn.danger { color: var(--red); border-color: #f8514933; }
+/* A latched modifier (tap CTRL, then tap a letter) must look obviously armed. */
+.tool-btn.latched {
+  background: var(--text-bright);
+  border-color: var(--text-bright);
+  color: #0d1117;
+  font-weight: 700;
+}
 .tool-btn.danger:active { background: #f8514922; }
 
 /* Boot screen */
@@ -165,21 +177,8 @@ body {
 <!-- Mount element for xterm.js -->
 <div id="terminal-container"></div>
 
-<div id="toolbar">
-  <button class="tool-btn" onclick="sendRaw('\t')">Tab</button>
-  <button class="tool-btn" onclick="sendRaw('\x1b[A')">↑</button>
-  <button class="tool-btn" onclick="sendRaw('\x1b[B')">↓</button>
-  <button class="tool-btn" onclick="sendRaw('\x1b[D')">←</button>
-  <button class="tool-btn" onclick="sendRaw('\x1b[C')">→</button>
-  <button class="tool-btn danger" onclick="sendRaw('\x03')">Ctrl+C</button>
-  <button class="tool-btn danger" onclick="sendRaw('\x04')">Ctrl+D</button>
-  <button class="tool-btn" onclick="sendRaw('\x1b')">Esc</button>
-  <button class="tool-btn" onclick="sendRaw('/')">/</button>
-  <button class="tool-btn" onclick="sendRaw('~')">~</button>
-  <button class="tool-btn" onclick="sendRaw('|')">|</button>
-  <button class="tool-btn" onclick="sendRaw('>')">&gt;</button>
-  <button class="tool-btn" onclick="sendRaw('&')">&amp;</button>
-</div>
+<!-- Virtual keys. Built from KEY_ROWS in JS so the layout is data, not markup. -->
+<div id="toolbar"></div>
 
 <!-- Load Vendored xterm.js strictly from local assets to avoid CDN dependency -->
 <script src="/static/vendor/xterm/xterm.js"></script>
@@ -237,11 +236,12 @@ function initTerminal() {
   term.open(document.getElementById('terminal-container'));
   term.focus();
 
-  // Route user keyboard input to PTY WebSocket
+  // Route soft-keyboard input through the modifier latch, so a latched CTRL
+  // applies to the next typed character too (not just virtual-key taps).
   term.onData((data) => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
-    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (ctrlLatched && data.length === 1) { sendKeyInput(data); return; }
+    ws.send(data);
   });
 }
 
@@ -360,6 +360,132 @@ function sendRaw(data) {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Virtual keys
+ *
+ * Data-driven (cf. Termux's JSON extra-keys config) so the layout can
+ * later come from a preference file instead of hardcoded markup.
+ *
+ *   label     text on the button
+ *   send      literal string sent to the terminal
+ *   modifier  'ctrl' — latches instead of sending (tap CTRL, then a key)
+ *   repeat    auto-repeats while held (arrows, backspace)
+ * ------------------------------------------------------------------ */
+const KEY_ROWS = [
+  [
+    { label: 'ESC', send: '\x1b' },
+    { label: 'CTRL', modifier: 'ctrl' },
+    { label: 'Tab', send: '\t' },
+    { label: '↑', send: '\x1b[A', repeat: true },
+    { label: '↓', send: '\x1b[B', repeat: true },
+    { label: '←', send: '\x1b[D', repeat: true },
+    { label: '→', send: '\x1b[C', repeat: true },
+    { label: 'Home', send: '\x1b[H' },
+    { label: 'End', send: '\x1b[F' }
+  ],
+  [
+    { label: '^C', send: '\x03', danger: true },
+    { label: '^D', send: '\x04', danger: true },
+    { label: '⌫', send: '\x7f', repeat: true },
+    { label: '/', send: '/' },
+    { label: '-', send: '-' },
+    { label: '~', send: '~' },
+    { label: '|', send: '|' },
+    { label: '>', send: '>' },
+    { label: '&', send: '&' },
+    { label: '*', send: '*' },
+    { label: '"', send: '"' },
+    { label: "'", send: "'" }
+  ]
+];
+
+const REPEAT_INITIAL_DELAY_MS = 400;
+const REPEAT_INTERVAL_MS = 55;
+
+let ctrlLatched = false;
+let ctrlButton = null;
+
+// Translate a printable character into its control code: Ctrl+C -> 0x03.
+function toControlCode(text) {
+  if (!text || text.length !== 1) return null;
+  const upper = text.toUpperCase();
+  const code = upper.charCodeAt(0);
+  if (code >= 64 && code < 128) return String.fromCharCode(code & 0x1f);
+  return null;
+}
+
+function setCtrlLatched(active) {
+  ctrlLatched = active;
+  if (ctrlButton) ctrlButton.classList.toggle('latched', active);
+}
+
+// Route terminal input through the latch so CTRL applies to the next key,
+// whether it comes from a virtual key or the soft keyboard.
+function sendKeyInput(text) {
+  if (ctrlLatched) {
+    const control = toControlCode(text);
+    setCtrlLatched(false);
+    if (control !== null) { sendRaw(control); return; }
+  }
+  sendRaw(text);
+}
+
+function buildVirtualKeys() {
+  const toolbar = document.getElementById('toolbar');
+  toolbar.innerHTML = '';
+  KEY_ROWS.forEach((row) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'key-row';
+    row.forEach((key) => {
+      const btn = document.createElement('button');
+      btn.className = 'tool-btn' + (key.danger ? ' danger' : '');
+      btn.textContent = key.label;
+      btn.type = 'button';
+
+      if (key.modifier === 'ctrl') {
+        ctrlButton = btn;
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          setCtrlLatched(!ctrlLatched);
+          if (term) term.focus();
+        });
+      } else if (key.repeat) {
+        attachRepeating(btn, key.send);
+      } else {
+        btn.addEventListener('click', (e) => { e.preventDefault(); sendKeyInput(key.send); });
+      }
+      rowEl.appendChild(btn);
+    });
+    toolbar.appendChild(rowEl);
+  });
+}
+
+// Hold-to-repeat: one press, then a steady stream until release.
+function attachRepeating(btn, payload) {
+  let initialTimer = null;
+  let intervalTimer = null;
+
+  const stop = () => {
+    clearTimeout(initialTimer); clearInterval(intervalTimer);
+    initialTimer = intervalTimer = null;
+  };
+  const start = (e) => {
+    e.preventDefault();
+    sendKeyInput(payload);
+    stop();
+    initialTimer = setTimeout(() => {
+      intervalTimer = setInterval(() => sendRaw(payload), REPEAT_INTERVAL_MS);
+    }, REPEAT_INITIAL_DELAY_MS);
+  };
+
+  btn.addEventListener('touchstart', start, { passive: false });
+  btn.addEventListener('touchend', stop);
+  btn.addEventListener('touchcancel', stop);
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('mouseup', stop);
+  btn.addEventListener('mouseleave', stop);
+}
+
 // Dynamic fitting of columns/rows to available viewport size
 function fitTerminal() {
   if (!term) return;
@@ -398,6 +524,7 @@ function fitTerminal() {
 function boot() {
   bootStatus.textContent = 'Initializing terminal UI...';
   initTerminal();
+  buildVirtualKeys();
 
   bootStatus.textContent = 'Connecting to secure backend shell...';
   connectWebSocket();
