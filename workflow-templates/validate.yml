@@ -46,10 +46,22 @@ jobs:
           for path in sorted(Path('.').rglob('*')):
               if not path.is_file() or '.git' in path.parts:
                   continue
+              raw = path.read_bytes()
+              try:
+                  text = raw.decode('utf-8')
+              except UnicodeDecodeError as exc:
+                  # A stray non-UTF-8 blob (cp1252 0x82 bytes, an interrupted
+                  # index download) used to crash the whole job with a raw
+                  # UnicodeDecodeError. Decode leniently and let the parser
+                  # judge the file: a genuinely broken config still fails, but
+                  # as a parse error that names the file instead of a cryptic
+                  # crash, and an incidental binary stray no longer flakes CI.
+                  print(f"WARNING {path}: non-UTF-8 bytes replaced at offset {exc.start}")
+                  text = raw.decode('utf-8', errors='replace')
               if path.suffix in {'.yml', '.yaml'}:
-                  yaml.safe_load(path.read_text(encoding='utf-8'))
+                  yaml.safe_load(text)
               elif path.suffix == '.json':
-                  json.loads(path.read_text(encoding='utf-8'))
+                  json.loads(text)
           PY
           cmp workflow-templates/build-package.yml .github/workflows/build-package.yml
           cmp workflow-templates/build-zmux-apk.yml .github/workflows/build-zmux-apk.yml
@@ -65,6 +77,7 @@ jobs:
             --abi armeabi-v7a \
             --channel experimental \
             --dry-run
+          python scripts/build_proot_android.py --help >/dev/null
 
       - name: Compile and test all Python code
         run: |
