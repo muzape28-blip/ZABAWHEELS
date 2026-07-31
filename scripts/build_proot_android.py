@@ -191,13 +191,26 @@ def build_proot(src: Path, tc: Path, abi: str, sysroot: Path, jobs: int) -> tupl
     # PROOT_UNBUNDLE_LOADER emits the loader as a separate file; keep the
     # runtime loader from src/loader/loader (the one the app references via
     # PROOT_LOADER). Mirrors Kai exactly.
+    # PROOT_UNBUNDLE_LOADER can leave the loader in either
+    # src/loader/loader (bundled build) or src/loader-out/loader
+    # (unbundled). Try the known candidates and fail with a clear message.
+    candidates = [
+        build / "src" / "loader" / "loader",
+        build / "src" / "loader-out" / "loader",
+    ]
     for name, src_file in (
         ("libproot.so", build / "src" / "proot"),
-        ("libproot-loader.so", build / "src" / "loader" / "loader"),
     ):
         if not src_file.is_file():
             raise SystemExit(f"build did not produce {src_file}")
         shutil.copy2(src_file, out / name)
+    loader_src = next((c for c in candidates if c.is_file()), None)
+    if loader_src is None:
+        raise SystemExit(
+            "build did not produce a loader ELF "
+            f"(looked in: {', '.join(str(c) for c in candidates)})"
+        )
+    shutil.copy2(loader_src, out / "libproot-loader.so")
     shutil.copy2(sysroot / "lib" / "libtalloc.so", out / "libtalloc.so")
     for name in ("libproot.so", "libproot-loader.so", "libtalloc.so"):
         run([str(tc / "llvm-strip"), str(out / name)])

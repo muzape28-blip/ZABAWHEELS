@@ -109,10 +109,13 @@ jobs:
           test -x "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
 
       - name: Cross-compile PRoot + talloc for the Alpine sandbox
+        # This workflow's default working-directory is `app`, so the script
+        # lives one level up (../scripts) and the output goes to `libs/`
+        # (i.e. app/libs), matching buildozer.spec's android.add_libs_* globs.
         run: |
-          python scripts/build_proot_android.py \
+          python ../scripts/build_proot_android.py \
             --ndk "$HOME/.buildozer/android/platform/android-ndk-r28c" \
-            --out app/libs \
+            --out libs \
             --abis armeabi-v7a,arm64-v8a
 
       - name: Build signed-by-debug-key universal APK
