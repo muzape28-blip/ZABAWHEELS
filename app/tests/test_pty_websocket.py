@@ -16,6 +16,30 @@ from zmux.ws_server import WebSocketServer
 from zmux.pty_session import PTYTerminalSession, get_pty_session
 
 
+def _read_http_response(sock, timeout=5.0):
+    """Read exactly the HTTP response head and decode only that.
+
+    The server sends the 101 handshake and then, immediately, the active
+    session's scrollback as a *binary* WebSocket frame. A single
+    ``recv(2048).decode("utf-8")`` can therefore capture both and blow up with
+    ``UnicodeDecodeError: invalid start byte`` on 0x82 — the binary frame
+    header. That is what made these tests fail intermittently in CI: whether
+    the two writes coalesce into one TCP segment depends on timing and on
+    whether a previous test left scrollback behind.
+
+    Reading up to (and only up to) the CRLFCRLF header terminator makes the
+    tests independent of that race.
+    """
+    sock.settimeout(timeout)
+    buffer = b""
+    while b"\r\n\r\n" not in buffer:
+        chunk = sock.recv(1)
+        if not chunk:
+            break
+        buffer += chunk
+    return buffer.decode("utf-8", errors="replace")
+
+
 def test_websocket_server_handshake():
     """Test that unauthorized token is rejected with 401, and valid token gets 101 Switching Protocols."""
     # Find an open port by binding port=0
@@ -42,7 +66,7 @@ def test_websocket_server_handshake():
         )
         sock.sendall(bad_handshake.encode("utf-8"))
 
-        response = sock.recv(2048).decode("utf-8")
+        response = _read_http_response(sock)
         assert "401 Unauthorized" in response
         sock.close()
 
@@ -60,7 +84,7 @@ def test_websocket_server_handshake():
         )
         sock2.sendall(good_handshake.encode("utf-8"))
 
-        response2 = sock2.recv(2048).decode("utf-8")
+        response2 = _read_http_response(sock2)
         assert "101 Switching Protocols" in response2
         assert "Sec-WebSocket-Accept" in response2
         sock2.close()
@@ -165,7 +189,7 @@ def test_websocket_start_with_prebound_listener():
             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
             "Sec-WebSocket-Version: 13\r\n\r\n"
         ).encode("utf-8"))
-        response = sock.recv(2048).decode("utf-8")
+        response = _read_http_response(sock)
         assert "101 Switching Protocols" in response
         sock.close()
     finally:
@@ -201,7 +225,7 @@ def test_websocket_start_with_multiple_listeners():
                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
                 "Sec-WebSocket-Version: 13\r\n\r\n"
             ).encode("utf-8"))
-            response = sock.recv(2048).decode("utf-8")
+            response = _read_http_response(sock)
             assert "101 Switching Protocols" in response
             sock.close()
     finally:
@@ -446,3 +470,54 @@ class TestStreamingOutput:
         interactive.write_input(b"print('once' + '_only')\n")
         assert _wait_for(lambda: b"once_only" in interactive.get_scrollback())
         assert interactive.get_scrollback().count(b"once_only") == 1
+
+
+def test_handshake_read_is_not_corrupted_by_trailing_scrollback():
+    """Regression: the 101 head must be readable when a binary frame follows.
+
+    The server replays the active session's scrollback as a binary WebSocket
+    frame immediately after the handshake. When both land in one TCP segment,
+    decoding the whole read as UTF-8 raised
+    `UnicodeDecodeError: invalid start byte` on 0x82 (the frame header) —
+    an intermittent CI failure that depended purely on timing and on whether
+    an earlier test had left scrollback behind.
+    """
+    import socket as _socket
+    from zmux.sessions import get_manager, reset_manager
+
+    reset_manager()
+    listener = _socket.socket()
+    listener.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(5)
+    port = listener.getsockname()[1]
+
+    server = WebSocketServer(host="127.0.0.1", port=port)
+    server.start(listeners=[listener])
+    time.sleep(0.2)
+    client = None
+    try:
+        # Guarantee there IS scrollback to replay, so the race is forced
+        # rather than waited for.
+        get_manager(server).active._emit(b"y" * 400)
+        time.sleep(0.2)
+
+        client = _socket.create_connection(("127.0.0.1", port))
+        client.sendall((
+            f"GET /?token={AUTH_TOKEN} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        ).encode("utf-8"))
+        # Let the handshake and the binary frame coalesce before reading.
+        time.sleep(0.4)
+        response = _read_http_response(client)
+        assert "101 Switching Protocols" in response
+        assert "\ufffd" not in response, "binary frame bytes leaked into the header read"
+    finally:
+        if client:
+            client.close()
+        server.stop()
+        reset_manager()
