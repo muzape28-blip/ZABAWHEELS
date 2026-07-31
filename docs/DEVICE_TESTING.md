@@ -4,12 +4,12 @@
 
 | Component | ARMv7 | ARM64 |
 |-----------|-------|-------|
-| APK Install | ⏳ Pending | ⏳ Pending |
-| Terminal UI | ⏳ Pending | ⏳ Pending |
-| Command Execution | ⏳ Pending | ⏳ Pending |
-| Python Runtime | ⏳ Pending | ⏳ Pending |
+| APK Install | ✅ Verified | ⏳ Pending |
+| Terminal UI | ✅ Verified | ⏳ Pending |
+| Command Execution | ✅ Verified | ⏳ Pending |
+| Python Runtime | ✅ Verified | ⏳ Pending |
 | zpip Install | ⏳ Pending | ⏳ Pending |
-| Native Smoke | ⏳ Pending | ⏳ Pending |
+| Native Smoke (gates) | ✅ 5/5 PASS | ⏳ Pending |
 
 ## First on-device results (2026-07-31, ARMv7)
 

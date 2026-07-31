@@ -244,6 +244,36 @@ perlu tahu SHA. Uninstall total (`Settings > Apps > ZMUX > Uninstall`) lalu
 install APK dari PR terbaru sebelum menjalankan verifikasi, karena update
 dengan data lama bisa menyimpan sisa build lama.
 
+## Update 4 — gates 5/5 PASS + `git clone` yang terlihat "stuck" (2026-08-01)
+
+**Hasil perangkat setelah fix panjang-byte:** `gates` = **5/5 PASS**
+(proot-exec OK, Alpine boots, git clone shallow OK, apk runs), dan
+`linux apk add git openssh-client` menginstal 19 paket. `zmux-info`
+menunjukkan `Proot NEEDED: libtalloc.so, libdl.so, libc.so` — masalah
+`libtalloc.so.2`/`DT_HASH` **selesai**.
+
+**Masalah baru: `git clone` (full, tanpa `--depth`) terlihat stuck.**
+Analisis + reproduksi lokal (proot host x86_64 + git): full clone selesai
+dalam ~1 detik, jadi bukan clone-nya yang rusak. Penyebab UX:
+
+1. **git menulis SEMUA progress ke stderr**, dan executor ZMUX hanya
+   me-stream stdout → di ARMv7+proot yang lambat, layar diam sampai
+   selesai → terlihat hang.
+2. **Hang nyata juga mungkin:** `_read_stdout_streaming` menunggu EOF
+   pipe stdout; kalau ada grandchild (helper git) yang mewarisi pipe,
+   EOF tidak pernah datang → `reader.join(None)` = hang selamanya.
+   (Diverifikasi: stack dump menunjukkan `handle.close()` deadlock dengan
+   pump yang sedang `readline`.)
+
+**Fix:** stderr kini di-stream live (progress git/apk/curl terlihat);
+executor menunggu *proses* selesai (bukan EOF pipe), lalu memberi pump
+waktu 1 detik untuk flush dan kembali — child yang bandel tidak bisa
+menggantung sesi. Hint "process terminated by signal" ikut di-stream.
+
+**Tips di perangkat:** gunakan `git clone --depth 1 <url>` untuk kecepatan
+(shallow clone terbukti jalan di `gates`); full clone akan tetap terlihat
+progresnya sekarang.
+
 ## Update 3 — akar masalah sesungguhnya: patch 1-byte-short merusak ELF (2026-08-01)
 
 Test lanjutan user (APK build terbaru) menunjukkan **`libtalloc.so.2 not

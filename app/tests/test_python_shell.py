@@ -379,3 +379,59 @@ class TestKnownTuiCommands:
         # instead of the Python REPL path.
         session = PTYTerminalSession(_StubWS())
         assert "nano" in session._shell_commands()
+
+
+# ---------------------------------------------------------------------------
+# Long-running tools (git clone, apk, curl) write their progress to stderr.
+# The subprocess executor must stream stderr live like stdout, and must never
+# hang on a finished process whose child kept the pipe open.
+# ---------------------------------------------------------------------------
+
+def test_subprocess_streams_stderr_live(tmp_path: Path):
+    # /usr/bin/python3 (absolute path) is a real subprocess; bare `python3`
+    # is ZMUX's embedded runtime and would route into _exec_python instead.
+    shell = PythonShell(tmp_path)
+    seen = []
+    shell.output_sink = lambda data: seen.append(data)
+    try:
+        result = shell.execute(
+            '/usr/bin/python3 -c "import sys; print(1); print(2, file=sys.stderr)"'
+        )
+    finally:
+        shell.output_sink = None
+    assert result["ok"], result["stderr"]
+    assert result["stdout"] == "1\n"
+    assert result["stderr"] == "2\n"
+    # Both streams reached the terminal sink AND are marked streamed so the
+    # session layer does not print them a second time.
+    assert result["streamed"] == ("stdout", "stderr")
+    rendered = b"".join(seen).decode("utf-8", "replace")
+    assert "1" in rendered and "2" in rendered
+
+
+def test_finished_process_with_stray_pipe_holder_does_not_hang(tmp_path: Path):
+    """A child that inherits stdout keeps the pipe open after the parent
+    exits; the executor must return instead of blocking on readline forever
+    (this is what made a finished `git clone` look permanently stuck)."""
+    shell = PythonShell(tmp_path)
+    source = (
+        "import subprocess, sys; "
+        "p = subprocess.Popen(['sleep', '30'], stdout=sys.stdout, stderr=sys.stderr); "
+        "print('done')"
+    )
+    # Run in a watchdog thread: the old implementation (reader.join(None))
+    # never returned; the fix must complete well within the budget.
+    result_box = {}
+
+    def runner():
+        result_box["result"] = shell.execute(
+            f'/usr/bin/python3 -c "{source}"', timeout=15
+        )
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "executor hung on a stray pipe holder"
+    result = result_box["result"]
+    assert result["ok"], result["stderr"]
+    assert "done" in result["stdout"]

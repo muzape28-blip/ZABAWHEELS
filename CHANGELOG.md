@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — `git clone` progress now streams; no more infinite hang on stray pipes (2026-08-01)
+- **On-device win: `gates` is 5/5 PASS.** With the length-preserving talloc
+  rewrite, `linux apk add git openssh-client` installs 19 packages and
+  `gates` G1–G5 all pass on the Infinix-class ARMv7 device (`Proot NEEDED:
+  libtalloc.so, libdl.so, libc.so`).
+- **`git clone` looked permanently stuck** even though `gates` G4 (shallow
+  clone) passed: git writes *all* progress ("Cloning into…", "Enumerating
+  objects…") to **stderr**, and ZMUX's subprocess executor only streamed
+  stdout — a slow full clone on ARMv7+proot showed a frozen screen until
+  completion. The executor now streams stderr live like stdout (same
+  newline/encoding handling), so long-running tools are visibly alive.
+- **No more infinite hang on stray pipe holders.** `_read_stdout_streaming`
+  waited on the *pipe* (readline EOF) instead of the *process*; a finished
+  `git clone` whose remote helper grandchild inherited stdout kept the pipe
+  open forever → `reader.join(None)` never returned. It now polls the
+  process to exit, gives the drain thread a moment to flush, then returns —
+  a lingering child can never wedge the session. Reproduced the deadlock
+  via stack dump (handle.close() blocked against the reading pump) and
+  fixed by abandoning the daemon pump instead of force-closing the handle.
+- The Ctrl+C signal hint is streamed too (it is appended after the live
+  drain, and stderr is now marked streamed).
+- Tests: 365 passed, 25 skipped. Docs updated.
+
 ### Fixed — the real proot bug: talloc NEEDED rewrite corrupted the ELF (2026-08-01)
 - **Root cause of the on-device `empty/missing DT_HASH/DT_GNU_HASH`
   failure.** The in-place rewrite of `libtalloc.so.2` → `libtalloc.so` in
