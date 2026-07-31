@@ -368,7 +368,20 @@ def _safe_extract(tarball: Path, target: Path) -> None:
                 if total > MAX_ROOTFS_BYTES:
                     raise RuntimeError("uncompressed rootfs exceeds safety limit")
             members.append(member)
-        archive.extractall(target, members=members)
+        # Python 3.14 changed the extractall() default filter to "data",
+        # which refuses absolute symlink targets — and a busybox-style
+        # minirootfs is full of them (usr/bin/yes -> /bin/busybox, ~306
+        # links), so `linux-setup` died on-device with "is a link to an
+        # absolute path" while desktop CI (3.11, default None) passed.
+        # "fully_trusted" is the honest filter here: member *names* are
+        # already validated above (no absolute names, no "..", size cap)
+        # and the archive itself is SHA-512-pinned to Alpine's official
+        # digest, i.e. fully trusted content by construction.
+        try:
+            archive.extractall(target, members=members, filter="fully_trusted")
+        except TypeError:
+            # Python < 3.12 (and early patch levels) has no filter kwarg.
+            archive.extractall(target, members=members)
 
 
 def _bootstrap(root: Path) -> None:
