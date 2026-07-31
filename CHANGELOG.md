@@ -8,6 +8,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — Alpine Linux sandbox (PRoot) for real `git` and shell commands
+- **`linux-setup` / `git` / `linux` / `alpine` commands** (`zmux/linuxenv.py`).
+  ZMUX can now run a real Alpine 3.22.5 userland via PRoot: `git clone`,
+  `git branch`, `git checkout`, `git push` use the real git binary with
+  normal syntax, and `linux <cmd>` runs any shell command (`apk add ...`,
+  `sh`, `python3`) inside the sandbox. See `docs/PROOT_ALPINE.md`.
+- **W^X-safe packaging.** PRoot (`libproot.so` + loaders) and talloc are
+  cross-compiled by `scripts/build_proot_android.py` and shipped in
+  `nativeLibraryDir` via `android.add_libs_*` — the only app location
+  Android allows `exec()` on (p4a already sets `useLegacyPackaging=true`).
+  Same approach as Kai 9000 (targetSdk 37) and UserLAnd.
+- **`gates`** — a strict, unmocked on-device probe: `/dev/ptmx` (G1),
+  nativeLibraryDir exec (G2), Alpine boot (G3), real git clone (G4),
+  apk-tools (G5). Exits non-zero unless every gate passes.
+- **Pinned rootfs with hash verification.** Alpine `3.22.5` (docker-alpine
+  v3.22 branch; the version Kai pins because apk-tools 3 breaks proot) is
+  downloaded from the official CDN and rejected on any SHA-512 mismatch.
+- **`new` tab now actually switches page.** Creating a session clears the
+  old screen before the new banner renders, instead of stacking prompts
+  ("there are just more prompts now").
+
+### Added — terminal UI polish (xterm.js)
+- **Aggressive scroll**: output follows the cursor unless the user scrolled
+  up to read; a tap while scrolled up jumps back to the live output.
+  Scrollback raised to 2000 rows.
+- **Virtual key rows wrap** instead of overflowing unscrollably on narrow
+  screens — every key is always reachable.
+- **Prompt tidiness**: the prompt never gets pasted onto a command's
+  unterminated output tail (`print(1, end="")` then prompt starts a new line).
+- Active tab is scrolled into view when the tab strip overflows.
+
+### Fixed — `true && cmd` now fails loudly, Python strings stay safe
+- `true && touch x` used to fall through to the Python evaluator (because
+  `true`/`false` are keyword-guarded) and produce a confusing
+  `SyntaxError`. It now returns exit 2 with the standard shell-operator
+  message — while `print("a && b")`, `x = "a && b"` and `true & x`
+  (bitwise on a variable) keep working as Python.
+- **Command audit tests** (`test_commands_audit.py`) freeze the
+  "everything that is called must answer" contract: every exposed command
+  returns a result with an exit code, builtins all have handlers, the pty
+  layer knows every command, and `cli.COMMANDS` matches the `BIN_DIR`
+  wrapper list (which now also includes `linux-setup`, `linux`, `gates`).
+- `linux-setup` and `gates` now stream progress live through the terminal's
+  output sink (module-level `progress_sink`, same pattern as zpip) instead
+  of blocking silently until they finish.
+
+### Fixed — more silent-failure class bugs (2026-07-31)
+- **`ls` flags are now implemented or rejected — never swallowed.** `ls -R`
+  and `ls -t` previously exited 0 with plain output (the same silent-failure
+  class as the operator guards) and `ls --color` was accepted and ignored.
+  `ls` now supports `-a -l -R -t -r` (any cluster, `--` terminator, GNU-style
+  headers for multiple operands and recursive output) and rejects unknown
+  flags loudly with `ls: invalid option -- 'X'` and exit 1.
+- **Scrollback raised from 32 KiB to 1 MiB per session.** Long outputs (a
+  full `ls -R` of a large tree) were truncated mid-listing. 8 sessions ×
+  1 MiB bounds the worst case to 8 MiB of RAM, still affordable on Android Go.
+- **CI YAML/JSON validation no longer crashes on non-UTF-8 blobs.** A stray
+  file with a `.yml`/`.json` suffix (cp1252 `0x82` bytes, an interrupted
+  index download) used to kill the whole job with a raw `UnicodeDecodeError`.
+  Files are now decoded leniently with the offending offset reported; a
+  genuinely broken config still fails, but as a parse error that names the
+  file instead of a cryptic crash.
+
 ### Fixed — silent-failure class bugs (see docs/POST_FIX_REPORT.md)
 - **`cd` now moves in-process Python too.** It previously updated only a
   variable: subprocesses received `cwd=` but `open()` in user code resolved

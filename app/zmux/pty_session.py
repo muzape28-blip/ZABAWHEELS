@@ -135,10 +135,20 @@ class PTYTerminalSession:
         self.lock = threading.RLock()
         self.buffer_lock = threading.Lock()
         self.scrollback_buffer = bytearray()
-        self.scrollback_max_size = 32768
+        #: Per-session scrollback cap. 32 KiB was enough to lose long outputs
+        #: mid-listing; 1 MiB per session bounds the worst case to
+        #: MAX_SESSIONS × 1 MiB = 8 MiB of RAM, which is affordable even on
+        #: Android Go while keeping a full `ls -R` of a large tree visible.
+        self.scrollback_max_size = 1 << 20
 
         self._line_buffer = ""
         self._python_lines: list[str] = []
+        #: True when the last emitted byte left the cursor at the start of a
+        #: fresh line. The prompt refuses to be pasted onto the tail of a
+        #: command's output that did not end with a newline, so after
+        #: `print(1, end="")` the next prompt starts on its own line instead
+        #: of rendering as `1zmux:~$ `.
+        self._at_line_start = True
         self._mode = "shell"  # "shell" | "repl"
         self._history: list[str] = []
         self._history_index: Optional[int] = None
@@ -228,6 +238,11 @@ class PTYTerminalSession:
             self.scrollback_buffer.extend(data)
             if len(self.scrollback_buffer) > self.scrollback_max_size:
                 del self.scrollback_buffer[: -self.scrollback_max_size]
+        if data:
+            if data.endswith(b"\n"):
+                self._at_line_start = True
+            elif not data.endswith(b"\r"):
+                self._at_line_start = False
         self._emit_output(data)
 
     def _prompt(self) -> str:
@@ -236,6 +251,9 @@ class PTYTerminalSession:
         return f"zmux:{display_path(self.shell.cwd)}$ "
 
     def _emit_prompt(self) -> None:
+        # Never paste the prompt onto a command's unterminated output tail.
+        if not self._at_line_start:
+            self._emit(b"\r\n")
         self._emit(self._prompt().encode("utf-8"))
 
     # -------------------------------------------------------------- input
@@ -378,7 +396,10 @@ class PTYTerminalSession:
         # python/python3 with arguments (`python file.py`, `python -c ...`)
         # route to the real script runner; the bare-word REPL entry was
         # already intercepted in _submit_line and never reaches the worker.
-        return set(self.shell.commands) | {"pip", "zpip", "help", "zmux-info", "zmux-setup-storage", "python", "python3"}
+        return set(self.shell.commands) | {
+            "pip", "zpip", "help", "zmux-info", "zmux-setup-storage", "python", "python3",
+            "git", "linux", "alpine", "linux-setup", "gates",
+        }
 
     def _exec_loop(self) -> None:
         """Single worker: executes queued command lines one at a time."""

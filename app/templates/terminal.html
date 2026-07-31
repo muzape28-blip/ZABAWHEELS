@@ -148,7 +148,9 @@ body {
 .key-row {
   display: flex;
   gap: 5px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;          /* every key stays reachable — nothing hidden
+                               behind an unscrollable overflow on narrow
+                               screens (buttons "could not be scrolled") */
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
@@ -159,7 +161,7 @@ body {
   background: #21262d;
   border: 1px solid #30363d;
   color: var(--text);
-  padding: 8px 14px;
+  padding: 6px 10px;
   font-family: var(--mono);
   font-size: 12px;
   border-radius: 4px;
@@ -238,6 +240,11 @@ let ws = null;
 let term = null;
 let resizeTimeout = null;
 
+// Scroll-follow state: while the user has not scrolled up to read, new
+// output keeps the viewport glued to the bottom (aggressive scroll).
+let userScrolledUp = false;
+let lastScrollTop = 0;
+
 // Reconnection state: retry automatically for a while, then surface a
 // visible, tappable error instead of silently spinning forever.
 let reconnectAttempts = 0;
@@ -253,6 +260,7 @@ function initTerminal() {
     fontSize: 13,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
     lineHeight: 1.2,
+    scrollback: 2000,
     theme: {
       background: "#0d1117",
       foreground: "#c9d1d9",
@@ -285,6 +293,16 @@ function initTerminal() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (ctrlLatched && data.length === 1) { sendKeyInput(data); return; }
     ws.send(data);
+  });
+
+  // Aggressive scrolling: output should follow the cursor unless the user
+  // deliberately scrolled up to read. xterm reports the viewport offset on
+  // any scroll (user or programmatic); moving UP means the user is reading.
+  userScrolledUp = false;
+  lastScrollTop = 0;
+  term.onScroll((scrollTop) => {
+    if (scrollTop < lastScrollTop) userScrolledUp = true;
+    lastScrollTop = scrollTop;
   });
 }
 
@@ -336,6 +354,7 @@ function connectWebSocket() {
       // Binary frame: raw terminal output.
       event.data.arrayBuffer().then((buf) => {
         term.write(new Uint8Array(buf));
+        if (!userScrolledUp) term.scrollToBottom();
       });
     } else {
       // Text frame: a control message (session state), or plain output.
@@ -469,6 +488,10 @@ function renderTabs(state) {
     add.addEventListener('click', () => sendAction({ action: 'session.new' }));
     bar.appendChild(add);
   }
+
+  // Keep the active tab visible when the strip overflows.
+  const active = bar.querySelector('.tab.active');
+  if (active) active.scrollIntoView({ inline: 'nearest', block: 'nearest' });
 }
 
 /* ------------------------------------------------------------------ *
@@ -648,8 +671,14 @@ window.addEventListener('resize', () => {
 });
 
 // Force focus back to terminal on container click; if the connection failed
-// permanently, a tap also triggers a manual reconnect.
+// permanently, a tap also triggers a manual reconnect. A tap while scrolled
+// up jumps back to the live output (real terminals' "scroll to latest").
 document.getElementById('terminal-container').addEventListener('click', () => {
+  if (userScrolledUp && term) {
+    term.scrollToBottom();
+    userScrolledUp = false;
+    return;
+  }
   if (term) term.focus();
   if (manualRetryHandler && (!ws || ws.readyState !== WebSocket.OPEN)) {
     manualRetryHandler();

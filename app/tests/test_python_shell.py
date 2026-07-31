@@ -186,3 +186,146 @@ class TestRichTraceback:
         result = shell._exec_python("1/0")
         assert "Traceback (most recent call last)" in result["stderr"]
         assert "\x1b[" not in result["stderr"]
+
+
+# ---------------------------------------------------------------------------
+# ls strictness: flags are implemented or rejected — never silently swallowed.
+# `ls -R` and `ls -t` were previously accepted and ignored (exit 0, plain
+# output), the same silent-failure class as the operator guards.
+# ---------------------------------------------------------------------------
+
+class TestLsStrictness:
+    def test_ls_rejects_unknown_flags_loudly(self, tmp_path: Path):
+        shell = PythonShell(tmp_path)
+        shell.execute("mkdir d")
+        result = shell.execute("ls -Z")
+        assert not result["ok"]
+        assert result["exit_code"] == 1
+        assert "invalid option" in result["stderr"]
+
+    def test_ls_does_not_eat_long_unknown_flags(self, tmp_path: Path):
+        shell = PythonShell(tmp_path)
+        result = shell.execute("ls --color")
+        assert not result["ok"]
+        assert "invalid option" in result["stderr"]
+
+    def test_ls_recursive(self, tmp_path: Path):
+        shell = PythonShell(tmp_path)
+        shell.execute("mkdir -p tree/sub/deep")
+        shell.execute("touch tree/a.txt tree/sub/b.txt tree/sub/deep/c.txt")
+        result = shell.execute("ls -R tree")
+        assert result["ok"]
+        out = result["stdout"]
+        assert "a.txt" in out and "b.txt" in out and "c.txt" in out
+        assert f"{tmp_path / 'tree'}:" in out          # top-level header
+        assert f"{tmp_path / 'tree' / 'sub'}:" in out  # nested header
+        assert out.index("b.txt") < out.index("c.txt")  # depth-first order
+
+    def test_ls_time_sort_and_reverse(self, tmp_path: Path):
+        import os as _os
+        shell = PythonShell(tmp_path)
+        shell.execute("touch old.txt mid.txt new.txt")
+        for name, ts in (("old.txt", 1_600_000_000),
+                         ("mid.txt", 1_700_000_000),
+                         ("new.txt", 1_800_000_000)):
+            _os.utime(tmp_path / name, (ts, ts))
+        assert shell.execute("ls -t")["stdout"].split() == \
+            ["new.txt", "mid.txt", "old.txt"]
+        assert shell.execute("ls -tr")["stdout"].split() == \
+            ["old.txt", "mid.txt", "new.txt"]
+
+    def test_ls_multiple_operands_get_headers(self, tmp_path: Path):
+        shell = PythonShell(tmp_path)
+        shell.execute("mkdir a b")
+        shell.execute("touch a/x b/y")
+        result = shell.execute("ls a b")
+        assert result["ok"]
+        assert f"{tmp_path / 'a'}:" in result["stdout"]
+        assert f"{tmp_path / 'b'}:" in result["stdout"]
+        assert "x" in result["stdout"] and "y" in result["stdout"]
+
+    def test_ls_double_dash_lists_dash_file(self, tmp_path: Path):
+        shell = PythonShell(tmp_path)
+        shell.execute("open('-dash', 'w').close()")
+        shell.execute("open('.hidden', 'w').close()")
+        plain = shell.execute("ls")["stdout"]
+        assert "-dash" in plain and ".hidden" not in plain
+        assert ".hidden" in shell.execute("ls -a")["stdout"]
+        # `-dash` starts with '-' so it must be reachable via `--`.
+        result = shell.execute("ls -- -dash")
+        assert result["ok"]
+        assert "-dash" in result["stdout"]
+
+
+# ---------------------------------------------------------------------------
+# Streaming invariant: installing the live output sink must never make a
+# built-in command's output disappear from the result dict.
+# ---------------------------------------------------------------------------
+
+def test_builtin_output_survives_with_sink_installed(tmp_path: Path):
+    shell = PythonShell(tmp_path)
+    seen = []
+    shell.output_sink = lambda data: seen.append(data)
+    try:
+        result = shell.execute("echo halo")
+    finally:
+        shell.output_sink = None
+    assert result["ok"]
+    assert result["stdout"] == "halo\n"  # text still in the result dict
+    assert result["streamed"] == ()       # builtins do not touch the sink
+
+
+# ---------------------------------------------------------------------------
+# Scrollback: 32 KiB used to truncate long outputs; 1 MiB is the new floor.
+# ---------------------------------------------------------------------------
+
+class _StubWebSocket:
+    def broadcast(self, data: bytes) -> None:
+        pass
+
+
+def test_scrollback_holds_one_megibyte():
+    from zmux.pty_session import PTYTerminalSession
+
+    session = PTYTerminalSession(_StubWebSocket())
+    assert session.scrollback_max_size == 1 << 20
+    session._emit(b"A" * 900_000)
+    session._emit(b"B" * 900_000)  # 1.8 MiB total — must trim to the tail 1 MiB
+    scrollback = session.get_scrollback()
+    assert len(scrollback) == 1 << 20
+    # The trim keeps the *tail*: the B run (the newest 900 KiB) must be intact.
+    assert scrollback[-900_000:] == b"B" * 900_000
+
+
+# ---------------------------------------------------------------------------
+# Prompt tidiness: a prompt must never be pasted onto a command's
+# unterminated output tail (`print(1, end="")` then prompt -> new line).
+# ---------------------------------------------------------------------------
+
+class _StubWS2:
+    def __init__(self):
+        self.frames = []
+
+    def broadcast(self, data: bytes) -> None:
+        self.frames.append(data)
+
+
+def test_prompt_starts_on_fresh_line_after_unterminated_output():
+    from zmux.pty_session import PTYTerminalSession
+
+    ws = _StubWS2()
+    session = PTYTerminalSession(ws)
+    session._emit(b"partial-output")   # no trailing newline
+    session._emit_prompt()
+    assert b"".join(ws.frames).endswith(b"\r\nzmux:~$ ")
+
+
+def test_prompt_stays_on_same_line_after_newline_terminated_output():
+    from zmux.pty_session import PTYTerminalSession
+
+    ws = _StubWS2()
+    session = PTYTerminalSession(ws)
+    session._emit(b"complete\r\n")
+    session._emit_prompt()
+    assert b"".join(ws.frames).endswith(b"\r\nzmux:~$ ")
+    assert not b"\r\n\r\n" in b"".join(ws.frames)

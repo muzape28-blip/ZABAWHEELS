@@ -65,6 +65,7 @@ reproducible, Python-first terminal with a verifying package manager.
 - ✅ **Process Control:** Ctrl+C / Stop support to cancel running processes cleanly.
 - ✅ **Signal & Thread Safety:** Hardened for 32-bit ARMv7 Android (`armeabi-v7a`) and 64-bit ARM (`arm64-v8a`) architectures to prevent force closes or Bionic libc pthread deadlocks.
 - ✅ **Persistent Working Directory:** Maintains current working directory across commands with path traversal protection.
+- ✅ **Alpine Linux Sandbox (PRoot):** real `git clone`/`branch`/`push`, `apk add`, and any shell command inside a SHA-512-verified Alpine 3.22.5 userland — no root, no system writes, W^X-safe (proot execs from `nativeLibraryDir`).
 
 ### Built-in Commands
 ```bash
@@ -79,7 +80,13 @@ python -c "..." # Execute inline Python code
 pip           # Standard pip package manager (if installed)
 zpip          # ZMUX secure package manager
 zmux-info     # Display comprehensive runtime fingerprint
-exit          # Exit terminal session
+
+# Alpine Linux sandbox (PRoot) — real git and shell commands
+linux-setup   # Install Alpine 3.22.5 (SHA-512 verified) — enables git/linux
+git <args>    # REAL git with normal syntax: clone, branch, checkout, push
+linux <cmd>   # Run any shell command inside Alpine: linux apk add git
+alpine <cmd>  # Alias of linux
+gates         # Strict on-device acceptance probe (G1–G5)
 ```
 
 ### Secure Package Manager (`zpip`)

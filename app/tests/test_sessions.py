@@ -301,3 +301,31 @@ class TestCallbackOwnership:
         ws.callbacks.clear()
         manager.create()
         assert ws.callbacks == {}, "managed session stole the websocket callbacks"
+
+
+class TestRepaint:
+    def test_create_repaints_screen_when_activating(self):
+        """A new tab must be a new *page*: clear + replay, not append."""
+        ws = _FakeWS()
+        mgr = SessionManager(ws)
+        first = mgr.create()
+        ws.data.clear()
+        second = mgr.create()
+        try:
+            assert mgr.active_id == second
+            assert b"\x1b[2J\x1b[H" in ws.data, "screen must be cleared"
+            # The banner of the *second* session follows the clear.
+            assert ws.data.index(b"\x1b[2J\x1b[H") < ws.data.index(b"ZMUX terminal")
+        finally:
+            mgr.stop_all()
+            reset_manager()
+
+    def test_first_create_does_not_need_clear(self):
+        ws = _FakeWS()
+        mgr = SessionManager(ws)
+        mgr.create()
+        try:
+            assert b"\x1b[2J\x1b[H" not in ws.data
+        finally:
+            mgr.stop_all()
+            reset_manager()
