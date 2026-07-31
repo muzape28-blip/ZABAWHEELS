@@ -54,6 +54,7 @@ from zmux.paths import (
     DOWNLOADS_DIR,
     STAGING_DIR,
 )
+from zmux.buildinfo import build_marker
 
 APP_VERSION = "1.0.0"
 INDEX_URL = os.environ.get(
@@ -129,6 +130,10 @@ def runtime_fingerprint() -> dict:
     fp = {
         "schema_version": 1,
         "app_version": APP_VERSION,
+        # On-device build identity: the CI writes build_marker.txt (git SHA +
+        # workflow run id) into the packaged app; '' on desktop or ad-hoc
+        # builds. Lets `zmux-info`/`gates` prove which build a phone runs.
+        "build": build_marker(),
         "runtime_id": f"zmux-py{short}-api26-p4a{p4a}-r1",
         "python": {
             "implementation": platform.python_implementation(),
@@ -156,6 +161,25 @@ def runtime_fingerprint() -> dict:
         },
         "installed": list(_load_db().keys()),
     }
+    # On-device proof of which proot binary is actually shipped: read the
+    # DT_NEEDED of libproot.so from nativeLibraryDir. A stale binary that
+    # still asks for "libtalloc.so.2" is the classic "fixed build still
+    # fails" trap; printing the real NEEDED list makes it visible.
+    try:
+        from zmux import elfscan, linuxenv
+        lib_dir = linuxenv.native_library_dir()
+        proot = os.path.join(lib_dir, "libproot.so") if lib_dir else None
+        if proot and os.path.isfile(proot):
+            needed = elfscan.elf_dynamic_needed(proot)
+            fp["proot"] = {
+                "binary": proot,
+                "needed": needed,
+                "talloc": next(
+                    (n for n in needed if n.startswith("libtalloc")), None
+                ),
+            }
+    except Exception:
+        pass
     return fp
 
 
@@ -1049,6 +1073,19 @@ def format_fingerprint(fp: dict) -> str:
         "ZMUX Runtime Fingerprint",
         "=" * 40,
         f"App version:        {fp['app_version']}",
+        f"Build:              {fp.get('build') or '(not recorded)'}",
+        *(
+            []
+            if "proot" not in fp
+            else [f"Proot NEEDED:       {', '.join(fp['proot']['needed']) or '(none)'}"]
+        ),
+        *(
+            []
+            if "proot" not in fp
+            else [f"Proot talloc:       {fp['proot']['talloc'] or '(none)'}"
+                  + ("" if fp["proot"].get("talloc") == "libtalloc.so"
+                     else "  [STALE — reinstall the latest build]")]
+        ),
         f"Python version:     {fp['python']['version']}",
         f"Implementation:     {fp['python']['implementation']}",
         f"SOABI:              {fp['python']['soabi']}",

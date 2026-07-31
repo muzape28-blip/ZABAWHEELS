@@ -288,3 +288,29 @@ def test_proot_env_android_skips_compat_when_dir_unknown(monkeypatch, tmp_path):
     monkeypatch.setattr(linuxenv, "_is_android", lambda: True)
     env = linuxenv.proot_env()
     assert "LD_LIBRARY_PATH" not in env
+
+
+def test_talloc_compat_mirrors_plain_name_from_soname_file(monkeypatch, tmp_path):
+    """APK ships libtalloc.so.2 only -> mirror to plain libtalloc.so too."""
+    lib_dir = tmp_path / "nativelibs"
+    lib_dir.mkdir()
+    (lib_dir / "libtalloc.so.2").write_bytes(b"ELF-v2-content")
+    runtime_dir = tmp_path / "runtime-lib"
+    monkeypatch.setattr(linuxenv, "_RUNTIME_LIB_DIR", runtime_dir)
+    result = linuxenv._ensure_talloc_compat(str(lib_dir))
+    assert result == str(runtime_dir)
+    assert (runtime_dir / "libtalloc.so").read_bytes() == b"ELF-v2-content"
+    assert (runtime_dir / "libtalloc.so.2").read_bytes() == b"ELF-v2-content"
+
+
+def test_talloc_compat_bidirectional_when_both_shipped(monkeypatch, tmp_path):
+    """Both names present in nativeLibraryDir -> both mirrored (no-op repeat)."""
+    lib_dir = tmp_path / "nativelibs"
+    lib_dir.mkdir()
+    (lib_dir / "libtalloc.so").write_bytes(b"A")
+    (lib_dir / "libtalloc.so.2").write_bytes(b"B")
+    runtime_dir = tmp_path / "runtime-lib"
+    monkeypatch.setattr(linuxenv, "_RUNTIME_LIB_DIR", runtime_dir)
+    assert linuxenv._ensure_talloc_compat(str(lib_dir)) == str(runtime_dir)
+    assert (runtime_dir / "libtalloc.so").read_bytes() == b"B"  # v2 wins for the plain name
+    assert (runtime_dir / "libtalloc.so.2").read_bytes() == b"A"

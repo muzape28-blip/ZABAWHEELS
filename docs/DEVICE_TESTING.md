@@ -24,7 +24,10 @@ documented in [DEVICE_FAILURE_ANALYSIS.md](DEVICE_FAILURE_ANALYSIS.md):
 | `zpip install nano` then `nano` | ⚠️ install "succeeds", `nano` fails | PyPI `nano` is a Django library, not GNU nano; and TUI editors need a PTY ZMUX lacks → zpip warns on the name collision; the shell explains "needs a real TTY" instead of a `NameError` |
 
 Re-verify after installing a rebuilt APK: `gates` (G2/G3/G5 must pass),
-`linux apk add git openssh-client`, `zmux-setup-storage`.
+`zmux-info` ("Proot NEEDED" must read `libtalloc.so`, not `libtalloc.so.2`),
+`linux apk add git openssh-client`, `zmux-setup-storage`. G2 now also reads
+the shipped binary's `DT_NEEDED` on-device and flags stale binaries
+explicitly (see `app/zmux/elfscan.py`).
 
 ## Test Checklist
 

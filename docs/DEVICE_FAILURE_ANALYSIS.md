@@ -188,19 +188,69 @@ DexPathList[[directory "."],nativeLibraryDirectories=[/system/lib, ...]]
 | `app/zmux/storage.py` | Request permission via `mActivity` langsung, tanpa modul p4a yang rawan `FindClass` |
 | `app/zmux/python_shell.py`, `pty_session.py` | Hint jujur untuk TUI tanpa PTY |
 | `app/zmux/zpip.py` | WARNING kolisi nama PyPI (nano) |
-| `app/tests/*` | +30 test baru (javabridge, self-heal talloc, storage bridge, TUI hint, warning zpip) |
+| `app/tests/*` | +35 test baru (javabridge, self-heal talloc dua arah, storage bridge, TUI hint, warning zpip, build marker) |
+| `.github/workflows/build-zmux-apk.yml` | Cache key ikut script proot; step "Verify APK contents"; marker build |
+| `app/zmux/buildinfo.py` | Baru — build marker (SHA + run id) untuk identifikasi APK di perangkat |
 
-Status test: **348 passed, 23 skipped** (skip = integrasi proot/rootfs yang
+Status test: **319 passed, 25 skipped** (skip = integrasi proot/rootfs yang
 butuh harness khusus).
 
 ---
 
+## Update 2 — "APK hasil fix masih error sama" ternyata APK basi (2026-08-01)
+
+Setelah build ulang via PR, user melaporkan `gates` **tetap** menunjukkan
+`libtalloc.so.2 not found`. Investigasi menemukan bukti kuat bahwa APK yang
+di-install **bukan** hasil build dari kode repo ini:
+
+1. **Nama gate berbeda.** Output perangkat user: `[PASS] ptx: …`. Kode di
+   seluruh riwayat repo ini (termasuk semua branch) menamai gate itu
+   `ptmx`. `git log -S 'ptx'` kosong. Artinya binary di perangkat dibuat
+   dari sumber yang tidak ada di repo ini.
+2. **Analisis pipeline (buildozer 1.6.0 + p4a pinned) — teori "jniLibs"
+   user sudah benar secara mekanisme:**
+   - `buildozer/targets/android.py` `build_package()` menyalin
+     `android.add_libs_<abi>` ke `dist/libs/<abi>/` **setiap build** lewat
+     `buildops.file_copy` = `copyfile()` yang **selalu menimpa** ([sumber](https://github.com/kivy/buildozer/blob/1.6.0/buildozer/buildops.py)).
+     Jadi `libproot.so`/`libtalloc.so` memang masuk struktur jniLibs APK.
+   - Yang gagal bukan penempatan file, tapi **nama yang diminta linker**
+     (`libtalloc.so.2` = SONAME talloc) vs nama file yang dikemas.
+   - Analisis lanjutan (buildozer `buildops.file_copy` = `copyfile()` yang
+     menimpa) menunjukkan dist basi **bukan** vektor utama: setiap
+     `buildozer android debug` menyalin ulang `add_libs` ke dist, jadi
+     libs di APK selalu yang terbaru dari `app/libs/`. Cacat sesungguhnya
+     ada di sisi *binary* (NEEDED name) dan di *APK mana yang di-install*.
+
+**Fix yang diterapkan (semua di dalam kode, bisa di-push):**
+
+| Perubahan | Efek |
+|---|---|
+| `gates` G2 + `zmux-info` kini **membaca `DT_NEEDED` libproot.so di perangkat** (`app/zmux/elfscan.py`, ELF parser murni Python, ELF32/64 LE/BE) | Bukti langsung di HP: kalau NEEDED masih `libtalloc.so.2` → pesan `STALE BINARY`; `zmux-info` menampilkan `Proot NEEDED: libtalloc.so [STALE — reinstall]` |
+| Self-heal `_ensure_talloc_compat` kini dua arah | APK yang mengemas `libtalloc.so.2` saja (atau `libtalloc.so` saja) tetap bisa jalan dengan runtime baru |
+| `toolchain/runtime-lock.json` + kontrak proot (`packaged_needed: libtalloc.so`) | Mencatat kontrak; ikut mengubah cache-key CI |
+| Patch workflow (cache key + "Verify APK contents" + marker build) disimpan di `docs/WORKFLOW_VERIFY_STEPS.md` | **Belum bisa di-push** — GitHub App sandbox tidak punya permission `workflows`. Terapkan manual via `git apply` setelah permission diberikan (lihat file tsb) |
+| `app/zmux/buildinfo.py` + baris `Build:` di `zmux-info` | Menampilkan SHA commit ketika marker ada di APK |
+
+**Cara verifikasi di perangkat (setelah install APK baru):**
+
+```bash
+zmux-info          # baris "Proot NEEDED:" harus "libtalloc.so" (tanpa STALE)
+gates              # G2 harus PASS; kalau FAIL baca detailnya
+```
+
+`zmux-info` menampilkan `Proot NEEDED: libtalloc.so [STALE — reinstall]`
+kalau binary-nya masih lama — itulah bukti definitif di perangkat, tanpa
+perlu tahu SHA. Uninstall total (`Settings > Apps > ZMUX > Uninstall`) lalu
+install APK dari PR terbaru sebelum menjalankan verifikasi, karena update
+dengan data lama bisa menyimpan sisa build lama.
+
 ## Yang perlu dilakukan user (setelah APK baru)
 
-1. Install ulang APK hasil build baru (build-zmux-apk workflow otomatis
-   menjalankan `patch_talloc_names` + `verify_needed`).
+1. **Uninstall ZMUX lama dulu** (data lama bisa membingungkan), lalu install
+   APK hasil build baru yang sudah lolos step "Verify APK contents".
 2. Verifikasi:
    ```bash
+   zmux-info                # baris Build: menampilkan SHA commit
    gates                    # G2 proot-exec harus PASS sekarang
    linux apk add git openssh-client
    zmux-setup-storage       # tidak boleh ClassNotFoundException lagi

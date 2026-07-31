@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — stale-APK root cause: on-device proof of the shipped binary (2026-08-01)
+- **"Fixed APK still failing" traced to a stale APK.** The device's
+  `gates` output said `[PASS] ptx`, but this repo has always named that gate
+  `ptmx` (`git log -S 'ptx'` is empty) — the installed APK was not built from
+  this repository's code at all.
+- **Buildozer/p4a packaging verified (theory check):** buildozer 1.6.0
+  `build_package()` copies `android.add_libs_*` into `dist/libs/<abi>`
+  (jniLibs) at *every* build via an overwriting `copyfile`, so the .so files
+  do land in the right structure; the failure was the DT_NEEDED name
+  (`libtalloc.so.2`) vs the shipped filename.
+- **`gates` G2 and `zmux-info` now read the shipped `libproot.so`
+  `DT_NEEDED` on the phone itself** (new `app/zmux/elfscan.py` — pure-Python
+  ELF32/64 LE/BE parser). A stale binary is reported as
+  `STALE BINARY` / `[STALE — reinstall]` instead of an unexplained
+  `libtalloc.so.2 not found`.
+- **Runtime self-heal is bidirectional:** `libtalloc.so.2`-only or
+  `libtalloc.so`-only APKs both get the missing alias mirrored at runtime.
+- **`toolchain/runtime-lock.json` records the proot contract**
+  (`talloc_soname: libtalloc.so.2`, `packaged_needed: libtalloc.so`).
+- **Workflow hardening (cache key + "Verify APK contents" step + build
+  marker) prepared as `docs/WORKFLOW_VERIFY_STEPS.md`** — pending the GitHub
+  App's `workflows` permission to push; the on-device checks above work
+  without it.
+
 ### Fixed — first on-device failures: proot libtalloc, storage Java bridge, nano (2026-07-31)
 - **`linux apk add …` no longer dies with `CANNOT LINK EXECUTABLE …: library
   "libtalloc.so.2" not found`.** Root cause: talloc's SONAME is
