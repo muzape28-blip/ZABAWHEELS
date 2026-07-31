@@ -329,3 +329,53 @@ def test_prompt_stays_on_same_line_after_newline_terminated_output():
     session._emit_prompt()
     assert b"".join(ws.frames).endswith(b"\r\nzmux:~$ ")
     assert not b"\r\n\r\n" in b"".join(ws.frames)
+
+
+class TestKnownTuiCommands:
+    """Full-screen TUIs get an honest explanation, not a Python NameError.
+
+    Regression: `zpip install nano` succeeded (it installed PyPI's Django
+    library) but typing `nano` leaked a confusing `NameError: name 'nano' is
+    not defined`. ZMUX has no PTY, so even a real TUI binary cannot render;
+    the shell must say so.
+    """
+
+    def test_nano_reports_no_tty(self, tmp_path, monkeypatch):
+        shell = PythonShell(tmp_path)
+        monkeypatch.setattr(shell, "_find_executable", lambda cmd: None)
+        result = shell.execute("nano")
+        assert not result["ok"]
+        assert result["exit_code"] == 1
+        assert "real TTY" in result["stderr"]
+        assert "no PTY" in result["stderr"]
+
+    def test_known_tui_names_are_covered(self, tmp_path, monkeypatch):
+        shell = PythonShell(tmp_path)
+        monkeypatch.setattr(shell, "_find_executable", lambda cmd: None)
+        for name in ("vim", "vi", "htop", "less", "micro"):
+            result = shell.execute(name)
+            assert not result["ok"], name
+            assert "real TTY" in result["stderr"], name
+
+    def test_non_tui_unknown_word_still_falls_to_python(self, tmp_path):
+        # An expression is unambiguously Python (the command-word classifier
+        # must not divert it), so it must surface a real NameError.
+        shell = PythonShell(tmp_path)
+        result = shell.execute("definitely_an_undefined_name_zz9 + 1")
+        assert not result["ok"]
+        assert "NameError" in result["stderr"]
+
+    def test_tui_names_route_through_command_executor(self, tmp_path):
+        from zmux.pty_session import PTYTerminalSession
+
+        class _StubWS:
+            def broadcast(self, data: bytes) -> None:
+                pass
+
+            def register_callbacks(self, **kwargs) -> None:
+                pass
+
+        # The pty layer must route TUI names to the executor (hint path)
+        # instead of the Python REPL path.
+        session = PTYTerminalSession(_StubWS())
+        assert "nano" in session._shell_commands()

@@ -96,6 +96,14 @@ progress_sink = None
 _ROOTFS_DIR = Path(os.environ.get("ZMUX_ROOTFS_DIR", APP_DIR / "linux" / "rootfs"))
 _STAGING_DIR = APP_DIR / "linux" / ".staging"
 
+#: Writable directory where proot's runtime dependencies can be mirrored
+#: under their SONAME filenames. `nativeLibraryDir` is read-only, and some
+#: APK packaging pipelines drop files that do not end in `.so` (like
+#: `libtalloc.so.2`), so proot's DT_NEEDED cannot always be satisfied in
+#: place. The self-heal in :func:`proot_env` copies the library here under
+#: the exact name the linker asks for.
+_RUNTIME_LIB_DIR = Path(os.environ.get("ZMUX_RUNTIME_LIB_DIR", APP_DIR / "lib"))
+
 
 # ---------------------------------------------------------------------------
 # Architecture
@@ -158,13 +166,25 @@ def status() -> str:
 def native_library_dir() -> str | None:
     """Android's nativeLibraryDir (where exec is allowed), or None on desktop.
 
-    Uses pyjnius (bundled via buildozer requirements) to read
-    ``getApplicationInfo().nativeLibraryDir`` — the same value Kai 9000 reads
-    from Kotlin. Falls back to scanning /proc/self/maps for an extracted
-    libpython mapping if pyjnius is unavailable.
+    Resolution order:
+    1. The primed Java bridge (``zmux.javabridge``) — the class is resolved
+       once on the main thread at startup, so this works from worker threads
+       where a raw pyjnius ``autoclass`` would raise ClassNotFoundException.
+    2. A direct pyjnius lookup (works when the caller is the main thread).
+    3. Scanning /proc/self/maps for an extracted libpython mapping (works
+       even when the Java bridge is entirely unavailable).
     """
     if not _is_android():
         return None
+    try:
+        from zmux import javabridge
+        activity = javabridge.mActivity()
+        if activity is not None:
+            value = activity.getApplicationInfo().nativeLibraryDir
+            if value:
+                return str(value)
+    except Exception:
+        pass
     try:
         from jnius import autoclass  # type: ignore
         activity = autoclass("org.kivy.android.PythonActivity").mActivity
@@ -199,6 +219,42 @@ def proot_binary() -> str | None:
     return shutil.which("proot")
 
 
+def _ensure_talloc_compat(lib_dir: str) -> str | None:
+    """Mirror ``libtalloc.so`` under its SONAME filename when needed.
+
+    ``libproot.so`` records ``DT_NEEDED libtalloc.so.2`` (talloc's SONAME).
+    The build script patches the NEEDED string to plain ``libtalloc.so`` for
+    new APKs, but APKs that predate the fix ship a file named ``libtalloc.so``
+    only — and Android's linker matches ``DT_NEEDED`` entries against exact
+    filenames, so ``libproot.so`` refuses to start with
+
+        CANNOT LINK EXECUTABLE ...: library "libtalloc.so.2" not found
+
+    Because ``nativeLibraryDir`` is read-only, the compat file is written to
+    a writable runtime directory that is prepended to ``LD_LIBRARY_PATH``.
+    Loading a native library from app-private storage is legal on Android
+    (the same ``mmap(PROT_EXEC)`` path Termux uses for every binary in its
+    ``$PREFIX/lib``), so this heals already-installed APKs without a rebuild.
+    Returns the directory to add to ``LD_LIBRARY_PATH``, or None.
+    """
+    try:
+        source = Path(lib_dir) / "libtalloc.so"
+        wanted = _RUNTIME_LIB_DIR / "libtalloc.so.2"
+        if source.is_file() and not wanted.is_file():
+            _RUNTIME_LIB_DIR.mkdir(parents=True, exist_ok=True)
+            # Chmod 700: the copy lives in app-private storage, keep it tight.
+            try:
+                os.chmod(_RUNTIME_LIB_DIR, 0o700)
+            except OSError:
+                pass
+            shutil.copy2(source, wanted)
+        if wanted.is_file():
+            return str(_RUNTIME_LIB_DIR)
+    except OSError:
+        pass
+    return None
+
+
 def proot_env() -> dict:
     """Extra environment variables every proot child needs."""
     extra: dict = {
@@ -211,6 +267,17 @@ def proot_env() -> dict:
             extra["LD_LIBRARY_PATH"] = lib_dir
             extra["PROOT_LOADER"] = os.path.join(lib_dir, "libproot-loader.so")
             extra["PROOT_TMP_DIR"] = str(CACHE_DIR)
+            # Self-heal: old APKs package libtalloc.so under a name the
+            # linker will not look for (see _ensure_talloc_compat). Prepend
+            # the compat directory so the mirrored SONAME file wins.
+            compat_dir = _ensure_talloc_compat(lib_dir)
+            if compat_dir:
+                extra["LD_LIBRARY_PATH"] = os.pathsep.join(
+                    [compat_dir, extra["LD_LIBRARY_PATH"]]
+                )
+        # With no lib_dir at all there is nothing to mirror from and proot
+        # cannot be located either; leave LD_LIBRARY_PATH unset and let the
+        # proot_binary() lookup in build_command_line report the real error.
     else:
         # Host build of proot links a dynamic libtalloc; the builder writes
         # it next to the binary, so make the loader find it.

@@ -126,7 +126,10 @@ def test_pty_knows_every_shell_command():
     shell = PythonShell("/tmp")
     session = PTYTerminalSession(_StubWS())
     known = session._shell_commands()
-    assert set(shell.commands) | ZMX_COMMANDS == known
+    # The pty layer must know every dispatchable command: built-ins, the
+    # zmux/pip/git/linux family, and the known-TUI names that are routed to
+    # the executor so they render the "needs a real TTY" hint.
+    assert set(shell.commands) | ZMX_COMMANDS | set(shell.KNOWN_TUI_COMMANDS) == known
 
 
 def test_cli_and_wrapper_registry_parity(stub_sandbox, capsys):

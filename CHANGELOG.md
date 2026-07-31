@@ -8,6 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — first on-device failures: proot libtalloc, storage Java bridge, nano (2026-07-31)
+- **`linux apk add …` no longer dies with `CANNOT LINK EXECUTABLE …: library
+  "libtalloc.so.2" not found`.** Root cause: talloc's SONAME is
+  `libtalloc.so.2`, Android's linker matches `DT_NEEDED` against exact
+  filenames, and the APK shipped the file as `libtalloc.so`.
+  `scripts/build_proot_android.py` now rewrites the NEEDED/SONAME strings
+  inside `libproot.so`/`libtalloc.so` to plain `libtalloc.so` (same byte
+  length, ELF offsets stay valid) and fails the build if any `DT_NEEDED`
+  cannot be satisfied by the packaged files (`verify_needed()`).
+  `linuxenv.proot_env()` additionally self-heals already-shipped APKs by
+  mirroring `libtalloc.so` → `libtalloc.so.2` into a writable runtime dir
+  prepended to `LD_LIBRARY_PATH`.
+- **`zmux-setup-storage` no longer throws `ClassNotFoundException:
+  org.kivy.android.PythonActivity`.** Root cause: p4a's `android.permissions`
+  runs `autoclass()` on the command-executor worker thread, where JNI
+  `FindClass` falls back to the system class loader (no app Java frames on
+  the stack) — the exact failure documented in p4a #2533 for the webview
+  bootstrap. New `zmux/javabridge.py` resolves the activity class once on
+  the Python main thread at startup (pyjnius caches it), and
+  `storage.request_permissions()` calls `mActivity.requestPermissions([…])`
+  directly through that primed bridge instead of the p4a module.
+- **`nano` no longer leaks a `NameError`.** PyPI's `nano` is a Django
+  library, not GNU nano (which also cannot render without a PTY, which ZMUX
+  does not provide). `zpip install nano` now prints a loud WARNING about the
+  collision, and the shell answers known TUI names (`nano`, `vim`, `htop`,
+  `less`, …) with an honest "needs a real TTY" message plus alternatives.
+- Analysis + citations: `docs/DEVICE_FAILURE_ANALYSIS.md`.
+
 ### Fixed — Python 3.14 rootfs extraction + terminal UX (2026-07-31)
 - **`linux-setup` works on Python 3.14 (on-device p4a runtime).** 3.14 made
   `TarFile.extractall()` default to `filter="data"`, which refuses absolute

@@ -259,6 +259,21 @@ class PythonShell:
             # to _exec_subprocess above — no need to test for them twice.)
             if self._is_external_command(command):
                 return self._exec_subprocess(line, timeout, env_extra=env_extra)
+            if command in self.KNOWN_TUI_COMMANDS:
+                # Nothing installed by that name, and even if there were, a
+                # full-screen TUI cannot render on ZMUX's pipe-based virtual
+                # terminal. Say so instead of leaking a Python NameError.
+                return self._result(
+                    stderr=(
+                        f"zmux: {command} needs a real TTY, which ZMUX does not "
+                        "provide (no PTY).\n"
+                        "  Non-interactive use can still go through the Alpine "
+                        f"sandbox, e.g.:  linux {command} --help\n"
+                        "  To edit files, use the Python runtime:  python\n"
+                        "    (open('file','w').write(...))  or  cat > file\n"
+                    ),
+                    code=1,
+                )
             return self._exec_python(line, origin=line)
         except (OSError, ValueError) as exc:
             return self._result(stderr=f"{command}: {exc}\n", code=1)
@@ -777,6 +792,17 @@ class PythonShell:
         "else", "elif", "try", "except", "finally", "class", "def", "global",
         "nonlocal", "not", "and", "or", "is", "in", "break", "continue",
         "async", "await", "match", "case", "true", "false", "none",
+    })
+
+    #: Full-screen TUI programs that need a real TTY. ZMUX is a virtual
+    #: terminal (no /dev/ptmx, no openpty), so even when a same-named binary
+    #: exists these only work for non-interactive use — and when they are not
+    #: installed at all, typing the name used to fall through to Python and
+    #: produce a baffling `NameError`. Intercepting them turns that into an
+    #: honest explanation (see execute()).
+    KNOWN_TUI_COMMANDS = frozenset({
+        "nano", "vim", "vi", "emacs", "htop", "top", "less", "more",
+        "micro", "joe", "mcedit", "ranger", "screen", "tmux",
     })
 
     def _is_external_command(self, command: str) -> bool:

@@ -357,3 +357,42 @@ class TestInstallUX:
             "ok": True, "packages": {"legacy": {"version": "0.1"}},
         })
         assert "(dependency)" not in text
+
+
+class TestToolCollisionWarnings:
+    """`zpip install nano` installs PyPI's Django library, not GNU nano.
+
+    The install "succeeds" (it is a real package), so the honest behavior is
+    a loud warning naming the collision and the real limitation (no TTY).
+    """
+
+    def test_nano_has_a_warning(self):
+        from zmux.zpip import _tool_collision_warning
+        warning = _tool_collision_warning("nano")
+        assert warning is not None
+        assert "Django" in warning
+        assert "TTY" in warning
+
+    def test_warning_survives_name_canonicalization(self):
+        from zmux.zpip import _tool_collision_warning
+        assert _tool_collision_warning("NANO") is not None
+        # canonicalize() collapses separator runs but does not strip them, so
+        # only the exact distribution name collides — as on PyPI itself.
+        assert _tool_collision_warning("n-a-n-o") is None
+
+    def test_ordinary_packages_have_no_warning(self):
+        from zmux.zpip import _tool_collision_warning
+        assert _tool_collision_warning("requests") is None
+        assert _tool_collision_warning("rich") is None
+
+    def test_install_output_renders_the_warning(self):
+        from zmux.zpip import format_output
+        result = {
+            "ok": True, "package": "nano", "version": "1.2.0", "files": 1,
+            "sha256": "x" * 64, "dependencies_installed": [],
+            "warning": "PyPI's 'nano' is NOT the GNU nano editor",
+        }
+        text, code = format_output("zpip install nano", result)
+        assert code == 0
+        assert "Successfully installed nano" in text
+        assert "NOT the GNU nano editor" in text

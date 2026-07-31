@@ -73,6 +73,25 @@ CATALOG_TTL_SECONDS = 3600
 
 DB_FILE = INSTALLED_DIR / "packages.json"
 
+#: PyPI distribution names that collide with famous command-line tools.
+#: `zpip install nano` resolves to PyPI (no curated manifest), and PyPI's
+#: ``nano`` is a Django mini-app library — not the GNU nano editor a user
+#: typing `nano` almost certainly wants. The GNU editor is a C binary that
+#: needs a real TTY anyway, which ZMUX's virtual terminal does not provide,
+#: so the honest move is a loud warning instead of silent "success".
+PYPI_TOOL_COLLISIONS = {
+    "nano": (
+        "PyPI's 'nano' is a Django mini-app library, NOT the GNU nano editor. "
+        "GNU nano also needs a real TTY, which ZMUX does not provide — use the "
+        "Python runtime to edit files (python / open(...).write(...))."
+    ),
+}
+
+
+def _tool_collision_warning(package: str) -> str | None:
+    """Warning text when a package name collides with a well-known tool."""
+    return PYPI_TOOL_COLLISIONS.get(canonicalize(package))
+
 
 def canonicalize(name: str) -> str:
     if not isinstance(name, str) or not _NAME.fullmatch(name.strip()):
@@ -692,7 +711,7 @@ def install(
         }
         _save_db(db)
         importlib.invalidate_caches()
-        return {
+        result: dict = {
             "ok": True,
             "package": package,
             "version": manifest.get("version"),
@@ -700,6 +719,12 @@ def install(
             "sha256": digest,
             "dependencies_installed": new_dependencies,
         }
+        # Loudly flag PyPI name collisions with famous CLI tools (nano):
+        # installing "succeeded", but almost certainly not what was meant.
+        warning = _tool_collision_warning(package)
+        if warning:
+            result["warning"] = warning
+        return result
     except Exception as error:
         for relative in reversed(committed):
             target, saved = USER_PACKAGES_DIR / relative, backup / relative
@@ -961,6 +986,9 @@ def format_output(command, result):
         msg = f"Successfully installed {pkg}{f'-{ver}' if ver else ''}"
         if deps:
             msg += f"\nAlso installed: {', '.join(deps)}"
+        warning = result.get("warning")
+        if warning:
+            msg += f"\n\nWARNING: {warning}"
         return msg, 0
     if action == "list":
         pkgs = result.get("packages", {})

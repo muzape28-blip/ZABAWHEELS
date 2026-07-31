@@ -229,3 +229,62 @@ def test_git_missing_inside_installed_alpine_hints_apk(monkeypatch):
     assert not result["ok"]
     assert result["exit_code"] == 1
     assert "apk add git" in result["stderr"]
+
+
+# ---------------------------------------------------------------------------
+# talloc SONAME self-heal (the "libtalloc.so.2 not found" on-device failure)
+# ---------------------------------------------------------------------------
+
+def test_talloc_compat_mirrors_soname_when_missing(monkeypatch, tmp_path):
+    """libtalloc.so exists but the linker wants libtalloc.so.2 -> mirror it."""
+    lib_dir = tmp_path / "nativelibs"
+    lib_dir.mkdir()
+    (lib_dir / "libtalloc.so").write_bytes(b"ELF-talloc-content")
+    runtime_dir = tmp_path / "runtime-lib"
+    monkeypatch.setattr(linuxenv, "_RUNTIME_LIB_DIR", runtime_dir)
+    result = linuxenv._ensure_talloc_compat(str(lib_dir))
+    assert result == str(runtime_dir)
+    assert (runtime_dir / "libtalloc.so.2").read_bytes() == b"ELF-talloc-content"
+
+
+def test_talloc_compat_is_idempotent(monkeypatch, tmp_path):
+    lib_dir = tmp_path / "nativelibs"
+    lib_dir.mkdir()
+    (lib_dir / "libtalloc.so").write_bytes(b"x")
+    runtime_dir = tmp_path / "runtime-lib"
+    monkeypatch.setattr(linuxenv, "_RUNTIME_LIB_DIR", runtime_dir)
+    first = linuxenv._ensure_talloc_compat(str(lib_dir))
+    second = linuxenv._ensure_talloc_compat(str(lib_dir))
+    assert first == second == str(runtime_dir)
+    assert len(list(runtime_dir.iterdir())) == 1
+
+
+def test_talloc_compat_noop_when_source_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(linuxenv, "_RUNTIME_LIB_DIR", tmp_path / "runtime-lib")
+    assert linuxenv._ensure_talloc_compat(str(tmp_path / "empty")) is None
+
+
+def test_proot_env_android_prepends_talloc_compat_dir(monkeypatch, tmp_path):
+    """proot_env on Android must point the linker at the mirrored SONAME file."""
+    lib_dir = tmp_path / "nativelibs"
+    lib_dir.mkdir()
+    (lib_dir / "libtalloc.so").write_bytes(b"ELF")
+    (lib_dir / "libproot-loader.so").write_bytes(b"ELF")
+    runtime_dir = tmp_path / "runtime-lib"
+    monkeypatch.setattr(linuxenv, "_RUNTIME_LIB_DIR", runtime_dir)
+    monkeypatch.setattr(linuxenv, "native_library_dir", lambda: str(lib_dir))
+    monkeypatch.setattr(linuxenv, "_is_android", lambda: True)
+    monkeypatch.setattr(linuxenv, "CACHE_DIR", tmp_path / "cache")
+    env = linuxenv.proot_env()
+    parts = env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert parts[0] == str(runtime_dir)          # mirrored SONAME wins first
+    assert str(lib_dir) in parts                 # native dir still searched
+    assert env["PROOT_LOADER"] == str(lib_dir / "libproot-loader.so")
+
+
+def test_proot_env_android_skips_compat_when_dir_unknown(monkeypatch, tmp_path):
+    """No nativeLibraryDir discovery -> no LD_LIBRARY_PATH games at all."""
+    monkeypatch.setattr(linuxenv, "native_library_dir", lambda: None)
+    monkeypatch.setattr(linuxenv, "_is_android", lambda: True)
+    env = linuxenv.proot_env()
+    assert "LD_LIBRARY_PATH" not in env
