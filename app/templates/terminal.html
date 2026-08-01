@@ -368,6 +368,8 @@ function initTerminal() {
   term.onData((data) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (ctrlLatched && data.length === 1) { sendKeyInput(data); return; }
+    // Ctrl+B is deliberately NOT intercepted here: vim (and other TUIs) use
+    // it for page-up. The explicit ZMX⇄ toolbar key toggles shell modes.
     ws.send(data);
   });
 
@@ -701,6 +703,7 @@ function renderTabs(state) {
  *
  *   label     text on the button
  *   send      literal string sent to the terminal
+ *   action    'pty.toggle' — jump between Alpine PTY shell and host console
  *   modifier  'ctrl' — latches instead of sending (tap CTRL, then a key)
  *   repeat    auto-repeats while held (arrows, backspace)
  * ------------------------------------------------------------------ */
@@ -717,6 +720,7 @@ const KEY_ROWS = [
     { label: 'End', send: '\x1b[F' }
   ],
   [
+    { label: 'ZMX⇄', action: 'pty.toggle' },
     { label: '^C', send: '\x03', danger: true },
     { label: '^D', send: '\x04', danger: true },
     { label: '⌫', send: '\x7f', repeat: true },
@@ -780,6 +784,12 @@ function buildVirtualKeys() {
         btn.addEventListener('click', (e) => {
           e.preventDefault();
           setCtrlLatched(!ctrlLatched);
+          if (term) term.focus();
+        });
+      } else if (key.action) {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (key.action === 'pty.toggle') sendAction({ action: 'pty.toggle' });
           if (term) term.focus();
         });
       } else if (key.repeat) {

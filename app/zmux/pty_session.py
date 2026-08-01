@@ -1,29 +1,31 @@
-"""Interactive terminal session backed by the embedded Python runtime.
+"""Interactive terminal session — ZMUX host console + real Alpine PTY shell.
 
-There is intentionally no PTY and no ``/system/bin/sh`` child here. Android
-frequently marks app data noexec, which makes a shell unable to launch Python
-scripts. Instead each completed line goes to :class:`PythonShell`.
+Two terminal personalities, both honest:
 
-Terminal personality
---------------------
-The session has two modes, mirroring how Termux users experience it:
+- **Host console** (``zmux:~$``): the original Python-native line
+  discipline. Filesystem/zmux commands run directly; anything unrecognized
+  is evaluated as Python. Builtins (``zpip``, ``gates``, ``zmux-info``,
+  ``linux-setup``, …) live here because they need the app's embedded Python.
+- **Alpine shell (real PTY)**: ``linux`` (bare) — or automatic startup —
+  spawns a genuine PTY whose child is ``proot -> /bin/sh -l`` inside the
+  Alpine rootfs. From that moment the *kernel* does echo, backspace,
+  Ctrl+C (SIGINT to the foreground process group), job control and
+  ``isatty()``; this class is only a byte pump between the WebSocket and
+  ``/dev/ptmx``. ``vim``/``htop``/``less``/``tmux`` work here. ``exit`` (or
+  Ctrl+D) ends the shell and returns to the host console; the **ZMX⇄**
+  toolbar key detaches (terminating the Alpine session) and returns
+  immediately. Ctrl+B is deliberately not reserved — vim uses it for
+  page-up.
 
-- **shell mode** (default, ``zmux:~$``): filesystem/zmux commands run
-  directly; anything unrecognized is evaluated as Python (ZMUX's escape
-  hatch, kept from the original single-mode design).
-- **REPL mode** (``>>>``): entered with ``python``/``python3``; everything is
-  Python, exactly like the real CPython REPL — ``ls`` is a NameError here.
-  Leave with ``exit()``/``quit()`` or Ctrl+D.
-
-Interactivity
--------------
+Interactivity (host console)
+----------------------------
 Commands run on a dedicated worker thread so the input path stays live:
 
 - **Ctrl+C** sets the cooperative interrupt flag, SIGINTs any in-flight
   subprocess pipeline (escalating to SIGKILL), and injects
   ``KeyboardInterrupt`` into the worker thread via
-  ``PyThreadState_SetAsyncExc``. Pure-Python runaways stop immediately;
-  long blocking C calls unblock once they return (documented limitation).
+  ``PyThreadState_SetAsyncExc``. (In PTY mode Ctrl+C is the kernel's job —
+  raw ``\\x03`` goes straight to the line discipline.)
 - **stdin**: while a command runs, typed lines queue as stdin — ``input()``
   works. Lines still queued when the command finishes become type-ahead
   commands, matching real terminal semantics.
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import codeop
 import contextlib
+import os
 import platform
 import queue
 import sys
@@ -50,6 +53,8 @@ _CSI_FINAL_BYTES = frozenset(
 )
 _REPL_ENTER = {"python", "python3"}
 _REPL_EXIT = {"exit", "quit", "exit()", "quit()"}
+#: Bare words that open the real Alpine PTY shell from the host console.
+_ALPINE_ENTER = {"linux", "alpine"}
 
 
 class _QueueInput:
@@ -143,6 +148,12 @@ class PTYTerminalSession:
 
         self._line_buffer = ""
         self._python_lines: list[str] = []
+        #: Real PTY child (proot -> Alpine /bin/sh) when in shell mode.
+        self.pty = None  # RealPtyProcess | None
+        #: Last known terminal geometry (used when spawning the PTY and on
+        #: resize passthrough).
+        self._rows = 24
+        self._cols = 80
         #: True when the last emitted byte left the cursor at the start of a
         #: fresh line. The prompt refuses to be pasted onto the tail of a
         #: command's output that did not end with a newline, so after
@@ -179,10 +190,13 @@ class PTYTerminalSession:
             banner = "ZMUX terminal -- Python runs in the embedded runtime.\r\n"
             if seed_examples(HOME_DIR) is not None:
                 banner += "Examples for a quick start: examples/\r\n"
-            banner += "Type 'python' to enter the REPL, 'help' for commands.\r\n"
+            banner += "Type 'python' for the REPL, 'linux' for the Alpine shell.\r\n"
             self._emit(banner.encode("utf-8"))
             self._run_rc()
-            self._emit_prompt()
+            if self._auto_start_alpine():
+                self._enter_linux_pty()
+            else:
+                self._emit_prompt()
 
     def _run_rc(self) -> None:
         """Execute ``~/.zmuxrc`` before the first prompt, if present.
@@ -217,12 +231,24 @@ class PTYTerminalSession:
             self.is_running = False
             self._line_buffer = ""
             self._python_lines.clear()
+            pty, self.pty = self.pty, None
+            if pty is not None:
+                pty.kill()
             self.shell.interrupt()
             self._command_queue.put(None)  # poison pill for the worker
 
     def resize(self, cols: int, rows: int) -> None:
-        # No child PTY needs ioctl(TIOCSWINSZ); we just track the width for
-        # rendering decisions (e.g. Rich tracebacks).
+        # Keep the real child PTY sized to the viewport (TIOCSWINSZ). The
+        # shell wakes on SIGWINCH and re-lays-out; TUI apps follow.
+        if cols > 0:
+            self._cols = cols
+        if rows > 0:
+            self._rows = rows
+        pty = self.pty
+        if pty is not None:
+            pty.resize(self._rows, self._cols)
+            return
+        # Host console: track the width for rendering (e.g. Rich tracebacks).
         if cols > 0:
             self.shell.width = max(20, cols)
 
@@ -258,9 +284,18 @@ class PTYTerminalSession:
 
     # -------------------------------------------------------------- input
     def write_input(self, data: bytes) -> None:
-        """Process real keyboard input, queue completed lines/keystrokes."""
+        """Process real keyboard input.
+
+        In PTY mode every byte goes straight to the master — echo, backspace,
+        Ctrl+C and job control are the kernel's line discipline, not ours. In
+        host-console mode, queue completed lines/keystrokes as before.
+        """
         with self.lock:
             if not self.is_running:
+                return
+            pty = self.pty
+            if pty is not None:
+                pty.write(data)
                 return
             text = data.decode("utf-8", errors="replace")
             for char in text:
@@ -358,6 +393,9 @@ class PTYTerminalSession:
         if self._mode == "shell" and stripped in _REPL_ENTER:
             self._enter_repl()
             return
+        if self._mode == "shell" and not self._busy.is_set() and stripped in _ALPINE_ENTER:
+            self._enter_linux_pty()
+            return
         if self._mode == "repl" and stripped in _REPL_EXIT:
             self._leave_repl()
             return
@@ -375,6 +413,120 @@ class PTYTerminalSession:
         self._mode = "shell"
         self._python_lines.clear()
         self._emit_prompt()
+
+    # --------------------------------------------------- real-PTY shell mode
+    def in_pty(self) -> bool:
+        """True while the Alpine PTY shell owns the screen."""
+        return self.pty is not None
+
+    def _auto_start_alpine(self) -> bool:
+        """Phase 2 default: boot straight into the Alpine shell when the
+        rootfs is installed and proot is present. ``ZMUX_SHELL_START=zmux``
+        forces the legacy host console (tests / power users)."""
+        mode = os.environ.get("ZMUX_SHELL_START", "alpine").strip().lower()
+        if mode == "zmux":
+            return False
+        from zmux import linuxenv
+        return linuxenv.is_installed() and linuxenv.proot_binary() is not None
+
+    def _enter_linux_pty(self) -> None:
+        """Spawn the real Alpine shell: PTY -> proot -> /bin/sh -l.
+
+        Once alive, every input byte goes raw to the master; the kernel does
+        the terminal work. `exit`/Ctrl+D ends the shell and returns here;
+        Ctrl+B detaches (terminating the Alpine session) and returns here.
+        """
+        from zmux import linuxenv
+        from zmux.realpty import RealPtyProcess
+        with self.lock:
+            if not self.is_running or self.pty is not None or self._busy.is_set():
+                return
+            if not linuxenv.is_installed():
+                self._emit(
+                    b"zmux: Alpine environment is not installed.\r\n"
+                    b"  Run `linux-setup` once (downloads ~4 MiB, SHA-512 verified),\r\n"
+                    b"  then `linux` opens the real Alpine shell.\r\n"
+                )
+                self._emit_prompt()
+                return
+            try:
+                argv = linuxenv.build_interactive_argv(self.shell.cwd)
+                env = linuxenv.interactive_env()
+            except RuntimeError as error:
+                self._emit(f"zmux: {error}\r\n".encode("utf-8", errors="replace"))
+                self._emit_prompt()
+                return
+            self._mode = "shell"
+            self._emit(
+                b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
+b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
+            )
+            try:
+                holder: dict = {}
+                def _on_pty_exit():
+                    # Bind the exact instance: a later re-entry must never let
+                    # a stale reader's on_exit clobber the newer pty.
+                    self._pty_exited(holder["pty"])
+                pty = RealPtyProcess(
+                    argv,
+                    env=env,
+                    rows=self._rows,
+                    cols=self._cols,
+                    emit=self._emit,
+                    on_exit=_on_pty_exit,
+                )
+                holder["pty"] = pty
+            except RuntimeError as error:
+                self._emit(f"zmux: {error}\r\n".encode("utf-8", errors="replace"))
+                self._emit_prompt()
+                return
+            self.pty = pty
+            # Make sure the ZMUX host-tool wrappers exist inside the rootfs so
+            # `gates`/`zpip`/... are not silently "command not found" in Alpine.
+            try:
+                linuxenv.install_guest_wrappers()
+            except Exception:
+                pass
+
+    def _pty_exited(self, pty) -> None:
+        """Reader-thread callback: the Alpine shell process ended.
+
+        ``pty`` is the exact instance that exited. If the session already
+        moved on (detach + re-entry spawned a newer pty), this stale exit
+        must not clear the newer one.
+        """
+        with self.lock:
+            if self.pty is not pty:
+                return
+            self.pty = None
+        code = pty.exit_code
+        self._emit(
+            f"\r\n[Alpine shell exited (code {code})]\r\n".encode("utf-8", errors="replace")
+        )
+        self._emit_prompt()
+
+    def _leave_linux_pty(self, reason: str = "detach") -> None:
+        """Terminate the Alpine PTY session and return to the host console."""
+        with self.lock:
+            pty = self.pty
+            self.pty = None
+        if pty is not None:
+            pty.kill()
+        if reason == "detach":
+            self._emit(b"\r\n[detached from Alpine shell - ZMUX host console]\r\n")
+        else:
+            self._emit(b"\r\n[Alpine shell stopped]\r\n")
+        self._emit_prompt()
+
+    def toggle_pty(self) -> None:
+        """Ctrl+B: jump between the Alpine PTY shell and the host console."""
+        with self.lock:
+            if not self.is_running:
+                return
+            if self.pty is not None:
+                self._leave_linux_pty("detach")
+            else:
+                self._enter_linux_pty()
 
     # ----------------------------------------------------------- interrupt
     def _interrupt_running(self) -> None:
@@ -400,7 +552,7 @@ class PTYTerminalSession:
         # the "needs a real TTY" hint instead of a Python NameError.
         return set(self.shell.commands) | {
             "pip", "zpip", "help", "zmux-info", "zmux-setup-storage", "python", "python3",
-            "git", "linux", "alpine", "linux-setup", "gates",
+            "git", "linux", "alpine", "linux-setup", "gates", "zmux-pty-probe",
         } | set(self.shell.KNOWN_TUI_COMMANDS)
 
     def _exec_loop(self) -> None:

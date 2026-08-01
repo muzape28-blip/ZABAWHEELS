@@ -116,9 +116,27 @@ The pinned Python-for-Android WebView bootstrap starts `main.py` in a background
 
 ## Interactive Terminal Model
 
+ZMUX has **two terminal layers** (see README "Terminal model" for the
+user-facing view):
+
+1. **Host console** — the original virtual terminal described below.
+2. **Real Alpine PTY shell** — `linux` (bare) or automatic startup spawns a
+   genuine PTY (`app/zmux/realpty.py`): `openpty()` + `fork()` +
+   `setsid()` + `TIOCSCTTY` + `execve(proot --kill-on-exit --link2symlink
+   --sysvipc -r <rootfs> /bin/sh -l)`. While the PTY is active the session is
+   a pure byte pump: `write_input` writes raw to the master, `resize` does
+   `TIOCSWINSZ`, the reader thread streams master → WebSocket. The kernel
+   provides echo, Ctrl+C (SIGINT to the foreground process group), job
+   control and `isatty()`. `exit`/EOF returns to the host console; the
+   **ZMX⇄** toolbar key (`pty.toggle` JSON action) detaches and returns
+   immediately. `zmux-pty-probe` (`realpty.run_pty_probe`) is the on-device
+   acceptance gate for this foundation (pty1–pty6, nothing mocked).
+
+**Host console mechanics**
+
 - **Single execution worker with a command queue.** Every completed input line is executed by one dedicated thread (`ZMUX-Terminal-Exec`), keeping the WebSocket input path live while user code runs. The worker swallows stray async `KeyboardInterrupt` at idle and can never die from a user exception.
-- **Two terminal personas.** Shell mode (`zmux:~$`) runs filesystem/zmux commands and evaluates everything else as Python (ZMUX escape hatch); REPL mode (`>>>`, entered via `python`) evaluates *everything* as Python — command builtins are bypassed so the REPL is pure (`force_python=True`).
-- **Ctrl+C is a pipeline, not a flag.** `PTYTerminalSession` → `PythonShell.interrupt()` → (a) epoch-bumped interrupt latch checked by the stdin provider, (b) SIGINT → SIGKILL escalation to the pipeline **process group** (children spawn with `start_new_session=True` — the app itself is never in that group), (c) async `KeyboardInterrupt` injection into the worker thread for pure-Python runaways only. Async delivery is racy by nature; the epoch tag, subprocess-depth tracking, spawn-race recheck, and worker-level `except KeyboardInterrupt` make outcomes deterministic: either a clean `KeyboardInterrupt` or a `[process terminated by signal N]` hint — never a frozen session.
+- **Two host personas.** Shell mode (`zmux:~$`) runs filesystem/zmux commands and evaluates everything else as Python (ZMUX escape hatch); REPL mode (`>>>`, entered via `python`) evaluates *everything* as Python — command builtins are bypassed so the REPL is pure (`force_python=True`).
+- **Ctrl+C in the host console is a pipeline, not a flag.** `PTYTerminalSession` → `PythonShell.interrupt()` → (a) epoch-bumped interrupt latch checked by the stdin provider, (b) SIGINT → SIGKILL escalation to the pipeline **process group** (children spawn with `start_new_session=True` — the app itself is never in that group), (c) async `KeyboardInterrupt` injection into the worker thread for pure-Python runaways only. Async delivery is racy by nature; the epoch tag, subprocess-depth tracking, spawn-race recheck, and worker-level `except KeyboardInterrupt` make outcomes deterministic: either a clean `KeyboardInterrupt` or a `[process terminated by signal N]` hint — never a frozen session. (In the Alpine PTY shell Ctrl+C needs none of this — the kernel does it.)
 
 ## Security Boundaries
 

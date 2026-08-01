@@ -24,6 +24,7 @@ from zmux.python_shell import PythonShell
 ZMX_COMMANDS = {
     "python", "python3", "pip", "zpip", "help", "zmux-info",
     "zmux-setup-storage", "git", "linux", "alpine", "linux-setup", "gates",
+    "zmux-pty-probe",
 }
 
 #: Every exposed command with arguments that must answer quickly and

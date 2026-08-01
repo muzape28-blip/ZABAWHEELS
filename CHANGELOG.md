@@ -8,6 +8,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added — real Alpine PTY shell (Phase 0→2): `linux` is now a genuine shell (2026-08-01)
+- **What changed:** `linux` (bare) no longer prints help — it opens an
+  **interactive Alpine shell on a real `/dev/ptmx` PTY**
+  (`proot --kill-on-exit --link2symlink --sysvipc -r <rootfs> /bin/sh -l`).
+  With the rootfs installed, a fresh session also boots straight into the
+  Alpine shell by default (`ZMUX_SHELL_START=zmux` forces the old host
+  console). This is the honest upgrade path discussed in the repo: kernel
+  echo/backspace, Ctrl+C = real SIGINT to the foreground process group, job
+  control, `isatty()`, and working `vim`/`htop`/`less`/`tmux`.
+- **New module `app/zmux/realpty.py`:** `RealPtyProcess` = `openpty()` +
+  `fork()` + `setsid()` + `TIOCSCTTY` + `execve` with a reader thread,
+  `TIOCSWINSZ` resize, process-group kill and reaping. Between fork and exec
+  the child runs direct libc syscalls only (the repo's Bionic-lock invariant).
+- **Session integration (`pty_session.py`):** while the PTY is active,
+  `write_input` is a raw byte pump and `resize` does `TIOCSWINSZ`; `exit`
+  (or Ctrl+D) returns to the host console; the **ZMX⇄** toolbar key
+  (`pty.toggle` JSON action) detaches and returns immediately. Ctrl+B is
+  deliberately NOT reserved — vim uses it for page-up.
+- **`zmux-pty-probe`** (pty1–pty6): on-device acceptance gates — openpty,
+  shell-runs, `isatty`+controlling tty, resize round-trip, Ctrl+C kills a
+  foreground process, exit-status propagation. Nothing mocked.
+- **Guest wrappers:** `gates`/`zpip`/`zmux-info`/`linux-setup`/`help` are
+  installed into the rootfs as honest notice-scripts (they need the host
+  Python; the ZMX⇄ key reaches the host console).
+- **Tests:** `test_realpty.py` (kernel semantics, real children) +
+  `test_pty_shell_mode.py` (session wiring with a fake-proot) — 19 new
+  checks; 352 Python tests + 44 UI-harness checks pass. End-to-end smoke
+  (real server + real WebSocket client + real PTY) 13/13.
+- Docs (README terminal model, ARCHITECTURE) updated to the two-layer model.
+
 ### Fixed — WebView dead on start: `net::ERR_UNSAFE_PORT` on port 6000 (2026-08-01)
 - **"Halaman web tidak tersedia — `net::ERR_UNSAFE_PORT`"** was caused by the
   WebView HTTP port itself: ZMUX served on `127.0.0.1:6000`, and **6000 is

@@ -66,15 +66,20 @@ Storage:
                           directories into ~/storage (opt-in; ZMUX stays
                           sandboxed until you run it)
 
-Alpine Linux sandbox (proot):
+Alpine Linux shell (real PTY):
+  linux                   Open the real interactive Alpine shell — a genuine
+                          PTY (proot -> /bin/sh -l). vim, htop, less and tmux
+                          work. 'exit' returns to the ZMUX console; the ZMX⇄
+                          toolbar key detaches and returns immediately.
+  linux <cmd...>          Run one shell command inside Alpine,
+                          e.g. linux apk add openssh-client
+  alpine <cmd...>         Alias of linux
   linux-setup             Install the Alpine userland (download ~4 MiB,
                           SHA-512 verified) — enables git and linux below
   git <args...>           Real git: clone, branch, checkout, push — normal
                           syntax. e.g. git clone <url>
-  linux <cmd...>          Run a shell command inside Alpine,
-                          e.g. linux apk add openssh-client
-  alpine <cmd...>         Alias of linux
   gates                   Run the strict on-device acceptance probe (G1-G5)
+  zmux-pty-probe          Run the real-PTY acceptance probe (pty1-pty6)
 
 Startup file:
   ~/.zmuxrc     Runs line by line when a session starts (imports, variables,
