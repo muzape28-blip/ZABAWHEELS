@@ -35,14 +35,29 @@ Packaging chain (verified against the pinned p4a commit):
 
 1. `scripts/build_proot_android.py` cross-compiles proot/talloc with the NDK
    into `app/libs/<abi>/lib{proot,proot-loader,proot-loader32,talloc}.so`.
+   **talloc gotcha (fixed 2026-07-31):** talloc's SONAME is `libtalloc.so.2`,
+   and Android's linker resolves `DT_NEEDED` against *exact* filenames — so
+   shipping the file as `libtalloc.so` made `libproot.so` die at exec time
+   with `CANNOT LINK EXECUTABLE …: library "libtalloc.so.2" not found`.
+   The build script now rewrites the NEEDED/SONAME strings in place to
+   `libtalloc.so` using a strictly length-preserving substitution
+   (`libtalloc.so\0\0`, 14 bytes — the naive `libtalloc.so\0` form is 13
+   bytes and silently corrupts the whole ELF; see
+   `docs/DEVICE_FAILURE_ANALYSIS.md` "Update 3"), enforces the size
+   invariant in code, and then fails the build if any `DT_NEEDED` cannot be
+   satisfied by the packaged files or if the talloc binding is wrong.
 2. `buildozer.spec` → `android.add_libs_*` copies them into the p4a dist
    `libs/<abi>/` (verified in buildozer 1.5.0/1.6.0 `targets/android.py`).
 3. p4a's `build.tmpl.gradle` packages `jniLibs.srcDir 'libs'` and — already
    by default — sets `packagingOptions { jniLibs { useLegacyPackaging = true } }`,
    so the `.so` files are **extracted** to `nativeLibraryDir` (exec-able).
 4. `zmux/linuxenv.py` locates that directory via
-   `PythonActivity.getApplicationInfo().nativeLibraryDir` (pyjnius) and execs
-   `libproot.so` with `PROOT_LOADER=…/libproot-loader.so`.
+   `PythonActivity.getApplicationInfo().nativeLibraryDir` (pyjnius, primed at
+   startup — see `zmux/javabridge.py`) and execs `libproot.so` with
+   `PROOT_LOADER=…/libproot-loader.so`. As a belt-and-braces for older APKs
+   that shipped `libtalloc.so` under the wrong name, `proot_env()` mirrors it
+   to a writable runtime dir as `libtalloc.so.2` and prepends that dir to
+   `LD_LIBRARY_PATH`.
 
 ## 2. What the user gets
 

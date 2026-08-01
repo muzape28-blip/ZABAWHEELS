@@ -329,3 +329,146 @@ def test_prompt_stays_on_same_line_after_newline_terminated_output():
     session._emit_prompt()
     assert b"".join(ws.frames).endswith(b"\r\nzmux:~$ ")
     assert not b"\r\n\r\n" in b"".join(ws.frames)
+
+
+class TestKnownTuiCommands:
+    """Full-screen TUIs get an honest explanation, not a Python NameError.
+
+    Regression: `zpip install nano` succeeded (it installed PyPI's Django
+    library) but typing `nano` leaked a confusing `NameError: name 'nano' is
+    not defined`. ZMUX has no PTY, so even a real TUI binary cannot render;
+    the shell must say so.
+    """
+
+    def test_nano_reports_no_tty(self, tmp_path, monkeypatch):
+        shell = PythonShell(tmp_path)
+        monkeypatch.setattr(shell, "_find_executable", lambda cmd: None)
+        result = shell.execute("nano")
+        assert not result["ok"]
+        assert result["exit_code"] == 1
+        assert "real TTY" in result["stderr"]
+        assert "no PTY" in result["stderr"]
+
+    def test_known_tui_names_are_covered(self, tmp_path, monkeypatch):
+        shell = PythonShell(tmp_path)
+        monkeypatch.setattr(shell, "_find_executable", lambda cmd: None)
+        for name in ("vim", "vi", "htop", "less", "micro"):
+            result = shell.execute(name)
+            assert not result["ok"], name
+            assert "real TTY" in result["stderr"], name
+
+    def test_non_tui_unknown_word_still_falls_to_python(self, tmp_path):
+        # An expression is unambiguously Python (the command-word classifier
+        # must not divert it), so it must surface a real NameError.
+        shell = PythonShell(tmp_path)
+        result = shell.execute("definitely_an_undefined_name_zz9 + 1")
+        assert not result["ok"]
+        assert "NameError" in result["stderr"]
+
+    def test_tui_names_route_through_command_executor(self, tmp_path):
+        from zmux.pty_session import PTYTerminalSession
+
+        class _StubWS:
+            def broadcast(self, data: bytes) -> None:
+                pass
+
+            def register_callbacks(self, **kwargs) -> None:
+                pass
+
+        # The pty layer must route TUI names to the executor (hint path)
+        # instead of the Python REPL path.
+        session = PTYTerminalSession(_StubWS())
+        assert "nano" in session._shell_commands()
+
+
+# ---------------------------------------------------------------------------
+# Long-running tools (git clone, apk, curl) write their progress to stderr.
+# The subprocess executor must stream stderr live like stdout, and must never
+# hang on a finished process whose child kept the pipe open.
+# ---------------------------------------------------------------------------
+
+def test_subprocess_streams_stderr_live(tmp_path: Path):
+    # /usr/bin/python3 (absolute path) is a real subprocess; bare `python3`
+    # is ZMUX's embedded runtime and would route into _exec_python instead.
+    shell = PythonShell(tmp_path)
+    seen = []
+    shell.output_sink = lambda data: seen.append(data)
+    try:
+        result = shell.execute(
+            '/usr/bin/python3 -c "import sys; print(1); print(2, file=sys.stderr)"'
+        )
+    finally:
+        shell.output_sink = None
+    assert result["ok"], result["stderr"]
+    assert result["stdout"] == "1\n"
+    assert result["stderr"] == "2\n"
+    # Both streams reached the terminal sink AND are marked streamed so the
+    # session layer does not print them a second time.
+    assert result["streamed"] == ("stdout", "stderr")
+    rendered = b"".join(seen).decode("utf-8", "replace")
+    assert "1" in rendered and "2" in rendered
+
+
+def test_finished_process_with_stray_pipe_holder_does_not_hang(tmp_path: Path):
+    """A child that inherits stdout keeps the pipe open after the parent
+    exits; the executor must return instead of blocking on readline forever
+    (this is what made a finished `git clone` look permanently stuck)."""
+    shell = PythonShell(tmp_path)
+    source = (
+        "import subprocess, sys; "
+        "p = subprocess.Popen(['sleep', '30'], stdout=sys.stdout, stderr=sys.stderr); "
+        "print('done')"
+    )
+    # Run in a watchdog thread: the old implementation (reader.join(None))
+    # never returned; the fix must complete well within the budget.
+    result_box = {}
+
+    def runner():
+        result_box["result"] = shell.execute(
+            f'/usr/bin/python3 -c "{source}"', timeout=15
+        )
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "executor hung on a stray pipe holder"
+    result = result_box["result"]
+    assert result["ok"], result["stderr"]
+    assert "done" in result["stdout"]
+
+
+# ---------------------------------------------------------------------------
+# Bare `cd` (go home) must work even when HOME_DIR is reached through a
+# symlink — Android exposes app storage as /data/user/0/... which resolves to
+# /data/data/...; comparing the raw path against its own .resolve() used to
+# fail and lock the user out of their home directory.
+# ---------------------------------------------------------------------------
+
+def test_bare_cd_returns_home_through_symlink(tmp_path: Path, monkeypatch):
+    from zmux import python_shell as ps
+    real_home = tmp_path / "real_home"
+    real_home.mkdir()
+    link_home = tmp_path / "link_home"
+    link_home.symlink_to(real_home, target_is_directory=True)
+    monkeypatch.setattr(ps, "HOME_DIR", link_home)
+
+    shell = PythonShell(real_home)
+    result = shell.execute("cd")
+    assert result["ok"], result["stderr"]
+    assert shell.cwd == real_home  # resolved to the real directory
+
+    # cd into a subdir and back home again
+    (real_home / "sub").mkdir()
+    assert shell.execute("cd sub")["ok"]
+    assert shell.cwd == real_home / "sub"
+    assert shell.execute("cd")["ok"]
+    assert shell.cwd == real_home
+
+
+def test_cd_outside_home_still_blocked(tmp_path: Path):
+    shell = PythonShell(tmp_path)
+    outside = tmp_path / ".." / "outside"
+    outside.mkdir(exist_ok=True)
+    result = shell.execute(f"cd {outside.resolve()}")
+    assert not result["ok"]
+    assert "outside home directory" in result["stderr"]

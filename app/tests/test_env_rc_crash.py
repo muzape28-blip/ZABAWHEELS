@@ -388,3 +388,53 @@ class TestStorageSetup:
     def test_command_is_listed_in_help(self):
         from zmux.terminal import HELP_TEXT
         assert "zmux-setup-storage" in HELP_TEXT
+
+
+class TestStoragePermissionBridge:
+    """`zmux-setup-storage` must not crash when the Java bridge is degraded.
+
+    On-device regression: p4a's android.permissions module ran autoclass()
+    from the command-executor worker thread, where JNI FindClass falls back
+    to the system class loader and raises ClassNotFoundException for
+    org.kivy.android.PythonActivity. The fix routes the request through the
+    primed javabridge and degrades to a clear message when it is absent.
+    """
+
+    def test_request_uses_primed_activity_directly(self, monkeypatch):
+        from zmux import storage
+        calls = []
+
+        class FakeActivity:
+            def requestPermissions(self, permissions):
+                calls.append(list(permissions))
+
+        monkeypatch.setattr(storage, "_is_android", lambda: True)
+        monkeypatch.setattr("zmux.javabridge.mActivity", lambda: FakeActivity())
+        granted, message = storage.request_permissions()
+        assert granted is True
+        assert any("READ_EXTERNAL_STORAGE" in p for p in calls[0])
+        assert any("WRITE_EXTERNAL_STORAGE" in p for p in calls[0])
+
+    def test_request_falls_back_gracefully_without_bridge(self, monkeypatch):
+        from zmux import storage
+        monkeypatch.setattr(storage, "_is_android", lambda: True)
+        monkeypatch.setattr("zmux.javabridge.mActivity", lambda: None)
+        granted, message = storage.request_permissions()
+        assert granted is False
+        assert "grant" in message.lower()
+
+    def test_request_never_crashes_on_java_error(self, monkeypatch):
+        from zmux import storage
+
+        def boom(_permissions):
+            raise RuntimeError("simulated JVM exception")
+
+        class BrokenActivity:
+            def requestPermissions(self, permissions):
+                boom(permissions)
+
+        monkeypatch.setattr(storage, "_is_android", lambda: True)
+        monkeypatch.setattr("zmux.javabridge.mActivity", lambda: BrokenActivity())
+        granted, message = storage.request_permissions()
+        assert granted is False
+        assert "simulated JVM exception" in message

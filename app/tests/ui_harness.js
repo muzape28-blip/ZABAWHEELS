@@ -415,6 +415,7 @@ async function scenarioScroll(script) {
   term._emitScroll(10);
   ws.onmessage({ data: new Blob([Buffer.from('$ echo hi\r\nhi\r\n')]) });
   await flush();
+  ui.clock.advance(20);              // deferred scrollFollow (nextFrame)
   ok(term.writes.length === 1, 'scroll: binary output frame written to xterm');
   ok(term.scrollTop === 10, 'scroll: output at bottom keeps viewport at bottom');
 
@@ -431,6 +432,7 @@ async function scenarioScroll(script) {
   ok(ui.read('userScrolledUp') === false, 'scroll: reaching the bottom re-arms follow');
   ws.onmessage({ data: new Blob([Buffer.from('again\r\n')]) });
   await flush();
+  ui.clock.advance(20);
   ok(term.scrollTop === 10, 'scroll: follow resumes after manual return to bottom');
 
   // Touch-drag down (earlier output) also marks reading; touch up does not.
@@ -443,6 +445,7 @@ async function scenarioScroll(script) {
   // like a scroll-up (scrollTop drops) and latch follow OFF forever.
   ws.onmessage({ data: new Blob([Buffer.concat([Buffer.from('\x1b[2J\x1b[H'), Buffer.from('prompt$ ')])]) });
   await flush();
+  ui.clock.advance(20);
   ok(term.writes.some((w) => typeof w !== 'string' && w[0] === 0x1b && w[1] === 0x5b && w[2] === 0x32 && w[3] === 0x4a),
     'scroll: clear payload written to xterm');
   ok(ui.read('userScrolledUp') === false, 'scroll: \\x1b[2J payload resets "reading" latch');
@@ -455,6 +458,7 @@ async function scenarioScroll(script) {
   term._emitScroll(6);                 // programmatic offset shift
   ws.onmessage({ data: new Blob([Buffer.from('post-resize\r\n')]) });
   await flush();
+  ui.clock.advance(20);
   ok(ui.read('userScrolledUp') === false, 'scroll: resize reflow does NOT latch "reading"');
   ok(term.scrollTop === 6, 'scroll: output still follows after resize');
 
@@ -463,6 +467,7 @@ async function scenarioScroll(script) {
   term._emitScroll(2);
   ws.onmessage({ data: 'plain text output\r\n' });
   await flush();
+  ui.clock.advance(20);
   ok(term.writes.some((w) => w === 'plain text output\r\n'), 'scroll: plain text frame written');
   ok(term.scrollTop === 2, 'scroll: text output respects "reading" too');
   ws.onmessage({ data: 'cleared via text\x1b[2Jdone' });

@@ -8,7 +8,10 @@ Apache-2.0) with the logic kept identical so the same artefacts are produced:
                            extracts it into nativeLibraryDir (W^X-safe exec)
     libproot-loader.so     PRoot's loader ELF (PROOT_LOADER at runtime)
     libproot-loader32.so   the 32-bit loader (arm64-v8a builds only)
-    libtalloc.so           talloc, PRoot's allocator dependency
+    libtalloc.so           talloc, PRoot's allocator dependency, with its
+                           SONAME/DT_NEEDED rewritten from libtalloc.so.2 to
+                           libtalloc.so so Android's linker (exact-filename
+                           matching) can resolve it from nativeLibraryDir
 
 Sources are pinned and re-downloaded on every build (never vendored):
     PRoot   termux/proot @ 4dba3afbf3a63af89b4d9c1a59bf2bda10f4d10f
@@ -30,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +49,42 @@ ABI_TRIPLES = {
     "arm64-v8a": "aarch64-linux-android",
 }
 LOADER32_ABI = {"arm64-v8a": "armeabi-v7a", "armeabi-v7a": None}
+
+#: talloc's Samba build records SONAME/DT_NEEDED as "libtalloc.so.2". Android's
+#: linker resolves DT_NEEDED entries against *exact* filenames (it only retries
+#: with a ".so" suffix for names that already end in ".so"), and Android Gradle
+#: jniLibs packaging does not reliably keep files whose names do not end in
+#: ".so". Shipping "libtalloc.so.2" therefore made libproot.so die at exec time
+#: on the phone:
+#:
+#:     CANNOT LINK EXECUTABLE ".../lib/arm/libproot.so":
+#:     library "libtalloc.so.2" not found: needed by main executable
+#:
+#: Fix: rewrite the string in place to plain "libtalloc.so" and package the
+#: library under that name.
+#:
+#: CRITICAL: the replacement MUST be exactly the same byte length as the
+#: needle. "libtalloc.so" is 12 chars; a naive replacement of
+#: "libtalloc.so.2" (14 bytes) with b"libtalloc.so\\x00" (13 bytes) shrinks the
+#: file by one byte, shifting every section/program header and string after
+#: it — the linker then reads a misaligned .dynamic (garbage DT entries) and
+#: fails with "empty/missing DT_HASH/DT_GNU_HASH" (this exact bug shipped once
+#: and failed on-device). The two-NUL form keeps the length identical.
+TALLOC_NEEDED = b"libtalloc.so.2"                  # 14 bytes
+TALLOC_NEEDED_REPLACEMENT = b"libtalloc.so\x00\x00"  # 14 bytes — must match!
+
+assert len(TALLOC_NEEDED) == len(TALLOC_NEEDED_REPLACEMENT), (
+    "talloc NEEDED rewrite must preserve byte length"
+)
+
+#: Libraries the Android bionic linker always provides; DT_NEEDED entries for
+#: these must not be packaged next to proot.
+ANDROID_SYSTEM_LIBS = {
+    "libc.so", "libm.so", "libdl.so", "liblog.so", "libpthread.so",
+    "libstdc++.so",
+}
+
+_NEEDED_RE = re.compile(r"Shared library: \[([^\]]+)\]")
 
 CROSS_ANSWERS = """Checking uname sysname type: "Linux"
 Checking uname machine type: "dontcare"
@@ -250,6 +290,115 @@ def build_loader32(proot_build: Path, tc: Path, abi: str, out: Path) -> None:
     run([str(tc / "llvm-strip"), str(out / "libproot-loader32.so")])
 
 
+def patch_talloc_names(out: Path) -> None:
+    """Rewrite talloc's SONAME/DT_NEEDED strings to plain ``libtalloc.so``.
+
+    ``libproot.so`` links against talloc, so its ``.dynstr`` carries the
+    NEEDED string ``libtalloc.so.2`` (talloc's SONAME), and ``libtalloc.so``
+    carries the same string as its own SONAME. Android's linker matches
+    DT_NEEDED against exact filenames, so both are rewritten in place to
+    ``libtalloc.so``.
+
+    The replacement is length-preserving (see TALLOC_NEEDED_REPLACEMENT) —
+    any size change would silently corrupt the whole ELF. This is enforced
+    here as a hard invariant: if the file size ever changes, the build dies
+    instead of shipping a broken binary.
+    """
+    for name in ("libproot.so", "libtalloc.so"):
+        path = out / name
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        count = data.count(TALLOC_NEEDED)
+        if count == 0:
+            continue
+        patched = data.replace(TALLOC_NEEDED, TALLOC_NEEDED_REPLACEMENT)
+        if len(patched) != len(data):
+            raise SystemExit(
+                f"[patch] {name}: FAILED — replacement changed the file size "
+                f"({len(data)} -> {len(patched)} bytes). The talloc NEEDED "
+                "rewrite must preserve byte length; refusing to ship a "
+                "corrupted binary."
+            )
+        path.write_bytes(patched)
+        print(f"[patch] {name}: rewrote {count}× 'libtalloc.so.2' -> "
+              f"'libtalloc.so' (SONAME/DT_NEEDED)", flush=True)
+
+
+def verify_needed(out: Path, tc: Path) -> None:
+    """Fail the build if any packaged .so is broken or needs a missing library.
+
+    Uses ``llvm-readelf`` so the check runs on the exact artifacts CI packs
+    into the APK. Two failure classes are caught here instead of on the
+    user's phone:
+
+    1. Unresolvable DT_NEEDED (soname/version drift, e.g. talloc 3.x
+       recording ``libtalloc.so.3``).
+    2. A file that no longer parses — the classic symptom of a non
+       length-preserving string rewrite (a one-byte shrink shifts every
+       section header, producing "empty/missing DT_HASH/DT_GNU_HASH" and
+       garbage DT entries at exec time).
+    """
+    shipped = {p.name for p in out.glob("*.so")}
+    problems: list = []
+    for lib in sorted(out.glob("*.so")):
+        try:
+            result = subprocess.run(
+                [str(tc / "llvm-readelf"), "-d", str(lib)],
+                capture_output=True, text=True, check=True,
+            )
+        except subprocess.CalledProcessError:
+            # No .dynamic section (static ELF — the loaders): nothing to check.
+            continue
+        for line in result.stdout.splitlines():
+            match = _NEEDED_RE.search(line)
+            if match is None:
+                continue
+            needed = match.group(1)
+            if needed in shipped or needed in ANDROID_SYSTEM_LIBS:
+                continue
+            problems.append(
+                f"{lib.name} needs {needed}, but only {sorted(shipped)} are packaged"
+            )
+    if problems:
+        raise SystemExit(
+            "Unresolvable DT_NEEDED in proot artifacts:\n  "
+            + "\n  ".join(problems)
+        )
+    # Belt-and-braces: the exact talloc binding must be the plain name, and
+    # the files must parse cleanly (a corrupted rewrite would show up here).
+    # libproot.so *needs* libtalloc.so (DT_NEEDED); libtalloc.so *is* the
+    # library, so its binding is its SONAME, not a NEEDED entry.
+    proot_path = out / "libproot.so"
+    if proot_path.is_file():
+        result = subprocess.run(
+            [str(tc / "llvm-readelf"), "-d", str(proot_path)],
+            capture_output=True, text=True, check=True,
+        )
+        needed = _NEEDED_RE.findall(result.stdout)
+        talloc_entry = next((n for n in needed if n.startswith("libtalloc")), None)
+        if talloc_entry != "libtalloc.so":
+            raise SystemExit(
+                f"[verify] libproot.so talloc binding is {talloc_entry!r}, "
+                "expected 'libtalloc.so' — the rewrite did not apply"
+            )
+    talloc_path = out / "libtalloc.so"
+    if talloc_path.is_file():
+        result = subprocess.run(
+            [str(tc / "llvm-readelf"), "-d", str(talloc_path)],
+            capture_output=True, text=True, check=True,
+        )
+        soname_match = re.search(r"SONAME.*\[([^\]]+)\]", result.stdout)
+        soname = soname_match.group(1) if soname_match else None
+        if soname != "libtalloc.so":
+            raise SystemExit(
+                f"[verify] libtalloc.so SONAME is {soname!r}, "
+                "expected 'libtalloc.so' — the rewrite did not apply"
+            )
+    print(f"[verify] all DT_NEEDED entries of {sorted(shipped)} resolve; "
+          f"talloc binding is 'libtalloc.so'", flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ndk", default=None, help="Android NDK root")
@@ -290,6 +439,11 @@ def main() -> int:
             # the NDK clang version string (Kai does the same for F-Droid).
             for lib in out.glob("*.so"):
                 run([str(tc / "llvm-objcopy"), "--remove-section", ".comment", str(lib)])
+            # On-device "libtalloc.so.2 not found" fix: make talloc's recorded
+            # names match the filename Android can actually load, then prove
+            # every DT_NEEDED entry resolves among the packaged files.
+            patch_talloc_names(out)
+            verify_needed(out, tc)
             target = out_root / abi
             if target.exists():
                 shutil.rmtree(target)

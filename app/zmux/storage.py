@@ -56,20 +56,39 @@ def _is_android() -> bool:
 def request_permissions() -> tuple:
     """Ask Android for the storage permissions. Returns (granted, message).
 
-    Uses p4a's ``android.permissions`` bridge, which only exists inside the
-    APK. Off-device this is a no-op so the rest of the flow stays testable.
+    The request goes through the primed Java bridge (``zmux.javabridge``)
+    rather than p4a's ``android.permissions`` module: that module calls
+    ``autoclass('org.kivy.android.PythonActivity')`` on the calling thread,
+    which fails from ZMUX's command-executor worker thread (JNI FindClass
+    falls back to the system class loader on threads without app stack
+    frames — see zmux.javabridge). The bridge resolves the class once on the
+    main thread at startup, so the cached wrapper is safe to use here.
+
+    Off-device this is a no-op so the rest of the flow stays testable.
     """
     if not _is_android():
         return True, "not running on Android; skipping the permission prompt"
     try:
-        from android.permissions import Permission, request_permissions as _request
-    except ImportError:
-        return False, (
-            "this build cannot request permissions (the p4a android module is "
-            "missing) — grant Storage manually in Android Settings > Apps > ZMUX"
+        from zmux import javabridge
+        mActivity = javabridge.mActivity()
+        if mActivity is None:
+            reason = javabridge.error() or "Java bridge unavailable"
+            return False, (
+                f"could not reach the Android activity ({reason}) — grant "
+                "Storage manually in Android Settings > Apps > ZMUX"
+            )
+        # Fire-and-forget: the system dialog is asynchronous, results (if any)
+        # land on onRequestPermissionsResult and are not needed here — setup()
+        # reports what actually became reachable afterwards. On Android 10+
+        # (API 29+) the manifest only declares the legacy storage permissions
+        # with maxSdkVersion=28, so this prompt is a no-op there anyway and
+        # the app-external directory below is linked without any permission.
+        mActivity.requestPermissions(
+            [
+                "android.permission.READ_EXTERNAL_STORAGE",
+                "android.permission.WRITE_EXTERNAL_STORAGE",
+            ]
         )
-    try:
-        _request([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE])
     except Exception as error:  # never crash the terminal over a prompt
         return False, f"permission request failed: {error}"
     # The dialog is asynchronous: the user may still be deciding. Report what

@@ -96,6 +96,14 @@ progress_sink = None
 _ROOTFS_DIR = Path(os.environ.get("ZMUX_ROOTFS_DIR", APP_DIR / "linux" / "rootfs"))
 _STAGING_DIR = APP_DIR / "linux" / ".staging"
 
+#: Writable directory where proot's runtime dependencies can be mirrored
+#: under their SONAME filenames. `nativeLibraryDir` is read-only, and some
+#: APK packaging pipelines drop files that do not end in `.so` (like
+#: `libtalloc.so.2`), so proot's DT_NEEDED cannot always be satisfied in
+#: place. The self-heal in :func:`proot_env` copies the library here under
+#: the exact name the linker asks for.
+_RUNTIME_LIB_DIR = Path(os.environ.get("ZMUX_RUNTIME_LIB_DIR", APP_DIR / "lib"))
+
 
 # ---------------------------------------------------------------------------
 # Architecture
@@ -158,13 +166,25 @@ def status() -> str:
 def native_library_dir() -> str | None:
     """Android's nativeLibraryDir (where exec is allowed), or None on desktop.
 
-    Uses pyjnius (bundled via buildozer requirements) to read
-    ``getApplicationInfo().nativeLibraryDir`` — the same value Kai 9000 reads
-    from Kotlin. Falls back to scanning /proc/self/maps for an extracted
-    libpython mapping if pyjnius is unavailable.
+    Resolution order:
+    1. The primed Java bridge (``zmux.javabridge``) — the class is resolved
+       once on the main thread at startup, so this works from worker threads
+       where a raw pyjnius ``autoclass`` would raise ClassNotFoundException.
+    2. A direct pyjnius lookup (works when the caller is the main thread).
+    3. Scanning /proc/self/maps for an extracted libpython mapping (works
+       even when the Java bridge is entirely unavailable).
     """
     if not _is_android():
         return None
+    try:
+        from zmux import javabridge
+        activity = javabridge.mActivity()
+        if activity is not None:
+            value = activity.getApplicationInfo().nativeLibraryDir
+            if value:
+                return str(value)
+    except Exception:
+        pass
     try:
         from jnius import autoclass  # type: ignore
         activity = autoclass("org.kivy.android.PythonActivity").mActivity
@@ -199,6 +219,49 @@ def proot_binary() -> str | None:
     return shutil.which("proot")
 
 
+def _ensure_talloc_compat(lib_dir: str) -> str | None:
+    """Mirror ``libtalloc`` under the filename the linker asks for.
+
+    ``libproot.so`` records ``DT_NEEDED libtalloc.so.2`` (talloc's SONAME) in
+    older APKs, and plain ``libtalloc.so`` in builds patched by the build
+    script — and Android's linker matches ``DT_NEEDED`` against *exact*
+    filenames. If the packaged file is only present under the other name,
+    ``libproot.so`` refuses to start with
+
+        CANNOT LINK EXECUTABLE ...: library "libtalloc.so.2" not found
+
+    Because ``nativeLibraryDir`` is read-only, the compat copy is written to
+    a writable runtime directory prepended to ``LD_LIBRARY_PATH``. Loading a
+    native library from app-private storage is legal on Android (the same
+    ``mmap(PROT_EXEC)`` path Termux uses for every binary in its
+    ``$PREFIX/lib``), so this heals already-installed APKs without a rebuild.
+    Returns the directory to add to ``LD_LIBRARY_PATH``, or None.
+    """
+    try:
+        source = Path(lib_dir) / "libtalloc.so"
+        source_v2 = Path(lib_dir) / "libtalloc.so.2"
+        wanted_v2 = _RUNTIME_LIB_DIR / "libtalloc.so.2"
+        wanted_plain = _RUNTIME_LIB_DIR / "libtalloc.so"
+        if (source.is_file() or source_v2.is_file()) and (
+            not wanted_v2.is_file() or not wanted_plain.is_file()
+        ):
+            _RUNTIME_LIB_DIR.mkdir(parents=True, exist_ok=True)
+            # Chmod 700: the copy lives in app-private storage, keep it tight.
+            try:
+                os.chmod(_RUNTIME_LIB_DIR, 0o700)
+            except OSError:
+                pass
+            if source.is_file() and not wanted_v2.is_file():
+                shutil.copy2(source, wanted_v2)
+            if source_v2.is_file() and not wanted_plain.is_file():
+                shutil.copy2(source_v2, wanted_plain)
+        if wanted_v2.is_file() or wanted_plain.is_file():
+            return str(_RUNTIME_LIB_DIR)
+    except OSError:
+        pass
+    return None
+
+
 def proot_env() -> dict:
     """Extra environment variables every proot child needs."""
     extra: dict = {
@@ -211,6 +274,17 @@ def proot_env() -> dict:
             extra["LD_LIBRARY_PATH"] = lib_dir
             extra["PROOT_LOADER"] = os.path.join(lib_dir, "libproot-loader.so")
             extra["PROOT_TMP_DIR"] = str(CACHE_DIR)
+            # Self-heal: old APKs package libtalloc.so under a name the
+            # linker will not look for (see _ensure_talloc_compat). Prepend
+            # the compat directory so the mirrored SONAME file wins.
+            compat_dir = _ensure_talloc_compat(lib_dir)
+            if compat_dir:
+                extra["LD_LIBRARY_PATH"] = os.pathsep.join(
+                    [compat_dir, extra["LD_LIBRARY_PATH"]]
+                )
+        # With no lib_dir at all there is nothing to mirror from and proot
+        # cannot be located either; leave LD_LIBRARY_PATH unset and let the
+        # proot_binary() lookup in build_command_line report the real error.
     else:
         # Host build of proot links a dynamic libtalloc; the builder writes
         # it next to the binary, so make the loader find it.
@@ -433,6 +507,17 @@ def run_gates(report=None) -> dict:
         report = progress_sink if progress_sink is not None else print
     results: dict = {}
 
+    # Identify the exact build under test; "fixed APK still failing" reports
+    # have repeatedly traced back to stale APKs, and the marker makes that
+    # visible on the phone itself.
+    try:
+        from zmux.buildinfo import build_marker
+        marker = build_marker()
+        if marker:
+            report(f"[INFO] zmux build: {marker}")
+    except Exception:
+        pass
+
     def gate(name, ok, detail):
         results[name] = {"ok": bool(ok), "detail": str(detail)}
         report(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
@@ -449,6 +534,30 @@ def run_gates(report=None) -> dict:
     # G2 — exec from nativeLibraryDir (the W^X gate).
     proot = proot_binary()
     if proot:
+        # Read the actual DT_NEEDED from the shipped binary: a stale APK that
+        # still asks for "libtalloc.so.2" is the classic "fixed build still
+        # fails" trap, and a binary that fails to parse was corrupted by a
+        # non length-preserving rewrite. Both are visible on the phone itself.
+        stale_hint = ""
+        try:
+            from zmux import elfscan
+            needed = elfscan.elf_dynamic_needed(proot)
+            talloc_entry = next((n for n in needed if n.startswith("libtalloc")), None)
+            if talloc_entry == "libtalloc.so.2":
+                stale_hint = (
+                    f" — STALE BINARY: this libproot.so still needs "
+                    f"{talloc_entry!r}. Reinstall the build whose `zmux-info` "
+                    "shows a Build: SHA"
+                )
+            elif talloc_entry is None:
+                stale_hint = f" — NOTE: no libtalloc dependency found in {needed}"
+        except Exception as scan_error:
+            stale_hint = (
+                " — UNREADABLE ELF: libproot.so does not parse "
+                f"({type(scan_error).__name__}). This is a corrupted build — "
+                "reinstall the latest APK"
+            )
+            needed = []
         try:
             env = dict(os.environ)
             env.update(proot_env())
@@ -457,9 +566,9 @@ def run_gates(report=None) -> dict:
             detail = (result.stdout or result.stderr).strip().splitlines()
             first = detail[0] if detail else "(no output)"
             gate("proot-exec", result.returncode == 0,
-                 f"exec {proot} OK — {first}")
+                 f"exec {proot} OK — {first}{stale_hint}")
         except Exception as error:
-            gate("proot-exec", False, f"exec {proot} failed: {error}")
+            gate("proot-exec", False, f"exec {proot} failed: {error}{stale_hint}")
     else:
         gate("proot-exec", False, "libproot.so not found/executable")
 

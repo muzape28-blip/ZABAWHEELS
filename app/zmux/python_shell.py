@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Callable
@@ -259,6 +260,21 @@ class PythonShell:
             # to _exec_subprocess above — no need to test for them twice.)
             if self._is_external_command(command):
                 return self._exec_subprocess(line, timeout, env_extra=env_extra)
+            if command in self.KNOWN_TUI_COMMANDS:
+                # Nothing installed by that name, and even if there were, a
+                # full-screen TUI cannot render on ZMUX's pipe-based virtual
+                # terminal. Say so instead of leaking a Python NameError.
+                return self._result(
+                    stderr=(
+                        f"zmux: {command} needs a real TTY, which ZMUX does not "
+                        "provide (no PTY).\n"
+                        "  Non-interactive use can still go through the Alpine "
+                        f"sandbox, e.g.:  linux {command} --help\n"
+                        "  To edit files, use the Python runtime:  python\n"
+                        "    (open('file','w').write(...))  or  cat > file\n"
+                    ),
+                    code=1,
+                )
             return self._exec_python(line, origin=line)
         except (OSError, ValueError) as exc:
             return self._result(stderr=f"{command}: {exc}\n", code=1)
@@ -456,12 +472,19 @@ class PythonShell:
 
     def _cmd_cd(self, args: list[str]) -> str:
         if len(args) > 1: raise ValueError("too many arguments")
-        target = self._path(args[0]) if args else HOME_DIR
+        # Resolve BOTH sides before comparing. On Android, APP_DIR often
+        # arrives as /data/user/0/... which is a symlink to /data/data/...;
+        # comparing the raw HOME_DIR against its own .resolve() failed and
+        # bare `cd` (go home) reported "outside home directory" while
+        # `cd <subdir>` worked (because _path() resolves). Resolving the
+        # target fixes both and keeps the sandbox check intact.
+        home = HOME_DIR.resolve()
+        target = self._path(args[0]).resolve() if args else home
         # Keep the virtual terminal inside app-private storage. This avoids
         # exposing arbitrary device paths while preserving a real persistent
         # directory change for subsequent Python and subprocess operations.
         try:
-            target.relative_to(HOME_DIR.resolve())
+            target.relative_to(home)
         except ValueError:
             raise PermissionError(f"cannot access '{target}': outside home directory")
         if not target.is_dir():
@@ -779,6 +802,17 @@ class PythonShell:
         "async", "await", "match", "case", "true", "false", "none",
     })
 
+    #: Full-screen TUI programs that need a real TTY. ZMUX is a virtual
+    #: terminal (no /dev/ptmx, no openpty), so even when a same-named binary
+    #: exists these only work for non-interactive use — and when they are not
+    #: installed at all, typing the name used to fall through to Python and
+    #: produce a baffling `NameError`. Intercepting them turns that into an
+    #: honest explanation (see execute()).
+    KNOWN_TUI_COMMANDS = frozenset({
+        "nano", "vim", "vi", "emacs", "htop", "top", "less", "more",
+        "micro", "joe", "mcedit", "ranger", "screen", "tmux",
+    })
+
     def _is_external_command(self, command: str) -> bool:
         """True when ``command`` should be run as an external program.
 
@@ -807,9 +841,11 @@ class PythonShell:
         output sink is installed (REST calls) or the pipeline redirects to a
         file, this simply accumulates without emitting.
 
-        ``readline()`` blocks, so the read runs on a helper thread and the
-        caller waits with a deadline: ``timeout`` must keep working exactly as
-        it did under ``communicate(timeout=...)``, which this replaced.
+        ``readline()`` blocks, so the read runs on a helper thread. The caller
+        waits for the *process* to exit (bounded by ``timeout``); once it has,
+        the read end is closed so the pump stops even if a grandchild
+        inherited the pipe and kept it open — otherwise a finished `git clone`
+        whose remote helper lingers would hang the session forever.
         """
         sink = self.output_sink if stream else None
         chunks: list = []
@@ -824,19 +860,25 @@ class PythonShell:
                     if sink is not None:
                         sink(chunk.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", "replace"))
             except (ValueError, OSError):
-                pass  # handle closed underneath us (timeout kill path)
+                pass  # handle closed underneath us (timeout kill / stray pipe)
 
         reader = threading.Thread(target=pump, daemon=True, name="ZMUX-Stdout-Reader")
         reader.start()
-        reader.join(timeout=timeout)
-        if reader.is_alive():
-            # Still producing past the deadline: surface the same error the
-            # previous communicate(timeout=...) call raised, and let the
-            # caller's handler kill the pipeline.
-            raise subprocess.TimeoutExpired(proc.args, timeout)
-        with contextlib.suppress(Exception):
-            handle.close()
-        proc.wait(timeout=timeout)
+        # Wait for the process itself, not the pipe: a child that inherited
+        # stdout keeps the pipe open after the main process exits, and
+        # waiting on readline there would hang forever (reader.join(None)).
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while proc.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(proc.args, timeout)
+            time.sleep(0.05)
+        # Process is done. Do NOT try to force-close the pipe from here: the
+        # pump may be blocked in readline() on the same handle, and close()
+        # from another thread deadlocks against it. The pump is a daemon
+        # thread — give it a moment to drain the tail (normal case: EOF
+        # arrives immediately once the process's write end closes), then
+        # return whatever we have if a grandchild is still holding the pipe.
+        reader.join(timeout=1.0)
         return "".join(chunks)
 
     def _exec_subprocess_inner(self, line: str, timeout: float | None,
@@ -876,6 +918,11 @@ class PythonShell:
         previous, processes, source_handle = None, [], None
         stderr_parts: list[str] = []
         stderr_threads: list[threading.Thread] = []
+        # Streaming is decided up front (before the spawn loop) because the
+        # stderr drain threads need to know whether to forward lines live.
+        # Long-running tools like `git clone` write ALL progress to stderr —
+        # without this, a slow clone shows nothing on screen until it exits.
+        did_stream = self.output_sink is not None and output_file is None
         try:
             if input_file: source_handle = input_file.open("r", encoding="utf-8")
             for index, stage in enumerate(cleaned):
@@ -906,16 +953,26 @@ class PythonShell:
                             proc.send_signal(signal.SIGINT)
                 # Drain every stderr concurrently. Waiting for only the last
                 # pipeline member can deadlock when an earlier member writes a
-                # large error stream.
+                # large error stream. When the terminal is live-streaming
+                # stdout, stream stderr the same way so progress (git clone,
+                # apk, curl) is visible instead of arriving in one block at
+                # the end.
                 def drain(stream=proc.stderr):
-                    stderr_parts.append(stream.read())
+                    if did_stream:
+                        for chunk in iter(stream.readline, ""):
+                            stderr_parts.append(chunk)
+                            self.output_sink(
+                                chunk.replace("\r\n", "\n").replace("\n", "\r\n")
+                                .encode("utf-8", "replace")
+                            )
+                    else:
+                        stderr_parts.append(stream.read())
                 reader = threading.Thread(target=drain, daemon=True)
                 reader.start(); stderr_threads.append(reader)
             # Stream the final stage's stdout instead of communicate(): a
             # long-running child (ping, logcat, a build) must appear live in
             # the terminal, not arrive in one block when it exits. Redirected
             # output still goes to the file, never to the screen.
-            did_stream = self.output_sink is not None and output_file is None
             stdout = self._read_stdout_streaming(
                 processes[-1], timeout, stream=output_file is None
             )
@@ -933,11 +990,22 @@ class PythonShell:
                 hint = f"[process terminated by signal {sig}"
                 if sig == 9:
                     hint += " — SIGKILL; on Android 12+ this is often the OS phantom-process limit"
-                stderr_parts.append(hint + "]\n")
-            # Only stdout was forwarded live; stderr is collected by the
-            # drain threads and rendered by the caller after the fact.
+                hint += "]\n"
+                stderr_parts.append(hint)
+                # The hint is added after the live stderr drain finished;
+                # since stderr is marked streamed (not re-rendered by the
+                # session layer), push it through the sink so the user still
+                # sees it.
+                if did_stream:
+                    self.output_sink(
+                        hint.replace("\r\n", "\n").replace("\n", "\r\n")
+                        .encode("utf-8", "replace")
+                    )
+            # stdout and (when live-streaming) stderr were forwarded live;
+            # the full text is still in the result for REST callers, and the
+            # session layer skips whatever is marked streamed.
             return self._result(stdout, "".join(stderr_parts), code,
-                                streamed=("stdout",) if did_stream else ())
+                                streamed=("stdout", "stderr") if did_stream else ())
         except subprocess.TimeoutExpired:
             for proc in processes: proc.kill()
             return self._result(stderr=f"Command timed out after {timeout}s\n", code=1)

@@ -164,9 +164,20 @@ body {
 /* xterm custom tweaks to match layout */
 .xterm {
   height: 100%;
+  width: 100%;
 }
 .xterm-viewport {
   background-color: var(--bg) !important;
+  /* Smooth, hardware-accelerated momentum scrolling on phones; without it
+     dragging through a long traceback stutters on low-end devices. */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+/* Make sure the xterm canvas never exceeds the visible container, so lines
+   wrap at the real screen edge instead of running past it. */
+.xterm-screen {
+  width: 100% !important;
+  max-width: 100% !important;
 }
 
 /* Bottom toolbar — two rows of virtual keys */
@@ -279,11 +290,33 @@ const statusText = document.getElementById('status-text');
 let ws = null;
 let term = null;
 let resizeTimeout = null;
+let followPending = false;
 
 // Scroll-follow state: while the user has not scrolled up to read, new
 // output keeps the viewport glued to the bottom (aggressive scroll).
 let userScrolledUp = false;
 let lastScrollTop = 0;
+
+// Coalesce scroll-to-bottom with requestAnimationFrame: while a command
+// streams many small chunks (a traceback, git progress), each chunk used to
+// trigger an immediate scrollToBottom(), reflowing the canvas every time and
+// making scrolling stutter on low-end phones. One scroll per frame is all a
+// display can show anyway. Falls back to a short timer where
+// requestAnimationFrame is unavailable (tests, odd embedders).
+function nextFrame(cb) {
+  try {
+    if (typeof requestAnimationFrame === "function") { requestAnimationFrame(cb); return; }
+  } catch (e) {}
+  setTimeout(cb, 16);
+}
+function scrollFollow() {
+  if (followPending) return;
+  followPending = true;
+  nextFrame(() => {
+    followPending = false;
+    if (!userScrolledUp && term) term.scrollToBottom();
+  });
+}
 
 // Reconnection state: retry automatically for a while, then surface a
 // visible, tappable error instead of silently spinning forever.
@@ -300,7 +333,9 @@ function initTerminal() {
     fontSize: 13,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
     lineHeight: 1.2,
-    scrollback: 2000,
+    // Generous history so a long traceback (or a big `cat README.md`) can be
+    // scrolled back to in full; xterm renders this lazily.
+    scrollback: 6000,
     theme: {
       background: "#0d1117",
       foreground: "#c9d1d9",
@@ -386,16 +421,21 @@ function bindScrollIntent(container) {
 
 // Every output payload (binary or text) flows through here. A payload that
 // clears the screen (`\x1b[2J` — the `clear` builtin, session switches)
-// repaints from scratch: snap back to live output and re-arm follow,
-// otherwise the viewport appears glued to stale history.
+// repaints from scratch: snap back to live output, re-arm follow, and force
+// a refresh so the cleared canvas renders at the current width — otherwise
+// the viewport appears glued to stale history or mis-measured.
 function writeTerminalOutput(data, containsClearScreen) {
   term.write(data);
   if (containsClearScreen) {
     userScrolledUp = false;
     lastScrollTop = 0;
-    term.scrollToBottom();
+    scrollFollow();
+    nextFrame(() => {
+      if (!term) return;
+      try { term.refresh(0, term.rows - 1); } catch (e) {}
+    });
   } else if (!userScrolledUp) {
-    term.scrollToBottom();
+    scrollFollow();
   }
 }
 
@@ -787,7 +827,9 @@ function fitTerminal() {
   const width = container.clientWidth;
   const height = container.clientHeight;
 
-  // Measure precisely using a temporary hidden character
+  // Measure precisely using a temporary hidden character. If the webfont is
+  // still loading the measurement returns 0/0 — fall back and re-fit once
+  // document.fonts reports ready (see boot()).
   const charMeasure = document.createElement("span");
   charMeasure.style.fontFamily = term.options.fontFamily;
   charMeasure.style.fontSize = term.options.fontSize + "px";
@@ -801,16 +843,48 @@ function fitTerminal() {
   const charHeight = rect.height || 18;
   document.body.removeChild(charMeasure);
 
-  // Subtract padding
-  const cols = Math.floor((width - 16) / charWidth);
-  const rows = Math.floor((height - 16) / charHeight);
+  // Subtract padding (8px each side). The .xterm-screen is clamped to 100%
+  // width by CSS, so cols measured here are the real visible width — lines
+  // wrap exactly at the screen edge (this is what keeps `help` and
+  // `cat README.md` from looking ragged).
+  const cols = Math.max(20, Math.floor((width - 16) / charWidth));
+  const rows = Math.max(5, Math.floor((height - 16) / charHeight));
 
-  if (cols > 4 && rows > 2) {
+  if (term.cols !== cols || term.rows !== rows) {
     term.resize(cols, rows);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ action: "resize", cols: cols, rows: rows }));
     }
   }
+  // Force a repaint: after a resize (or keyboard open/close) the canvas can
+  // keep stale dimensions, making the prompt look shifted off the left edge.
+  try { term.refresh(0, term.rows - 1); } catch (e) {}
+}
+
+// Soft-keyboard-aware layout. On Android the WebView does not resize when the
+// IME opens (adjustPan-style behavior), so the input line ends up hidden
+// behind the keyboard and the "screen boundary" is ambiguous. The Visual
+// Viewport API reports the actually visible area: shrink the layout to it so
+// the banner stays on top and the prompt sits right above the keyboard, then
+// refit the terminal. Falls back to the plain resize handler elsewhere.
+function fitToVisualViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const visibleHeight = Math.max(120, Math.round(vv.height));
+  document.documentElement.style.height = visibleHeight + "px";
+  document.body.style.height = visibleHeight + "px";
+  // Re-anchor to the top: with the layout sized to the visible viewport the
+  // browser no longer needs to pan the page up behind the keyboard.
+  if (window.scrollY > 0) window.scrollTo(0, 0);
+  fitTerminal();
+}
+if (window.visualViewport) {
+  const onVisualViewportChange = () => {
+    if (resizeTimeout) clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(fitToVisualViewport, 60);
+  };
+  window.visualViewport.addEventListener("resize", onVisualViewportChange);
+  window.visualViewport.addEventListener("scroll", onVisualViewportChange);
 }
 
 /* ------------------------------------------------------------------ *
@@ -864,11 +938,21 @@ function boot() {
   connectWebSocket();
 }
 
-// Handle window resizing and layout changes
+// Handle window resizing and layout changes (rotation, toolbar toggles).
 window.addEventListener('resize', () => {
   if (resizeTimeout) clearTimeout(resizeTimeout);
   resizeTimeout = setTimeout(fitTerminal, 150);
 });
+
+// Re-measure once the bundled fonts are actually loaded — the first fit may
+// have run with fallback metrics, which is what makes line wrapping look
+// wrong (text overflowing the visible width) right after boot.
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => {
+    if (resizeTimeout) clearTimeout(resizeTimeout);
+    setTimeout(fitTerminal, 50);
+  });
+}
 
 // Force focus back to terminal on container click; if the connection failed
 // permanently, a tap also triggers a manual reconnect. A tap while scrolled

@@ -54,6 +54,7 @@ from zmux.paths import (
     DOWNLOADS_DIR,
     STAGING_DIR,
 )
+from zmux.buildinfo import build_marker
 
 APP_VERSION = "1.0.0"
 INDEX_URL = os.environ.get(
@@ -72,6 +73,25 @@ SEARCH_TIMEOUT = 8
 CATALOG_TTL_SECONDS = 3600
 
 DB_FILE = INSTALLED_DIR / "packages.json"
+
+#: PyPI distribution names that collide with famous command-line tools.
+#: `zpip install nano` resolves to PyPI (no curated manifest), and PyPI's
+#: ``nano`` is a Django mini-app library — not the GNU nano editor a user
+#: typing `nano` almost certainly wants. The GNU editor is a C binary that
+#: needs a real TTY anyway, which ZMUX's virtual terminal does not provide,
+#: so the honest move is a loud warning instead of silent "success".
+PYPI_TOOL_COLLISIONS = {
+    "nano": (
+        "PyPI's 'nano' is a Django mini-app library, NOT the GNU nano editor. "
+        "GNU nano also needs a real TTY, which ZMUX does not provide — use the "
+        "Python runtime to edit files (python / open(...).write(...))."
+    ),
+}
+
+
+def _tool_collision_warning(package: str) -> str | None:
+    """Warning text when a package name collides with a well-known tool."""
+    return PYPI_TOOL_COLLISIONS.get(canonicalize(package))
 
 
 def canonicalize(name: str) -> str:
@@ -110,6 +130,10 @@ def runtime_fingerprint() -> dict:
     fp = {
         "schema_version": 1,
         "app_version": APP_VERSION,
+        # On-device build identity: the CI writes build_marker.txt (git SHA +
+        # workflow run id) into the packaged app; '' on desktop or ad-hoc
+        # builds. Lets `zmux-info`/`gates` prove which build a phone runs.
+        "build": build_marker(),
         "runtime_id": f"zmux-py{short}-api26-p4a{p4a}-r1",
         "python": {
             "implementation": platform.python_implementation(),
@@ -137,6 +161,36 @@ def runtime_fingerprint() -> dict:
         },
         "installed": list(_load_db().keys()),
     }
+    # On-device proof of which proot binary is actually shipped: read the
+    # DT_NEEDED of libproot.so from nativeLibraryDir. A stale binary that
+    # still asks for "libtalloc.so.2" is the classic "fixed build still
+    # fails" trap; a binary that fails to parse was corrupted by a non
+    # length-preserving rewrite (see scripts/build_proot_android.py). Both
+    # are reported explicitly instead of silently dropping the section.
+    try:
+        from zmux import elfscan, linuxenv
+        lib_dir = linuxenv.native_library_dir()
+        proot = os.path.join(lib_dir, "libproot.so") if lib_dir else None
+        if proot and os.path.isfile(proot):
+            needed = elfscan.elf_dynamic_needed(proot)
+            fp["proot"] = {
+                "binary": proot,
+                "needed": needed,
+                "talloc": next(
+                    (n for n in needed if n.startswith("libtalloc")), None
+                ),
+            }
+        elif proot:
+            fp["proot"] = {
+                "binary": proot,
+                "error": "libproot.so is present but unreadable as ELF "
+                         "(corrupted build — reinstall the latest APK)",
+            }
+    except Exception as error:
+        fp["proot"] = {
+            "binary": proot or "(unknown)",
+            "error": f"could not read libproot.so ({type(error).__name__}: {error})",
+        }
     return fp
 
 
@@ -692,7 +746,7 @@ def install(
         }
         _save_db(db)
         importlib.invalidate_caches()
-        return {
+        result: dict = {
             "ok": True,
             "package": package,
             "version": manifest.get("version"),
@@ -700,6 +754,12 @@ def install(
             "sha256": digest,
             "dependencies_installed": new_dependencies,
         }
+        # Loudly flag PyPI name collisions with famous CLI tools (nano):
+        # installing "succeeded", but almost certainly not what was meant.
+        warning = _tool_collision_warning(package)
+        if warning:
+            result["warning"] = warning
+        return result
     except Exception as error:
         for relative in reversed(committed):
             target, saved = USER_PACKAGES_DIR / relative, backup / relative
@@ -961,6 +1021,9 @@ def format_output(command, result):
         msg = f"Successfully installed {pkg}{f'-{ver}' if ver else ''}"
         if deps:
             msg += f"\nAlso installed: {', '.join(deps)}"
+        warning = result.get("warning")
+        if warning:
+            msg += f"\n\nWARNING: {warning}"
         return msg, 0
     if action == "list":
         pkgs = result.get("packages", {})
@@ -1021,6 +1084,24 @@ def format_fingerprint(fp: dict) -> str:
         "ZMUX Runtime Fingerprint",
         "=" * 40,
         f"App version:        {fp['app_version']}",
+        f"Build:              {fp.get('build') or '(not recorded)'}",
+        *(
+            []
+            if "proot" not in fp
+            else [f"Proot NEEDED:       {', '.join(fp['proot'].get('needed') or []) or '(none)'}"]
+        ),
+        *(
+            []
+            if "proot" not in fp
+            else [f"Proot talloc:       {fp['proot'].get('talloc') or '(none)'}"
+                  + ("" if fp["proot"].get("talloc") == "libtalloc.so"
+                     else "  [STALE — reinstall the latest build]")]
+        ),
+        *(
+            []
+            if "proot" not in fp or not fp["proot"].get("error")
+            else [f"Proot status:      {fp['proot']['error']}"]
+        ),
         f"Python version:     {fp['python']['version']}",
         f"Implementation:     {fp['python']['implementation']}",
         f"SOABI:              {fp['python']['soabi']}",

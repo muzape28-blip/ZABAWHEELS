@@ -8,6 +8,126 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — `cd` home via symlink, soft-keyboard overlap, ragged wrapping, scroll stutter (2026-08-01)
+- **Bare `cd` no longer reports "outside home directory".** Android exposes
+  app storage as `/data/user/0/...`, a symlink to `/data/data/...`; `cd`
+  compared the raw HOME_DIR against its own `.resolve()` and failed, locking
+  the user out of `~` (while `cd <subdir>` worked because `_path()` resolves).
+  Both sides are resolved before the sandbox check now.
+- **Soft keyboard no longer covers the banner/input.** The frontend now
+  tracks the Visual Viewport: when the IME opens/closes the layout is
+  re-sized to the visible area and the terminal refits, so the prompt always
+  sits above the keyboard and the top bar stays visible.
+- **Line wrapping is exact; `help` / `cat README.md` render like a normal
+  terminal.** `fitTerminal()` clamps the xterm screen to 100% width, re-fits
+  once the bundled fonts finish loading (the first fit used fallback metrics
+  and produced ragged right edges), and forces a refresh after `clear` so
+  the prompt never renders shifted off the left edge.
+- **Scrolling is smoother and more aggressive.** `scrollToBottom` is
+  coalesced to one call per animation frame (was: once per output chunk,
+  causing reflow stutter on low-end phones), momentum touch scrolling is
+  enabled on the xterm viewport, and scrollback is raised to 6000 lines so
+  long tracebacks stay reachable.
+- Tests: 367 Python + 44 UI-harness checks pass.
+
+### Fixed — `git clone` progress now streams; no more infinite hang on stray pipes (2026-08-01)
+- **On-device win: `gates` is 5/5 PASS.** With the length-preserving talloc
+  rewrite, `linux apk add git openssh-client` installs 19 packages and
+  `gates` G1–G5 all pass on the Infinix-class ARMv7 device (`Proot NEEDED:
+  libtalloc.so, libdl.so, libc.so`).
+- **`git clone` looked permanently stuck** even though `gates` G4 (shallow
+  clone) passed: git writes *all* progress ("Cloning into…", "Enumerating
+  objects…") to **stderr**, and ZMUX's subprocess executor only streamed
+  stdout — a slow full clone on ARMv7+proot showed a frozen screen until
+  completion. The executor now streams stderr live like stdout (same
+  newline/encoding handling), so long-running tools are visibly alive.
+- **No more infinite hang on stray pipe holders.** `_read_stdout_streaming`
+  waited on the *pipe* (readline EOF) instead of the *process*; a finished
+  `git clone` whose remote helper grandchild inherited stdout kept the pipe
+  open forever → `reader.join(None)` never returned. It now polls the
+  process to exit, gives the drain thread a moment to flush, then returns —
+  a lingering child can never wedge the session. Reproduced the deadlock
+  via stack dump (handle.close() blocked against the reading pump) and
+  fixed by abandoning the daemon pump instead of force-closing the handle.
+- The Ctrl+C signal hint is streamed too (it is appended after the live
+  drain, and stderr is now marked streamed).
+- Tests: 365 passed, 25 skipped. Docs updated.
+
+### Fixed — the real proot bug: talloc NEEDED rewrite corrupted the ELF (2026-08-01)
+- **Root cause of the on-device `empty/missing DT_HASH/DT_GNU_HASH`
+  failure.** The in-place rewrite of `libtalloc.so.2` → `libtalloc.so` in
+  `scripts/build_proot_android.py` used a 13-byte replacement
+  (`b"libtalloc.so\x00"`) for a 14-byte needle — "libtalloc.so" is 12
+  characters, not 13 — so the file shrank by one byte and **every section
+  header, program header and string after it shifted**, producing a
+  misaligned `.dynamic` (garbage `unused DT entry` warnings) and
+  `empty/missing DT_HASH/DT_GNU_HASH` at exec time. Reproduced locally by
+  building talloc + proot from the pinned sources: `readelf` confirmed the
+  1-byte size change and the resulting "extends past end of file" error.
+- **Fix:** the replacement is now `b"libtalloc.so\x00\x00"` (14 bytes,
+  length-preserving). Verified locally: size unchanged, `NEEDED:
+  [libtalloc.so]`, `GNU_HASH` intact, `readelf` clean.
+- **Hard invariants added:** the build script asserts needle/replacement
+  length equality and fails the build if patching ever changes the file
+  size; `verify_needed()` now also requires the final `libproot.so` to
+  parse and to bind exactly `libtalloc.so`.
+- **`zmux-info`/`gates` now report an unreadable/corrupted `libproot.so`
+  explicitly** ("Proot status: ... corrupted build — reinstall"), so a
+  broken binary is never silently ignored on the phone.
+- Tests: 360 passed, 25 skipped (length-invariant, size-preserving patch,
+  corrupted-ELF detection via `elfscan`).
+### Fixed — stale-APK root cause: on-device proof of the shipped binary (2026-08-01)
+- **"Fixed APK still failing" traced to a stale APK.** The device's
+  `gates` output said `[PASS] ptx`, but this repo has always named that gate
+  `ptmx` (`git log -S 'ptx'` is empty) — the installed APK was not built from
+  this repository's code at all.
+- **Buildozer/p4a packaging verified (theory check):** buildozer 1.6.0
+  `build_package()` copies `android.add_libs_*` into `dist/libs/<abi>`
+  (jniLibs) at *every* build via an overwriting `copyfile`, so the .so files
+  do land in the right structure; the failure was the DT_NEEDED name
+  (`libtalloc.so.2`) vs the shipped filename.
+- **`gates` G2 and `zmux-info` now read the shipped `libproot.so`
+  `DT_NEEDED` on the phone itself** (new `app/zmux/elfscan.py` — pure-Python
+  ELF32/64 LE/BE parser). A stale binary is reported as
+  `STALE BINARY` / `[STALE — reinstall]` instead of an unexplained
+  `libtalloc.so.2 not found`.
+- **Runtime self-heal is bidirectional:** `libtalloc.so.2`-only or
+  `libtalloc.so`-only APKs both get the missing alias mirrored at runtime.
+- **`toolchain/runtime-lock.json` records the proot contract**
+  (`talloc_soname: libtalloc.so.2`, `packaged_needed: libtalloc.so`).
+- **Workflow hardening (cache key + "Verify APK contents" step + build
+  marker) prepared as `docs/WORKFLOW_VERIFY_STEPS.md`** — pending the GitHub
+  App's `workflows` permission to push; the on-device checks above work
+  without it.
+
+### Fixed — first on-device failures: proot libtalloc, storage Java bridge, nano (2026-07-31)
+- **`linux apk add …` no longer dies with `CANNOT LINK EXECUTABLE …: library
+  "libtalloc.so.2" not found`.** Root cause: talloc's SONAME is
+  `libtalloc.so.2`, Android's linker matches `DT_NEEDED` against exact
+  filenames, and the APK shipped the file as `libtalloc.so`.
+  `scripts/build_proot_android.py` now rewrites the NEEDED/SONAME strings
+  inside `libproot.so`/`libtalloc.so` to plain `libtalloc.so` (same byte
+  length, ELF offsets stay valid) and fails the build if any `DT_NEEDED`
+  cannot be satisfied by the packaged files (`verify_needed()`).
+  `linuxenv.proot_env()` additionally self-heals already-shipped APKs by
+  mirroring `libtalloc.so` → `libtalloc.so.2` into a writable runtime dir
+  prepended to `LD_LIBRARY_PATH`.
+- **`zmux-setup-storage` no longer throws `ClassNotFoundException:
+  org.kivy.android.PythonActivity`.** Root cause: p4a's `android.permissions`
+  runs `autoclass()` on the command-executor worker thread, where JNI
+  `FindClass` falls back to the system class loader (no app Java frames on
+  the stack) — the exact failure documented in p4a #2533 for the webview
+  bootstrap. New `zmux/javabridge.py` resolves the activity class once on
+  the Python main thread at startup (pyjnius caches it), and
+  `storage.request_permissions()` calls `mActivity.requestPermissions([…])`
+  directly through that primed bridge instead of the p4a module.
+- **`nano` no longer leaks a `NameError`.** PyPI's `nano` is a Django
+  library, not GNU nano (which also cannot render without a PTY, which ZMUX
+  does not provide). `zpip install nano` now prints a loud WARNING about the
+  collision, and the shell answers known TUI names (`nano`, `vim`, `htop`,
+  `less`, …) with an honest "needs a real TTY" message plus alternatives.
+- Analysis + citations: `docs/DEVICE_FAILURE_ANALYSIS.md`.
+
 ### Fixed — Python 3.14 rootfs extraction + terminal UX (2026-07-31)
 - **`linux-setup` works on Python 3.14 (on-device p4a runtime).** 3.14 made
   `TarFile.extractall()` default to `filter="data"`, which refuses absolute

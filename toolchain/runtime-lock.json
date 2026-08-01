@@ -31,7 +31,14 @@
     "version": "1.5.0",
     "spec_path": "app/buildozer.spec"
   },
+  "proot": {
+    "build_script_sha": "see scripts/build_proot_android.py",
+    "talloc_version": "2.4.2",
+    "talloc_soname": "libtalloc.so.2",
+    "packaged_needed": "libtalloc.so",
+    "note": "libproot.so DT_NEEDED is rewritten to libtalloc.so at build time (Android linker matches DT_NEEDED to exact filenames); bump this file to invalidate the CI dist cache whenever the proot packaging contract changes."
+  },
   "status": "locked-build-contract",
   "created_at": "2026-07-29",
-  "updated_at": "2026-07-29"
+  "updated_at": "2026-08-01"
 }

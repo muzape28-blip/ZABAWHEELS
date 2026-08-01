@@ -108,3 +108,6 @@ app/.zmux_*
 
 # PRoot cross-compile output (built fresh by CI; never committed)
 app/libs/
+
+# Build marker written by CI before packaging (identifies the APK on-device)
+app/build_marker.txt
