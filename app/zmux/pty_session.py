@@ -265,7 +265,13 @@ class PTYTerminalSession:
             if len(self.scrollback_buffer) > self.scrollback_max_size:
                 del self.scrollback_buffer[: -self.scrollback_max_size]
         if data:
-            if data.endswith(b"\n"):
+            if b"\x1b[2J" in data or data.endswith(b"\x1b[H"):
+                # A clear-screen/home sequence leaves the cursor at the top
+                # left. Treat that as a fresh line start so the next prompt
+                # renders on row 0 instead of being pushed down one row by
+                # an extra CRLF (the "prompt bablas after clear" bug).
+                self._at_line_start = True
+            elif data.endswith(b"\n"):
                 self._at_line_start = True
             elif not data.endswith(b"\r"):
                 self._at_line_start = False
