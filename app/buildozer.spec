@@ -5,7 +5,7 @@ package.name = zmux
 package.domain = com.zaba
 source.dir = .
 source.include_exts = py,png,jpg,html,css,json,js
-version = 1.0.0
+version = 1.0.1
 
 # Icon
 icon.filename = %(source.dir)s/assets/logo.png
@@ -15,8 +15,11 @@ presplash.filename = %(source.dir)s/assets/presplash.png
 presplash_color = #0d1117
 
 # WebView shell for terminal UI
+# COEXISTENCE FIX (2026): Zabacode uses 5000, Zmux uses 6000.
+# Loopback 127.0.0.1 is shared, so both on 5000 caused "buka zabacode muncul zmux".
+# Fix: distinct ports + strict bind + taskAffinity hook.
 p4a.bootstrap = webview
-p4a.port = 5000
+p4a.port = 6000
 
 # Core requirements - minimal for terminal
 requirements = python3,pyjnius,flask,waitress,packaging,certifi,werkzeug,jinja2,itsdangerous,click,blinker,MarkupSafe
@@ -28,28 +31,22 @@ fullscreen = 0
 android.archs = armeabi-v7a, arm64-v8a
 
 # --- PRoot / Alpine sandbox ------------------------------------------------
-# libproot.so + libproot-loader*.so + libtalloc.so are cross-compiled by
-# scripts/build_proot_android.py and copied into app/libs/<abi>/ before the
-# build (the build-zmux-apk workflow does this). Buildozer copies them into
-# the p4a dist libs/<abi>/; p4a's gradle template packages that as jniLibs
-# with useLegacyPackaging=true, so they land in nativeLibraryDir — the only
-# app location Android allows exec() on (W^X). Empty globs are skipped, so
-# plain local builds without the .so files still work.
 android.add_libs_armeabi_v7a = libs/armeabi-v7a/*.so
 android.add_libs_arm64_v8a = libs/arm64-v8a/*.so
 android.accept_sdk_license = True
 android.api = 34
 android.minapi = 26
 android.ndk_api = 26
-# INTERNET is used at runtime unconditionally (loopback WebView + zpip).
-# The storage permissions are DECLARED but never requested until the user
-# runs `zmux-setup-storage`; without that, ZMUX stays fully sandboxed.
-# maxSdkVersion=28: from Android 10 these legacy permissions grant nothing
-# (scoped storage), so requesting them on newer releases is noise.
 android.permissions = INTERNET, (name=android.permission.READ_EXTERNAL_STORAGE;maxSdkVersion=28), (name=android.permission.WRITE_EXTERNAL_STORAGE;maxSdkVersion=28)
 android.uses_cleartext_traffic = True
 android.allow_backup = False
 android.orientation = portrait
+
+# Coexistence: distinct taskAffinity + less aggressive launchMode
+android.manifest.launch_mode = singleTop
+
+# p4a hook to inject taskAffinity=com.zaba.zmux + documentLaunchMode
+p4a.hook = tools/p4a_hook.py
 
 # Adaptive Icon
 android.adaptive_icon_background = #0d1117
