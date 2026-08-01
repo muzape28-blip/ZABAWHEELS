@@ -8,6 +8,86 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — terminal UX: stutter-free scrolling, keyboard-aware layout, clean wrap (2026-08-01)
+- **Scroll no longer stutters on low-end phones.** Output writes are now
+  coalesced to ONE `term.write()` per animation frame (`writeQueue` +
+  `flushTermWrite`), so a streaming command (traceback, `git`/`apk`
+  progress) no longer forces a render pass per WebSocket message; binary
+  chunks arriving in the same frame are merged into one buffer. Added
+  `will-change: scroll-position` on the xterm viewport for
+  hardware-accelerated touch scrolling.
+- **Output alignment is fixed (`convertEol: true`).** Bare `\n` output
+  (common with Alpine/busybox tools) is now treated as CRLF, so the next
+  line always starts at the left edge instead of mid-row — the "some
+  commands render messy" complaint.
+- **The keyboard no longer hides the prompt.** When the IME opens/closes
+  (`visualViewport` resize) the terminal now snaps to live output after
+  refitting, so the current line is visible immediately — not only after
+  the first keystroke.
+- **Typing snaps back to live output.** Pressing a key while reading
+  history scrolls to the bottom (real-terminal behaviour).
+- **`clear` no longer loses the prompt.** Screen *and* scrollback clears
+  (`\x1b[2J` and `\x1b[3J`) reset the follow-latch and snap the viewport
+  to live output; the host console now treats a clear-sequence as a line
+  start so the next prompt renders on row 0 instead of being pushed down
+  by a stray CRLF.
+- Tests: `ui_harness.js` grew a `scenarioSmoothness` block (12 new checks:
+  convertEol, write batching/merge, typing snap, keyboard-open snap,
+  `\x1b[3J` snap, text-frame integrity) — 56/56 UI checks, 353 app tests,
+  38 repo tests, E2E 13/13.
+
+### Added — real Alpine PTY shell (Phase 0→2): `linux` is now a genuine shell (2026-08-01)
+- **What changed:** `linux` (bare) no longer prints help — it opens an
+  **interactive Alpine shell on a real `/dev/ptmx` PTY**
+  (`proot --kill-on-exit --link2symlink --sysvipc -r <rootfs> /bin/sh -l`).
+  With the rootfs installed, a fresh session also boots straight into the
+  Alpine shell by default (`ZMUX_SHELL_START=zmux` forces the old host
+  console). This is the honest upgrade path discussed in the repo: kernel
+  echo/backspace, Ctrl+C = real SIGINT to the foreground process group, job
+  control, `isatty()`, and working `vim`/`htop`/`less`/`tmux`.
+- **New module `app/zmux/realpty.py`:** `RealPtyProcess` = `openpty()` +
+  `fork()` + `setsid()` + `TIOCSCTTY` + `execve` with a reader thread,
+  `TIOCSWINSZ` resize, process-group kill and reaping. Between fork and exec
+  the child runs direct libc syscalls only (the repo's Bionic-lock invariant).
+- **Session integration (`pty_session.py`):** while the PTY is active,
+  `write_input` is a raw byte pump and `resize` does `TIOCSWINSZ`; `exit`
+  (or Ctrl+D) returns to the host console; the **ZMX⇄** toolbar key
+  (`pty.toggle` JSON action) detaches and returns immediately. Ctrl+B is
+  deliberately NOT reserved — vim uses it for page-up.
+- **`zmux-pty-probe`** (pty1–pty6): on-device acceptance gates — openpty,
+  shell-runs, `isatty`+controlling tty, resize round-trip, Ctrl+C kills a
+  foreground process, exit-status propagation. Nothing mocked.
+- **Guest wrappers:** `gates`/`zpip`/`zmux-info`/`linux-setup`/`help` are
+  installed into the rootfs as honest notice-scripts (they need the host
+  Python; the ZMX⇄ key reaches the host console).
+- **Tests:** `test_realpty.py` (kernel semantics, real children) +
+  `test_pty_shell_mode.py` (session wiring with a fake-proot) — 19 new
+  checks; 352 Python tests + 44 UI-harness checks pass. End-to-end smoke
+  (real server + real WebSocket client + real PTY) 13/13.
+- Docs (README terminal model, ARCHITECTURE) updated to the two-layer model.
+
+### Fixed — WebView dead on start: `net::ERR_UNSAFE_PORT` on port 6000 (2026-08-01)
+- **"Halaman web tidak tersedia — `net::ERR_UNSAFE_PORT`"** was caused by the
+  WebView HTTP port itself: ZMUX served on `127.0.0.1:6000`, and **6000 is
+  X11 — one of Chromium's restricted ports** (`net/base/port_util.cc`
+  `kRestrictedPorts`). The p4a bootstrap's `WebViewLoader.testConnection()`
+  still succeeds on a restricted port (a bare TCP connect is not filtered),
+  so the WebView boots, pings, then refuses to *load*
+  `http://127.0.0.1:6000/` — exactly the on-device symptom.
+- **Fix: the WebView HTTP port moves 6000 → 8000** (`p4a.port` in
+  `app/buildozer.spec` + `P4A_HTTP_PORT` in `app/zmux/server.py`). 8000 is
+  not on Chromium's restricted list and stays clear of Zabacode's 5000 and
+  its WebSocket range (5001-5100), preserving the coexistence contract that
+  ended the "buka zmux muncul zabacode" loopback cross-talk.
+- **Regression guards:** `app/zmux/server.py` now ships the frozen
+  `CHROMIUM_RESTRICTED_PORTS` set, `_bind_http_socket()` hard-fails if the
+  contract port ever lands on it, and `_bind_ws_socket()` skips restricted
+  ports while scanning for a free WebSocket port (the list applies to
+  `ws://` too).
+- Docs (`docs/ARCHITECTURE.md`, `README.md`, `docs/BUILDING.md`) updated to
+  the 8000 contract; APK version bumped to 1.0.2 so the rebuilt APK is
+  distinguishable on-device via `zmux-info`/`gates`.
+
 ### Fixed — `cd` home via symlink, soft-keyboard overlap, ragged wrapping, scroll stutter (2026-08-01)
 - **Bare `cd` no longer reports "outside home directory".** Android exposes
   app storage as `/data/user/0/...`, a symlink to `/data/data/...`; `cd`

@@ -5,7 +5,7 @@ package.name = zmux
 package.domain = com.zaba
 source.dir = .
 source.include_exts = py,png,jpg,html,css,json,js
-version = 1.0.1
+version = 1.0.2
 
 # Icon
 icon.filename = %(source.dir)s/assets/logo.png
@@ -15,11 +15,13 @@ presplash.filename = %(source.dir)s/assets/presplash.png
 presplash_color = #0d1117
 
 # WebView shell for terminal UI
-# COEXISTENCE FIX (2026): Zabacode uses 5000, Zmux uses 6000.
+# COEXISTENCE CONTRACT (2026): Zabacode owns 5000, Zmux owns 8000.
 # Loopback 127.0.0.1 is shared, so both on 5000 caused "buka zabacode muncul zmux".
-# Fix: distinct ports + strict bind + taskAffinity hook.
+# Port 6000 was tried next but Chromium/Android WebView blocks it (X11) with
+# net::ERR_UNSAFE_PORT. 8000 is Chromium-safe and clear of Zabacode's
+# 5000-5100 range. Must stay in sync with P4A_HTTP_PORT in app/zmux/server.py.
 p4a.bootstrap = webview
-p4a.port = 6000
+p4a.port = 8000
 
 # Core requirements - minimal for terminal
 requirements = python3,pyjnius,flask,waitress,packaging,certifi,werkzeug,jinja2,itsdangerous,click,blinker,MarkupSafe

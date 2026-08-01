@@ -238,6 +238,14 @@ class WebSocketServer:
                 if action in ("session.new", "session.switch", "session.close", "session.list"):
                     self._handle_session_action(action, data)
                     return
+                if action == "pty.toggle":
+                    # Ctrl+B from the frontend: jump between the real Alpine
+                    # PTY shell and the ZMUX host console.
+                    from zmux.sessions import get_manager
+                    session = get_manager(self).active
+                    if session is not None:
+                        session.toggle_pty()
+                    return
         except Exception:
             pass
 

@@ -114,7 +114,7 @@ tests/test_wheel_security.py        (8 tests)
 
 To prevent force-close crashes and UI freezes on mobile devices such as the *Infinix Smart 9 HD ARMv7*, the following critical engineering improvements were implemented:
 1. **Bionic libc Signal Safety:** Replaced Python `preexec_fn=os.setsid` after `fork()` with C-level POSIX `start_new_session=True`. This prevents pthread mutex deadlocks and `SIGSEGV` crashes in 32-bit Android Bionic libc when spawning child processes from multithreaded applications.
-2. **Android WebView Port Contract (`SO_REUSEPORT`):** Added `SO_REUSEPORT` to the Android HTTP port 5000 listener so that restarting ZMUX while a previous TCP socket is lingering in `TIME_WAIT` never throws `Address already in use`. Added multi-host fallback (`127.0.0.1`, `0.0.0.0`, `localhost`).
+2. **Android WebView Port Contract (`SO_REUSEPORT`):** Added `SO_REUSEPORT` to the Android HTTP port 8000 listener so that restarting ZMUX while a previous TCP socket is lingering in `TIME_WAIT` never throws `Address already in use`. Added multi-host fallback (`127.0.0.1`, `0.0.0.0`, `localhost`). (ZMUX's WebView port is 8000: Zabacode owns 5000, and Chromium blocks 6000/X11 with `ERR_UNSAFE_PORT`.)
 3. **Dual IPv4/IPv6 Loopback WebSocket Server:** Configured `WebSocketServer` to bind on both IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback interfaces simultaneously, and updated `terminal.html` to cycle candidates (`127.0.0.1`, `localhost`) so connections never freeze due to OEM hostname resolution quirks.
 4. **In-Process Smoke Verification:** Replaced child-process `sys.executable` invocations in `zpip` with clean in-process module import checks on Android, avoiding `PermissionError` when executing embedded APK Python runtimes.
 

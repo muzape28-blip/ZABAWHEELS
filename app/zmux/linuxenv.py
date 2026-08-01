@@ -316,26 +316,103 @@ def _bind_flags() -> list:
     return flags
 
 
-def build_command_line(guest_argv: list, host_cwd: Path,
-                       extra_binds: list | None = None) -> str:
-    """Return the full proot command line for the pipeline executor.
+def build_proot_argv(guest_argv: list, host_cwd: Path,
+                     extra_binds: list | None = None) -> list:
+    """Return the full proot argv (list) for ``guest_argv``.
 
-    ``python_shell`` feeds this string to its subprocess executor, so the
-    result gets live streaming, Ctrl+C (killpg), timeouts and exit codes for
-    free. ``extra_binds`` are ``src:dst`` pairs appended to the standard
-    binds (used by the integration tests to bind a host git binary into a
-    rootfs that has not had git installed yet).
+    ``extra_binds`` are ``src:dst`` pairs appended to the standard binds
+    (used by the integration tests to bind a host git binary into a rootfs
+    that has not had git installed yet).
     """
     proot = proot_binary()
     if not proot:
         raise RuntimeError(
             "proot is not available in this runtime (libproot.so missing)"
         )
-    argv = [proot, "-0", "-r", str(rootfs_dir()), * _bind_flags()]
+    argv = [proot, "-0", "-r", str(rootfs_dir()), *_bind_flags()]
     for bind in extra_binds or ():
         argv += ["-b", bind]
     argv += ["-w", guest_cwd(host_cwd), *guest_argv]
-    return shlex.join(argv)
+    return argv
+
+
+def build_command_line(guest_argv: list, host_cwd: Path,
+                       extra_binds: list | None = None) -> str:
+    """Return the full proot command line for the pipeline executor.
+
+    ``python_shell`` feeds this string to its subprocess executor, so the
+    result gets live streaming, Ctrl+C (killpg), timeouts and exit codes for
+    free.
+    """
+    return shlex.join(build_proot_argv(guest_argv, host_cwd, extra_binds))
+
+
+def build_interactive_argv(host_cwd: Path) -> list:
+    """Proot argv for an *interactive login shell* (the PTY shell).
+
+    Mirrors the battle-tested ``proot-distro login`` shape: ``--kill-on-exit``
+    so killing proot tears down every tracee, ``--link2symlink`` and
+    ``--sysvipc`` for normal application behaviour, then ``/bin/sh -l`` so
+    Alpine's ``/etc/profile`` is sourced (login-shell semantics the old
+    virtual terminal explicitly did not have).
+    """
+    argv = build_proot_argv(["/bin/sh", "-l"], host_cwd)
+    argv.insert(1, "--kill-on-exit")
+    argv.insert(2, "--link2symlink")
+    argv.insert(3, "--sysvipc")
+    return argv
+
+
+def interactive_env() -> dict:
+    """Environment for the interactive PTY shell.
+
+    proot_env() gives PATH/HOME/LD_LIBRARY_PATH (the loader contract for
+    Android); TERM + LANG make TUI programs (vim/htop/less) render correctly
+    and set a friendly root prompt inside Alpine.
+    """
+    env = proot_env()
+    env["TERM"] = "xterm-256color"
+    env["LANG"] = "C.UTF-8"
+    env["SHELL"] = "/bin/sh"
+    return env
+
+
+def install_guest_wrappers() -> int:
+    """Write tiny notice-wrappers for ZMUX host tools into the rootfs.
+
+    Inside the pure-Alpine PTY shell, ``zpip``/``gates``/``zmux-info``/
+    ``linux-setup``/``help``/``zmux-pty-probe`` are ZMUX *host* tools: they
+    run in the app's embedded Python, not in the musl userland. The wrappers
+    make the muscle memory work — typing ``gates`` inside Alpine prints how
+    to reach the host console (ZMX⇄ toolbar key) instead of ``command not
+    found``. Returns number of wrappers written.
+    """
+    if not is_installed():
+        return 0
+    bin_dir = rootfs_dir() / "usr" / "local" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    template = "#!/bin/sh\n" \
+               "echo \"$0: ZMUX host tool.\"\n" \
+               "echo \"  This runs inside the app's embedded Python, not the\"\n" \
+               "echo \"  Alpine userland. Press the ZMX key (toolbar) for the\"\n" \
+               "echo \"  ZMUX host console, then type: {cmd}\"\n" \
+               "exit 1\n"
+    written = 0
+    for cmd in ("zpip", "gates", "zmux-info", "linux-setup", "help", "zmux-pty-probe"):
+        wrapper = bin_dir / cmd
+        content = template.format(cmd=cmd)
+        try:
+            try:
+                current = wrapper.read_text(encoding="utf-8") if wrapper.exists() else None
+            except OSError:
+                current = None
+            if current != content:
+                wrapper.write_text(content, encoding="utf-8", newline="\n")
+            os.chmod(wrapper, 0o755)
+            written += 1
+        except OSError:
+            continue
+    return written
 
 
 # ---------------------------------------------------------------------------

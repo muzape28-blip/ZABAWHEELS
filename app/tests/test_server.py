@@ -5,6 +5,8 @@ import socket
 import pytest
 
 from zmux.server import (
+    CHROMIUM_RESTRICTED_PORTS,
+    P4A_HTTP_PORT,
     _bind_listener,
     _bind_ws_socket,
     _format_zpip_output,
@@ -165,7 +167,7 @@ class TestLoopbackOnlyBind:
         attempts = []
         monkeypatch.setattr(server, "_bind_listener", self._recording_bind(attempts))
         with pytest.raises(RuntimeError):
-            server._bind_ws_socket(5000)
+            server._bind_ws_socket(server.P4A_HTTP_PORT)
         assert attempts, "expected at least one bind attempt"
         assert set(attempts) == {"127.0.0.1"}
         assert "0.0.0.0" not in attempts
@@ -185,11 +187,44 @@ class TestLoopbackOnlyBind:
         assert set(attempts) <= {"127.0.0.1", "localhost"}
 
 
+class TestChromiumPortContract:
+    """The p4a WebView bootstrap loads http://127.0.0.1:{p4a.port}/ through the
+    Android WebView, which refuses Chromium's restricted ports with
+    net::ERR_UNSAFE_PORT (ZMUX v1.0.x hit this on 6000/X11). The contract
+    port must stay off that list and off Zabacode's port, and the WebSocket
+    scanner must skip restricted ports too (the list applies to ws://)."""
+
+    def test_p4a_http_port_not_chromium_restricted(self):
+        assert P4A_HTTP_PORT not in CHROMIUM_RESTRICTED_PORTS
+
+    def test_p4a_http_port_distinct_from_zabacode_and_its_ws_range(self):
+        zabacode = 5000  # ZABACODE buildozer.spec p4a.port
+        assert P4A_HTTP_PORT != zabacode
+        # ZMUX's own ws range is P4A_HTTP_PORT+1..+100; it must never overlap
+        # Zabacode's (5001..5100) or loopback cross-talk returns.
+        assert not (zabacode <= P4A_HTTP_PORT <= zabacode + 100)
+
+    def test_bind_http_socket_rejects_chromium_restricted_port(self, monkeypatch):
+        from zmux import server
+        monkeypatch.setattr(server, "P4A_HTTP_PORT", 6000)
+        with pytest.raises(RuntimeError, match="ERR_UNSAFE_PORT"):
+            server._bind_http_socket()
+
+    def test_bind_ws_socket_skips_chromium_restricted_ports(self):
+        # http_port 6565 -> first candidate is 6566 (sane-port), which is on
+        # the restricted list; the scanner must jump to 6567.
+        sock = _bind_ws_socket(6565)
+        try:
+            assert sock.getsockname()[1] == 6567
+        finally:
+            sock.close()
+
+
 class TestWsPortConfig:
     """The announced WebSocket port lives in app.config, not a module global."""
 
     def test_default_ws_port_present(self):
-        assert app.config["WS_PORT"] == 5001
+        assert app.config["WS_PORT"] == P4A_HTTP_PORT + 1
 
     def test_csp_and_template_use_configured_port(self):
         old = app.config["WS_PORT"]

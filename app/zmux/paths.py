@@ -104,7 +104,7 @@ for directory in [
 
 #: Commands that get an executable shell wrapper inside BIN_DIR.
 CLI_COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip", "zmux-setup-storage",
-                "linux-setup", "linux", "gates")
+                "linux-setup", "linux", "gates", "zmux-pty-probe")
 
 #: Wrapper template shared by every ZMUX command. Each script re-enters the
 #: Python runtime via ``python -m zmux.cli "$0" "$@"`` so the typed command

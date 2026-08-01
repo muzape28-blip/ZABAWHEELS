@@ -21,10 +21,10 @@ import sys
 
 #: Commands handled by this module (mirrors zmux.paths.CLI_COMMANDS).
 COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip", "zmux-setup-storage",
-            "linux-setup", "linux", "gates")
+            "linux-setup", "linux", "gates", "zmux-pty-probe")
 
 _USAGE = ("usage: python -m zmux.cli "
-          "<zpip|help|zmux-info|clear|pip|zmux-setup-storage|linux-setup|linux|gates> [args...]")
+          "<zpip|help|zmux-info|clear|pip|zmux-setup-storage|linux-setup|linux|gates|zmux-pty-probe> [args...]")
 
 _PIP_FALLBACK = """pip is not available inside this ZMUX runtime.
 Use the ZMUX package manager instead:
@@ -121,6 +121,14 @@ def _cmd_gates(args: list) -> int:
     return 0 if passed == len(results) else 1
 
 
+def _cmd_pty_probe(args: list) -> int:
+    """Run the real-PTY acceptance probe (pty1–pty6). Nothing is mocked."""
+    from zmux import realpty
+    results = realpty.run_pty_probe()
+    passed = sum(1 for r in results.values() if r["ok"])
+    return 0 if passed == len(results) else 1
+
+
 def _cmd_pip(args: list) -> int:
     """Run standard pip, or explain how to use zpip when pip cannot run.
 
@@ -160,6 +168,8 @@ def main(argv=None) -> int:
         return _cmd_linux(args)
     if command == "gates":
         return _cmd_gates(args)
+    if command == "zmux-pty-probe":
+        return _cmd_pty_probe(args)
     if command == "zpip":
         return _cmd_zpip(args)
     if command == "pip":

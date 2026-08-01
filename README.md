@@ -39,24 +39,38 @@ ZMUX is a lightweight terminal emulator for Android that lets you:
   from scratch as an honest, standalone terminal (see
   [REFACTOR_REPORT.md](REFACTOR_REPORT.md)).
 - **Not a fake terminal** — nothing is hardcoded or mocked. `git` is real git,
-  `apk` is real apk, Python is real CPython, errors are real tracebacks.
-- **Not a Unix PTY terminal** — there is no `/dev/ptmx`/`openpty()` session.
-  See [Terminal model](#terminal-model) for the honest trade-offs.
+  `apk` is real apk, Python is real CPython, errors are real tracebacks, and
+  the Alpine shell is a genuine `/dev/ptmx` PTY (see
+  [Terminal model](#terminal-model)).
 - **Not Termux** — ZMUX is Python-first, lives inside Android's app sandbox,
-  and does not claim root/system access. Termux remains the right tool for a
-  full Unix PTY shell.
+  and does not claim root/system access. It is a *smaller, honest* terminal:
+  a Python host console plus a real Alpine PTY shell, not a full Unix PTY
+  app with native UI.
 
 ---
 
 ## Terminal model
 
-ZMUX is a **virtual terminal**, and it says so plainly. The front-end is
-xterm.js; keystrokes travel over a WebSocket to a Python line-discipline layer
-(`pty_session.py`) that handles echo, backspace, history and Ctrl+C. Completed
-lines go to `python_shell.py`, which either evaluates them in the embedded
-CPython runtime or spawns a real child process by absolute path.
+ZMUX now has **two terminal layers**, and it says plainly which one you are
+in:
 
-**What that gives you**
+1. **ZMUX host console** (`zmux:~$`, the default until the Alpine rootfs is
+   installed): a *virtual* terminal. Keystrokes travel over a WebSocket to a
+   Python line-discipline layer (`pty_session.py`) that handles echo,
+   backspace, history and Ctrl+C; completed lines go to `python_shell.py`,
+   which evaluates them in the embedded CPython runtime or spawns a real
+   child process. Builtins (`zpip`, `gates`, `zmux-info`, …) live here
+   because they need the app's embedded Python.
+2. **Alpine shell** (real PTY): `linux` (bare) — or automatically at startup
+   when the rootfs is installed — spawns a *genuine* PTY whose child is
+   `proot -> /bin/sh -l` inside the Alpine userland (`app/zmux/realpty.py`).
+   From that moment the **kernel** does echo, backspace, Ctrl+C (SIGINT to
+   the foreground process group), job control and `isatty()`; the Python
+   layer is only a byte pump between the WebSocket and `/dev/ptmx`. `vim`,
+   `htop`, `less`, `tmux` work here. `exit` returns to the host console; the
+   **ZMX⇄** toolbar key detaches and returns immediately.
+
+**Host console — what that gives you**
 
 - Python that behaves like Python: real `exec`/`eval`, persistent globals,
   real tracebacks (Rich-rendered and wrapped to your screen width).
@@ -70,21 +84,19 @@ CPython runtime or spawns a real child process by absolute path.
   wedge your session.
 - No dependency on `/dev/ptmx`, which some Android Go / SELinux setups deny.
 
-**What it does not give you**
+**Host console — what it does not give you (and where the Alpine shell takes
+over)**
 
-- **No full-screen TUI programs.** `vim`, `htop`, `nano`, `less` need a real
-  TTY and will not work interactively. ZMUX tells you this honestly when you
-  type them.
-- **No job control.** No `&`, `fg`, `bg`, `Ctrl+Z`.
-- **No login-shell semantics.** Nothing sources `/etc/profile`; ZMUX reads
-  `~/.zmuxrc`.
-- `isatty()` on child processes sees a pipe, so some tools colour by default
-  and others do not.
-
-If you need a full PTY with TUI support, [Termux](https://github.com/termux/termux-app)
-is the right tool — we will not pretend otherwise. ZMUX optimises for a
-different point: a small, reproducible, Python-first terminal with a
-verifying package manager.
+- **No full-screen TUI programs** in the host console — but `vim`, `htop`,
+  `nano`, `less`, `tmux` work in the real Alpine PTY shell (`linux`).
+- **No job control** in the host console — `&`, `fg`, `bg`, `Ctrl+Z` are
+  real in the Alpine shell.
+- **No login-shell semantics** in the host console (`~/.zmuxrc` is read);
+  the Alpine shell is a login shell and sources `/etc/profile`.
+- `isatty()` on host-console children sees a pipe; in the Alpine shell it is
+  a real TTY, so colour and interactive behaviour are the real thing.
+- **`zmux-pty-probe`** runs the on-device acceptance probe (pty1–pty6) that
+  verifies the real-PTY foundation on your exact device.
 
 ---
 
@@ -112,8 +124,12 @@ verifying package manager.
   prompt sits above the IME), exact line wrapping to the visible width,
   coalesced frame-synced scrolling, 6000-line scrollback.
 
-### Alpine Linux Sandbox (PRoot) — real git, apk, sh
+### Alpine Linux Shell (PRoot) — real PTY, real git, apk, sh
 
+- ✅ **Real PTY shell:** `linux` (bare) opens an interactive Alpine
+  `/bin/sh -l` on a genuine `/dev/ptmx` PTY — kernel echo, Ctrl+C (SIGINT),
+  job control, `isatty()`, and working `vim`/`htop`/`less`/`tmux`. `exit`
+  returns to the ZMUX console; the **ZMX⇄** toolbar key detaches.
 - ✅ `linux-setup` downloads the **Alpine 3.22.5** minirootfs (~4 MiB),
   SHA-512 verified against the official Alpine digest, extracted atomically.
 - ✅ `git <args>` runs **real git** (Alpine's build) with normal syntax:
@@ -319,7 +335,7 @@ PYTHONPATH=. pytest -q app/tests tests/          # 367 passing, 25 skipped
 # Frontend behavioral tests (Node)
 node app/tests/ui_harness.js app/templates/terminal.html   # 44/44
 
-# Run the terminal on desktop (browser at http://127.0.0.1:5000)
+# Run the terminal on desktop (browser at http://127.0.0.1:8000)
 python main.py
 ```
 

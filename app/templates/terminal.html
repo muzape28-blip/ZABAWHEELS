@@ -172,6 +172,7 @@ body {
      dragging through a long traceback stutters on low-end devices. */
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  will-change: scroll-position;
 }
 /* Make sure the xterm canvas never exceeds the visible container, so lines
    wrap at the real screen edge instead of running past it. */
@@ -330,6 +331,11 @@ const RECONNECT_DELAY_MS = 1500;
 function initTerminal() {
   term = new Terminal({
     cursorBlink: true,
+    // Treat a bare LF as CRLF: Alpine/busybox tools sometimes emit \n alone,
+    // and without this the next line starts mid-row (the "messy, unaligned
+    // left edge" output). Real PTYs do this in the kernel (ONLCR); for the
+    // host console this is the faithful equivalent.
+    convertEol: true,
     fontSize: 13,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
     lineHeight: 1.2,
@@ -367,7 +373,16 @@ function initTerminal() {
   // applies to the next typed character too (not just virtual-key taps).
   term.onData((data) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // Typing while reading history snaps back to live output — a real
+    // terminal never lets you type into the past (this is also why the
+    // screen used to only "catch up" after the first keystroke).
+    if (userScrolledUp) {
+      userScrolledUp = false;
+      try { term.scrollToBottom(); } catch (e) {}
+    }
     if (ctrlLatched && data.length === 1) { sendKeyInput(data); return; }
+    // Ctrl+B is deliberately NOT intercepted here: vim (and other TUIs) use
+    // it for page-up. The explicit ZMX⇄ toolbar key toggles shell modes.
     ws.send(data);
   });
 
@@ -419,13 +434,54 @@ function bindScrollIntent(container) {
   });
 }
 
+// Output writes are coalesced to ONE term.write() per animation frame.
+// While a command streams many small chunks (traceback, git progress, apk
+// bars), writing each chunk to xterm immediately forced a render pass per
+// message and stuttered on low-end phones. One batched write per frame is
+// all a display can show anyway (same idea as the scrollFollow rAF latch).
+let writeQueue = [];
+let writeFlushPending = false;
+
+function flushTermWrite() {
+  writeFlushPending = false;
+  if (!term || writeQueue.length === 0) { writeQueue = []; return; }
+  const batch = writeQueue;
+  writeQueue = [];
+  try {
+    if (batch.length === 1) { term.write(batch[0]); return; }
+    const allBinary = batch.every((c) => c instanceof Uint8Array);
+    const allText = batch.every((c) => typeof c === 'string');
+    if (allBinary) {
+      let total = 0;
+      for (const c of batch) total += c.length;
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const c of batch) { merged.set(c, offset); offset += c.length; }
+      term.write(merged);
+    } else if (allText) {
+      term.write(batch.join(''));
+    } else {
+      for (const c of batch) term.write(c);
+    }
+  } catch (e) {}
+}
+
 // Every output payload (binary or text) flows through here. A payload that
-// clears the screen (`\x1b[2J` — the `clear` builtin, session switches)
-// repaints from scratch: snap back to live output, re-arm follow, and force
-// a refresh so the cleared canvas renders at the current width — otherwise
-// the viewport appears glued to stale history or mis-measured.
+// clears the screen/scrollback (`\x1b[2J` / `\x1b[3J` — the `clear` builtin,
+// session switches) repaints from scratch: snap back to live output, re-arm
+// follow, and force a refresh so the cleared canvas renders at the current
+// width — otherwise the viewport appears glued to stale history or
+// mis-measured.
 function writeTerminalOutput(data, containsClearScreen) {
-  term.write(data);
+  if (typeof data === 'string') {
+    if (data) writeQueue.push(data);
+  } else if (data && data.length) {
+    writeQueue.push(new Uint8Array(data));
+  }
+  if (!writeFlushPending) {
+    writeFlushPending = true;
+    nextFrame(flushTermWrite);
+  }
   if (containsClearScreen) {
     userScrolledUp = false;
     lastScrollTop = 0;
@@ -439,11 +495,13 @@ function writeTerminalOutput(data, containsClearScreen) {
   }
 }
 
-// Scan a binary frame for ESC [ 2 J without decoding the whole buffer.
+// Scan a binary frame for a screen/scrollback clear (ESC [ 2 J or ESC [ 3 J)
+// without decoding the whole buffer.
 function bytesContainClearScreen(bytes) {
   for (let i = 0; i + 4 <= bytes.length; i++) {
     if (bytes[i] === 0x1b && bytes[i + 1] === 0x5b &&
-        bytes[i + 2] === 0x32 && bytes[i + 3] === 0x4a) return true;
+        (bytes[i + 2] === 0x32 || bytes[i + 2] === 0x33) &&
+        bytes[i + 3] === 0x4a) return true;
   }
   return false;
 }
@@ -701,6 +759,7 @@ function renderTabs(state) {
  *
  *   label     text on the button
  *   send      literal string sent to the terminal
+ *   action    'pty.toggle' — jump between Alpine PTY shell and host console
  *   modifier  'ctrl' — latches instead of sending (tap CTRL, then a key)
  *   repeat    auto-repeats while held (arrows, backspace)
  * ------------------------------------------------------------------ */
@@ -717,6 +776,7 @@ const KEY_ROWS = [
     { label: 'End', send: '\x1b[F' }
   ],
   [
+    { label: 'ZMX⇄', action: 'pty.toggle' },
     { label: '^C', send: '\x03', danger: true },
     { label: '^D', send: '\x04', danger: true },
     { label: '⌫', send: '\x7f', repeat: true },
@@ -780,6 +840,12 @@ function buildVirtualKeys() {
         btn.addEventListener('click', (e) => {
           e.preventDefault();
           setCtrlLatched(!ctrlLatched);
+          if (term) term.focus();
+        });
+      } else if (key.action) {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (key.action === 'pty.toggle') sendAction({ action: 'pty.toggle' });
           if (term) term.focus();
         });
       } else if (key.repeat) {
@@ -877,6 +943,12 @@ function fitToVisualViewport() {
   // browser no longer needs to pan the page up behind the keyboard.
   if (window.scrollY > 0) window.scrollTo(0, 0);
   fitTerminal();
+  // The IME opening shrinks the visible area while the cursor line usually
+  // sits at the bottom — snap there so the prompt is not hidden behind the
+  // keyboard until the first keystroke (the "keyboard covers the terminal"
+  // complaint).
+  userScrolledUp = false;
+  if (term) { try { term.scrollToBottom(); } catch (e) {} }
 }
 if (window.visualViewport) {
   const onVisualViewportChange = () => {

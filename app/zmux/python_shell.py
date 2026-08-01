@@ -209,7 +209,7 @@ class PythonShell:
         # keep falling through to the interpreter.
         if command in self.commands or command in {
             "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage",
-            "git", "linux", "alpine", "linux-setup", "gates",
+            "git", "linux", "alpine", "linux-setup", "gates", "zmux-pty-probe",
         } or self._is_external_command(command):
             rejection = self._unsupported_operator(parts, line)
             if rejection is not None:
@@ -249,7 +249,7 @@ class PythonShell:
                 return self._result(stdout=self.commands[command](parts[1:]))
             if command in {"git", "linux", "alpine"}:
                 return self._exec_linux(command, parts[1:], timeout)
-            if command in {"linux-setup", "gates"}:
+            if command in {"linux-setup", "gates", "zmux-pty-probe"}:
                 return self._exec_zmux_command(command, parts[1:])
             if command in {"python", "python3"}:
                 return self._exec_python_command(parts[1:])
@@ -755,10 +755,22 @@ class PythonShell:
                     )
                 guest_argv = ["/usr/bin/git", *args]
             elif command in ("linux", "alpine"):
+                if args and args[0] in ("--help", "-h", "help"):
+                    return self._result(
+                        stdout=("Alpine Linux inside ZMUX (proot).\n"
+                                "  linux              open the real interactive Alpine shell\n"
+                                "                     (PTY: vim/htop/less/tmux work; exit returns)\n"
+                                "  linux <command...>  run one shell command, e.g. linux apk add git\n"
+                                "  git <args...>       real git, e.g. git clone <url>\n"
+                                "  linux-setup         install/repair the environment\n"
+                                "  gates               run the on-device acceptance tests\n"),
+                    )
                 if not args:
                     return self._result(
                         stdout=("Alpine Linux inside ZMUX (proot).\n"
-                                "  linux <command...>   run a shell command, e.g. linux apk add git\n"
+                                "  linux              open the real interactive Alpine shell\n"
+                                "                     (PTY: vim/htop/less/tmux work; exit returns)\n"
+                                "  linux <command...>  run a shell command, e.g. linux apk add git\n"
                                 "  git <args...>       real git, e.g. git clone <url>\n"
                                 "  linux-setup         install/repair the environment\n"
                                 "  gates               run the on-device acceptance tests\n"),

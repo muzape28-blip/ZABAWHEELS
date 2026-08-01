@@ -18,8 +18,38 @@ from zmux.security import AUTH_TOKEN, verify_token
 from zmux.terminal import get_session
 from zmux import zpip
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.2"
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+#: Chromium's blocked-port list (net/base/port_util.cc ``kRestrictedPorts``).
+#: The Android WebView is Chromium and refuses to *load* (ERR_UNSAFE_PORT)
+#: any http(s)/ws(s) URL whose port is in this set — even though the p4a
+#: bootstrap's bare TCP ping (WebViewLoader.testConnection) succeeds on any
+#: port, because raw connects are not subject to the list. That combination
+#: produced ZMUX v1.0.x's "Halaman web tidak tersedia ... net::ERR_UNSAFE_PORT"
+#: on 127.0.0.1:6000 (6000 is X11): the WebView booted, pinged, then refused
+#: to render the page.
+CHROMIUM_RESTRICTED_PORTS = frozenset({
+    0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69,
+    77, 79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119,
+    123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515,
+    526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990,
+    993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566,
+    6665, 6666, 6667, 6668, 6669, 6697, 10080,
+})
+#: Zabacode's WebView HTTP port (muzape28-blip/ZABACODE buildozer.spec).
+#: Both apps share loopback 127.0.0.1, so ZMUX must never touch this port or
+#: its WebSocket range (5001-5100): two listeners on one port caused the
+#: "buka zabacode muncul zmux" loopback cross-talk before the split.
+ZABACODE_HTTP_PORT = 5000
+#: ZMUX's own WebView HTTP port contract. Must equal ``p4a.port`` in
+#: app/buildozer.spec, must not be Chromium-restricted (see
+#: CHROMIUM_RESTRICTED_PORTS — 6000/X11 was the original pick and it is
+#: blocked) and must stay clear of Zabacode's port + WebSocket range.
+P4A_HTTP_PORT = 8000
+#: How long to wait for the p4a port to become free on Android (a zombie
+#: process from a previous launch may hold it briefly).
+P4A_BIND_TIMEOUT_SECONDS = 30.0
 
 app = Flask(
     __name__,
@@ -86,7 +116,7 @@ def _get_json_payload():
 # The WebSocket port is only known once run_server() has bound its listener,
 # so it lives in app.config (read at request time) rather than in a mutable
 # module global that tests could observe before the server even started.
-app.config.setdefault("WS_PORT", 5001)
+app.config.setdefault("WS_PORT", P4A_HTTP_PORT + 1)
 
 
 @app.get("/")
@@ -188,16 +218,6 @@ def get_prompt():
     return jsonify({"ok": True, "prompt": session.get_prompt()})
 
 
-#: The p4a webview bootstrap polls *exactly* this port (p4a.port = 5000) and
-#: loads http://127.0.0.1:5000/ once it answers. On Android we must therefore
-#: serve on this port — silently moving to another port leaves the WebView
-#: waiting forever (the "stuck on loading screen" boot freeze).
-P4A_HTTP_PORT = 6000
-#: How long to wait for the p4a port to become free on Android (a zombie
-#: process from a previous launch may hold it briefly).
-P4A_BIND_TIMEOUT_SECONDS = 30.0
-
-
 def _bind_listener(host: str, port: int, family: int = socket.AF_INET, reuse_port: bool = False) -> socket.socket:
     """Create, bind and listen on a socket. Raises OSError on failure."""
     sock = socket.socket(family, socket.SOCK_STREAM)
@@ -229,6 +249,13 @@ def _is_android() -> bool:
 
 def _bind_http_socket() -> socket.socket:
     """Bind the HTTP listener, honouring the Android WebView port contract."""
+    if P4A_HTTP_PORT in CHROMIUM_RESTRICTED_PORTS:
+        raise RuntimeError(
+            f"P4A_HTTP_PORT={P4A_HTTP_PORT} is on Chromium's restricted-port "
+            "list: the Android WebView would refuse to load it with "
+            "net::ERR_UNSAFE_PORT. Pick a port not in net/base/port_util.cc "
+            "kRestrictedPorts and update p4a.port in app/buildozer.spec."
+        )
     if _is_android():
         deadline = time.monotonic() + P4A_BIND_TIMEOUT_SECONDS
         while True:
@@ -261,9 +288,14 @@ def _bind_ws_socket(http_port: int) -> socket.socket:
     """Bind the WebSocket listener on the first free port above http_port.
 
     Loopback only, by design: the token-authenticated terminal stream must
-    never be reachable from any non-loopback interface.
+    never be reachable from any non-loopback interface. Chromium's
+    restricted-port list applies to ``ws://`` too (IsPortAllowedForScheme is
+    scheme-agnostic), so blocked ports are skipped rather than advertised to
+    a UI that could never connect to them.
     """
     for port in range(http_port + 1, http_port + 101):
+        if port in CHROMIUM_RESTRICTED_PORTS:
+            continue
         try:
             return _bind_listener("127.0.0.1", port)
         except OSError:

@@ -61,7 +61,7 @@ Artifacts:
 cd app
 pip install flask waitress packaging certifi
 python main.py
-# Terminal at http://127.0.0.1:5000
+# Terminal at http://127.0.0.1:8000
 ```
 
 ## Testing

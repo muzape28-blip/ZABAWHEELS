@@ -156,6 +156,7 @@ function buildDocument() {
   mk('div', 'toolbar');
   return {
     body,
+    documentElement: new FakeElement('html'),
     getElementById: (id) => byId[id] || null,
     createElement: (tag) => new FakeElement(tag),
   };
@@ -481,6 +482,69 @@ async function scenarioScroll(script) {
   return results.every(Boolean);
 }
 
+async function scenarioSmoothness(script) {
+  const ui = loadUI(script);
+  const ws = ui.ws();
+  ws.open();
+  ui.clock.advance(400);               // boot-screen hide + first fitTerminal
+  const term = ui.term();
+
+  // LF-only output must be treated as CRLF (the messy/unaligned-edge fix).
+  ok(term.options.convertEol === true,
+    'smooth: convertEol enabled (bare LF renders as CRLF)');
+
+  // Writes are batched per frame: N messages in the same tick produce ONE
+  // merged term.write, not N renders (the stutter fix).
+  ws.onmessage({ data: new Blob([new Uint8Array([0x61, 0x62])]) });   // "ab"
+  ws.onmessage({ data: new Blob([new Uint8Array([0x0d, 0x0a])]) });   // CRLF
+  await flush();                       // drain the arrayBuffer microtasks
+  ok(term.writes.length === 0, 'smooth: writes deferred until the next frame');
+  ui.clock.advance(20);
+  ok(term.writes.length === 1, 'smooth: one merged write per frame',
+    `writes=${term.writes.length}`);
+  const merged = Array.from(term.writes[0] || []);
+  ok(merged.length === 4 && merged[0] === 0x61 && merged[1] === 0x62 &&
+     merged[2] === 0x0d && merged[3] === 0x0a,
+    'smooth: binary chunks merged in order', JSON.stringify(merged));
+
+  // Typing while reading history snaps back to live output (the "only
+  // catches up after the first keystroke" complaint).
+  term.buffer.active.baseY = 10;
+  term.viewport.dispatchEvent({ type: 'wheel', deltaY: -120 });
+  term._emitScroll(4);
+  ok(ui.read('userScrolledUp') === true, 'smooth: reading-history latch armed');
+  term._dataCb('e');
+  ok(ui.read('userScrolledUp') === false, 'smooth: typing un-latches reading');
+  ok(term.scrollTop === 10, 'smooth: typing snaps viewport to the bottom');
+
+  // Keyboard open (visualViewport shrinks) snaps to live output so the
+  // prompt is not hidden behind the IME until the user types.
+  term.buffer.active.baseY = 12;
+  term._emitScroll(3);
+  ui.windowObj.visualViewport = { height: 320 };
+  ui.read('fitToVisualViewport()');
+  ok(ui.read('userScrolledUp') === false, 'smooth: keyboard open un-latches reading');
+  ok(term.scrollTop === 12, 'smooth: keyboard open snaps to the prompt line');
+
+  // A `\x1b[3J` (scrollback clear) also snaps back to live output.
+  term.buffer.active.baseY = 9;
+  term.viewport.dispatchEvent({ type: 'wheel', deltaY: -120 });
+  term._emitScroll(2);
+  ws.onmessage({ data: new Blob([Buffer.from('\x1b[3J')]) });
+  await flush();
+  ui.clock.advance(20);
+  ok(ui.read('userScrolledUp') === false, 'smooth: \\x1b[3J resets the reading latch');
+  ok(term.scrollTop === 9, 'smooth: \\x1b[3J snaps to live output');
+
+  // And a plain-text frame still renders verbatim (batching must not mangle
+  // text frames).
+  ws.onmessage({ data: 'plain\r\n' });
+  await flush();
+  ui.clock.advance(20);
+  ok(term.writes.some((w) => w === 'plain\r\n'), 'smooth: text frames render verbatim');
+  return results.every(Boolean);
+}
+
 async function main() {
   const htmlPath = process.argv[2];
   if (!htmlPath) { console.error('usage: node ui_harness.js <terminal.html>'); process.exit(2); }
@@ -489,6 +553,7 @@ async function main() {
   await scenarioTabs(script);
   await scenarioKeysBar(script);
   await scenarioScroll(script);
+  await scenarioSmoothness(script);
 
   const failed = results.filter((r) => !r).length;
   console.log(`1..${results.length}`);
