@@ -244,6 +244,32 @@ perlu tahu SHA. Uninstall total (`Settings > Apps > ZMUX > Uninstall`) lalu
 install APK dari PR terbaru sebelum menjalankan verifikasi, karena update
 dengan data lama bisa menyimpan sisa build lama.
 
+## Update 5 — UX pass: `cd` home, soft keyboard, wrapping, scroll (2026-08-01)
+
+Setelah gates 5/5, user melaporkan empat masalah UX:
+
+1. **`cd` (tanpa argumen) gagal: "outside home directory".** Akar: Android
+   mengekspos app storage sebagai `/data/user/0/...` yang merupakan symlink
+   ke `/data/data/...`. `_cmd_cd` membandingkan `HOME_DIR` mentah dengan
+   `HOME_DIR.resolve()` → selalu "di luar home", padahal `cd <subdir>` jalan
+   (karena `_path()` me-resolve). Fix: resolve kedua sisi sebelum cek.
+2. **Soft keyboard menutupi banner/prompt.** WebView tidak me-resize saat
+   IME terbuka (perilaku adjustPan). Fix: pantau `visualViewport`; saat IME
+   buka/tutup, layout di-resize ke area terlihat + terminal di-fit ulang →
+   prompt selalu di atas keyboard, topbar tetap terlihat.
+3. **Batas layar ambigu; setelah `clear` prompt terlihat bergeser; wrapping
+   `help`/`cat README.md` berantakan.** Akar: `fitTerminal()` mengukur font
+   sebelum webfont selesai dimuat (fallback metrik) → cols terlalu besar →
+   teks melewati tepi kanan. Fix: clamp `.xterm-screen` ke 100% lebar,
+   re-fit saat `document.fonts.ready`, dan refresh canvas setelah `clear`.
+4. **Scroll tersendat & kurang agresif.** Akar: `scrollToBottom()` dipanggil
+   per-chunk output (reflow terus-menerus di HP kelas bawah); scrollback
+   cuma 2000 baris. Fix: coalesce per animation frame, momentum touch,
+   scrollback 6000.
+
+Semua diperbaiki di frontend (`app/templates/terminal.html`) + `cd` di
+`app/zmux/python_shell.py`. UI harness 44/44, Python 367 passed.
+
 ## Update 4 — gates 5/5 PASS + `git clone` yang terlihat "stuck" (2026-08-01)
 
 **Hasil perangkat setelah fix panjang-byte:** `gates` = **5/5 PASS**

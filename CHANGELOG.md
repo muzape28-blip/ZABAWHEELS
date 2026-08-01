@@ -8,6 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — `cd` home via symlink, soft-keyboard overlap, ragged wrapping, scroll stutter (2026-08-01)
+- **Bare `cd` no longer reports "outside home directory".** Android exposes
+  app storage as `/data/user/0/...`, a symlink to `/data/data/...`; `cd`
+  compared the raw HOME_DIR against its own `.resolve()` and failed, locking
+  the user out of `~` (while `cd <subdir>` worked because `_path()` resolves).
+  Both sides are resolved before the sandbox check now.
+- **Soft keyboard no longer covers the banner/input.** The frontend now
+  tracks the Visual Viewport: when the IME opens/closes the layout is
+  re-sized to the visible area and the terminal refits, so the prompt always
+  sits above the keyboard and the top bar stays visible.
+- **Line wrapping is exact; `help` / `cat README.md` render like a normal
+  terminal.** `fitTerminal()` clamps the xterm screen to 100% width, re-fits
+  once the bundled fonts finish loading (the first fit used fallback metrics
+  and produced ragged right edges), and forces a refresh after `clear` so
+  the prompt never renders shifted off the left edge.
+- **Scrolling is smoother and more aggressive.** `scrollToBottom` is
+  coalesced to one call per animation frame (was: once per output chunk,
+  causing reflow stutter on low-end phones), momentum touch scrolling is
+  enabled on the xterm viewport, and scrollback is raised to 6000 lines so
+  long tracebacks stay reachable.
+- Tests: 367 Python + 44 UI-harness checks pass.
+
 ### Fixed — `git clone` progress now streams; no more infinite hang on stray pipes (2026-08-01)
 - **On-device win: `gates` is 5/5 PASS.** With the length-preserving talloc
   rewrite, `linux apk add git openssh-client` installs 19 packages and

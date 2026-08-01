@@ -435,3 +435,40 @@ def test_finished_process_with_stray_pipe_holder_does_not_hang(tmp_path: Path):
     result = result_box["result"]
     assert result["ok"], result["stderr"]
     assert "done" in result["stdout"]
+
+
+# ---------------------------------------------------------------------------
+# Bare `cd` (go home) must work even when HOME_DIR is reached through a
+# symlink — Android exposes app storage as /data/user/0/... which resolves to
+# /data/data/...; comparing the raw path against its own .resolve() used to
+# fail and lock the user out of their home directory.
+# ---------------------------------------------------------------------------
+
+def test_bare_cd_returns_home_through_symlink(tmp_path: Path, monkeypatch):
+    from zmux import python_shell as ps
+    real_home = tmp_path / "real_home"
+    real_home.mkdir()
+    link_home = tmp_path / "link_home"
+    link_home.symlink_to(real_home, target_is_directory=True)
+    monkeypatch.setattr(ps, "HOME_DIR", link_home)
+
+    shell = PythonShell(real_home)
+    result = shell.execute("cd")
+    assert result["ok"], result["stderr"]
+    assert shell.cwd == real_home  # resolved to the real directory
+
+    # cd into a subdir and back home again
+    (real_home / "sub").mkdir()
+    assert shell.execute("cd sub")["ok"]
+    assert shell.cwd == real_home / "sub"
+    assert shell.execute("cd")["ok"]
+    assert shell.cwd == real_home
+
+
+def test_cd_outside_home_still_blocked(tmp_path: Path):
+    shell = PythonShell(tmp_path)
+    outside = tmp_path / ".." / "outside"
+    outside.mkdir(exist_ok=True)
+    result = shell.execute(f"cd {outside.resolve()}")
+    assert not result["ok"]
+    assert "outside home directory" in result["stderr"]

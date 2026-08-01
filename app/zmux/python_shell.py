@@ -472,12 +472,19 @@ class PythonShell:
 
     def _cmd_cd(self, args: list[str]) -> str:
         if len(args) > 1: raise ValueError("too many arguments")
-        target = self._path(args[0]) if args else HOME_DIR
+        # Resolve BOTH sides before comparing. On Android, APP_DIR often
+        # arrives as /data/user/0/... which is a symlink to /data/data/...;
+        # comparing the raw HOME_DIR against its own .resolve() failed and
+        # bare `cd` (go home) reported "outside home directory" while
+        # `cd <subdir>` worked (because _path() resolves). Resolving the
+        # target fixes both and keeps the sandbox check intact.
+        home = HOME_DIR.resolve()
+        target = self._path(args[0]).resolve() if args else home
         # Keep the virtual terminal inside app-private storage. This avoids
         # exposing arbitrary device paths while preserving a real persistent
         # directory change for subsequent Python and subprocess operations.
         try:
-            target.relative_to(HOME_DIR.resolve())
+            target.relative_to(home)
         except ValueError:
             raise PermissionError(f"cannot access '{target}': outside home directory")
         if not target.is_dir():
