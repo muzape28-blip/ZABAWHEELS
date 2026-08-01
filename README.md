@@ -319,7 +319,7 @@ PYTHONPATH=. pytest -q app/tests tests/          # 367 passing, 25 skipped
 # Frontend behavioral tests (Node)
 node app/tests/ui_harness.js app/templates/terminal.html   # 44/44
 
-# Run the terminal on desktop (browser at http://127.0.0.1:5000)
+# Run the terminal on desktop (browser at http://127.0.0.1:8000)
 python main.py
 ```
 

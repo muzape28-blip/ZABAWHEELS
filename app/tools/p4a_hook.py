@@ -2,7 +2,9 @@
 ZMUX p4a hook — inject explicit taskAffinity + documentLaunchMode
 Coexistence fix with Zabacode (see ZABACODE docs/COEXISTENCE_FIX.md)
 
-Zabacode 5000, Zmux 6000 — distinct ports prevent loopback cross-talk.
+Zabacode 5000, Zmux 8000 — distinct ports prevent loopback cross-talk.
+(6000 was Chromium-blocked: the Android WebView refuses to load it with
+net::ERR_UNSAFE_PORT, so ZMUX's WebView port is 8000.)
 TaskAffinity fix prevents launcher task confusion on budget devices.
 """
 from pathlib import Path

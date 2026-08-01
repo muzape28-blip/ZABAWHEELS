@@ -8,6 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed — WebView dead on start: `net::ERR_UNSAFE_PORT` on port 6000 (2026-08-01)
+- **"Halaman web tidak tersedia — `net::ERR_UNSAFE_PORT`"** was caused by the
+  WebView HTTP port itself: ZMUX served on `127.0.0.1:6000`, and **6000 is
+  X11 — one of Chromium's restricted ports** (`net/base/port_util.cc`
+  `kRestrictedPorts`). The p4a bootstrap's `WebViewLoader.testConnection()`
+  still succeeds on a restricted port (a bare TCP connect is not filtered),
+  so the WebView boots, pings, then refuses to *load*
+  `http://127.0.0.1:6000/` — exactly the on-device symptom.
+- **Fix: the WebView HTTP port moves 6000 → 8000** (`p4a.port` in
+  `app/buildozer.spec` + `P4A_HTTP_PORT` in `app/zmux/server.py`). 8000 is
+  not on Chromium's restricted list and stays clear of Zabacode's 5000 and
+  its WebSocket range (5001-5100), preserving the coexistence contract that
+  ended the "buka zmux muncul zabacode" loopback cross-talk.
+- **Regression guards:** `app/zmux/server.py` now ships the frozen
+  `CHROMIUM_RESTRICTED_PORTS` set, `_bind_http_socket()` hard-fails if the
+  contract port ever lands on it, and `_bind_ws_socket()` skips restricted
+  ports while scanning for a free WebSocket port (the list applies to
+  `ws://` too).
+- Docs (`docs/ARCHITECTURE.md`, `README.md`, `docs/BUILDING.md`) updated to
+  the 8000 contract; APK version bumped to 1.0.2 so the rebuilt APK is
+  distinguishable on-device via `zmux-info`/`gates`.
+
 ### Fixed — `cd` home via symlink, soft-keyboard overlap, ragged wrapping, scroll stutter (2026-08-01)
 - **Bare `cd` no longer reports "outside home directory".** Android exposes
   app storage as `/data/user/0/...`, a symlink to `/data/data/...`; `cd`

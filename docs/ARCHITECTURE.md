@@ -87,10 +87,22 @@ ZMUX is a standalone Android terminal application that runs as a WebView fronten
 
 ## Boot & Port Contract (p4a WebView Bootstrap)
 
-The pinned Python-for-Android WebView bootstrap starts `main.py` in a background thread, while `WebViewLoader.testConnection()` polls **`localhost:5000`** (the value of `p4a.port` in `buildozer.spec`) continuously until a TCP connection succeeds before loading `http://127.0.0.1:5000/`. To guarantee reliable boot across Android devices:
+The pinned Python-for-Android WebView bootstrap starts `main.py` in a background thread, while `WebViewLoader.testConnection()` polls **`localhost:8000`** (the value of `p4a.port` in `buildozer.spec`) continuously until a TCP connection succeeds before loading `http://127.0.0.1:8000/`. To guarantee reliable boot across Android devices:
 
-- **Strict Android Port 5000 Ownership (`SO_REUSEPORT`):** On Android, the HTTP server must bind exactly port 5000. Setting both `SO_REUSEADDR` and `SO_REUSEPORT` ensures that restarting ZMUX while a previous socket is lingering in `TIME_WAIT` never throws `Address already in use`.
-- **Multi-Host Fallback (Loopback-Only):** If binding `127.0.0.1:5000` fails due to OEM network stack variations, ZMUX retries binding on `localhost`. Binding to `0.0.0.0` was deliberately removed: `/` serves the WebView auth token without authentication, so a wildcard-interface bind would hand that token — and with it full command execution — to every device on the local network. Loopback is a hard security invariant, not a preference.
+- **Why 8000 — and not 5000 or 6000:** Zabacode owns port 5000 on the same
+  device, so ZMUX must never bind it; two apps serving one loopback port
+  caused the "buka zabacode muncul zmux" cross-talk (SO_REUSEPORT lets both
+  bind, and the kernel then routes each WebView connection to a random one).
+  Port 6000 was tried next but is **X11 — one of Chromium's restricted ports**
+  (`net/base/port_util.cc` `kRestrictedPorts`). The Android WebView refuses
+  to *load* any URL on a restricted port with `net::ERR_UNSAFE_PORT`, while
+  `WebViewLoader`'s bare TCP ping still succeeds (raw connects are not
+  filtered), so the WebView booted, pinged, then showed "This webpage is not
+  available". 8000 is on neither list and is enforced by a frozen
+  `CHROMIUM_RESTRICTED_PORTS` set plus a hard guard in `_bind_http_socket()`
+  in `app/zmux/server.py`.
+- **Strict Android Port 8000 Ownership (`SO_REUSEPORT`):** On Android, the HTTP server must bind exactly port 8000. Setting both `SO_REUSEADDR` and `SO_REUSEPORT` ensures that restarting ZMUX while a previous socket is lingering in `TIME_WAIT` never throws `Address already in use`.
+- **Multi-Host Fallback (Loopback-Only):** If binding `127.0.0.1:8000` fails due to OEM network stack variations, ZMUX retries binding on `localhost`. Binding to `0.0.0.0` was deliberately removed: `/` serves the WebView auth token without authentication, so a wildcard-interface bind would hand that token — and with it full command execution — to every device on the local network. Loopback is a hard security invariant, not a preference.
 - **Pre-Bound Listener Injection:** Sockets are bound before starting Waitress (`serve(..., sockets=[...])`) and the WebSocket server (`start(listeners=[...])`), eliminating probe-then-bind race conditions.
 - **Dual IPv4/IPv6 Loopback Listeners:** Both the HTTP server and WebSocket server listen simultaneously on IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback addresses, preventing connection hangs when `localhost` resolves to IPv6.
 

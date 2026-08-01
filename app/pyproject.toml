@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zmux"
-version = "1.0.0"
+version = "1.0.2"
 description = "ZMUX — Android Terminal for Python"
 requires-python = ">=3.10"
 dependencies = [
