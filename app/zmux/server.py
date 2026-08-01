@@ -192,7 +192,7 @@ def get_prompt():
 #: loads http://127.0.0.1:5000/ once it answers. On Android we must therefore
 #: serve on this port — silently moving to another port leaves the WebView
 #: waiting forever (the "stuck on loading screen" boot freeze).
-P4A_HTTP_PORT = 5000
+P4A_HTTP_PORT = 6000
 #: How long to wait for the p4a port to become free on Android (a zombie
 #: process from a previous launch may hold it briefly).
 P4A_BIND_TIMEOUT_SECONDS = 30.0
