@@ -507,7 +507,11 @@ class PTYTerminalSession:
         self._emit(
             f"\r\n[Alpine shell exited (code {code})]\r\n".encode("utf-8", errors="replace")
         )
-        self._emit_prompt()
+        # A terminal emulator does not drop users into an unrelated interpreter
+        # after `exit`. Keep the one user-facing contract: if the app/session
+        # remains alive, replace the exited Alpine shell with a fresh PTY.
+        if self.is_running and self._auto_start_alpine():
+            self._enter_linux_pty()
 
     def _leave_linux_pty(self, reason: str = "detach") -> None:
         """Terminate the Alpine PTY session and return to the host console."""

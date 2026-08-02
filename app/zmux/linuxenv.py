@@ -582,6 +582,13 @@ def run_gates(report=None) -> dict:
     """
     if report is None:
         report = progress_sink if progress_sink is not None else print
+
+    # ``print`` supplies a newline, but the live terminal progress sink writes
+    # raw bytes directly to the PTY/WebSocket. Without this boundary, adjacent
+    # gate results were glued together as `...possible[PASS]...` on phones.
+    def report_line(text: str) -> None:
+        report(text if text.endswith("\n") else text + "\n")
+
     results: dict = {}
 
     # Identify the exact build under test; "fixed APK still failing" reports
@@ -591,13 +598,13 @@ def run_gates(report=None) -> dict:
         from zmux.buildinfo import build_marker
         marker = build_marker()
         if marker:
-            report(f"[INFO] zmux build: {marker}")
+            report_line(f"[INFO] zmux build: {marker}")
     except Exception:
         pass
 
     def gate(name, ok, detail):
         results[name] = {"ok": bool(ok), "detail": str(detail)}
-        report(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+        report_line(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
         return bool(ok)
 
     # G1 — /dev/ptmx: can ZMUX ever be a real PTY terminal?
@@ -713,7 +720,7 @@ def run_gates(report=None) -> dict:
     else:
         gate("apk", False, "skipped: proot/rootfs unavailable")
 
-    report("")
+    report_line("")
     passed = sum(1 for r in results.values() if r["ok"])
-    report(f"[INFO] gates passed: {passed}/{len(results)}")
+    report_line(f"[INFO] gates passed: {passed}/{len(results)}")
     return results
