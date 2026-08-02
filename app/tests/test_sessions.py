@@ -166,11 +166,15 @@ class TestSnapshot:
         assert snap["active"] == second
         assert snap["max"] == SessionManager.MAX_SESSIONS
 
-    def test_resize_applies_to_every_session(self, manager):
-        second = manager.create()
+    def test_resize_defers_background_tui_until_tab_is_visible(self, manager):
+        first = manager.ids()[0]
+        second = manager.create()  # second is active
         manager.resize(120, 40)
         assert manager.get(second).shell.width == 120
-        assert manager.get(manager.ids()[0]).shell.width == 120
+        # The inactive tab is deliberately left alone during IME animation.
+        assert manager.get(first).shell.width != 120
+        manager.switch(first)
+        assert manager.get(first).shell.width == 120
 
 
 class TestEndToEnd:
