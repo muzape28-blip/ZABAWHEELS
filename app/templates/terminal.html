@@ -53,7 +53,9 @@ body {
 
 /* Top Bar */
 #topbar {
-  height: 40px;
+  /* Terminal space is the primary UI on a phone. Keep controls tappable but
+     avoid spending two full desktop-height rows above every session. */
+  height: 36px;
   background: var(--bg-input);
   border-bottom: 1px solid #30363d;
   display: flex;
@@ -95,7 +97,7 @@ body {
   align-items: center;
   gap: 6px;
   padding: 0 8px 0 12px;
-  height: 42px;
+  height: 38px;
   background: var(--bg-input);
   border-bottom: 1px solid #30363d;
   flex-shrink: 0;
@@ -108,9 +110,9 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 8px 14px;           /* big enough to tap confidently on a phone */
-  min-width: 44px;
-  min-height: 32px;
+  padding: 5px 12px;           /* compact, still a comfortable tap target */
+  min-width: 40px;
+  min-height: 30px;
   font-size: 12px;
   font-family: var(--mono);
   color: var(--text-dim);
@@ -144,7 +146,7 @@ body {
 @keyframes tab-hold-progress { from { width: 0; } to { width: 100%; } }
 #tab-new {
   color: var(--text-bright); background: transparent; border: 1px dashed #30363d;
-  border-radius: 4px; padding: 8px 12px; min-height: 32px; font-size: 13px;
+  border-radius: 4px; padding: 5px 11px; min-height: 30px; font-size: 13px;
   cursor: pointer; flex-shrink: 0;
 }
 #status-dot {
@@ -224,6 +226,9 @@ body {
 /* The compact toolbar remains easy to tap, while consuming only one row. */
 .tool-btn { min-height: 38px; }
 @media (max-height: 620px) {
+  #topbar { height: 34px; }
+  #tabs { height: 36px; }
+  .tab, #tab-new { min-height: 28px; padding-top: 4px; padding-bottom: 4px; }
   #toolbar { padding: 4px 6px; }
   .tool-btn { min-height: 34px; padding: 4px 9px; }
 }
