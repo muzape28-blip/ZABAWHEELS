@@ -71,6 +71,22 @@ _SPLASH_ICON_VECTOR = """<vector xmlns:android=\"http://schemas.android.com/apk/
 """
 
 
+# p4a's webview bootstrap loads file:///android_asset/_load.html while its
+# loopback server starts. Its stock CSS is exactly the white page with three
+# lavender bars seen on-device. Replace that transient page with the same dark
+# ZMUX identity as the native system splash.
+_WEBVIEW_LOADER_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="_loading_style.css"><title>ZMUX</title></head>
+<body><main aria-label="ZMUX loading"><div class="mark">Z&gt;_</div></main></body></html>
+"""
+_WEBVIEW_LOADER_CSS = """html,body{width:100%;height:100%;margin:0;background:#0d1117;overflow:hidden}
+body{display:grid;place-items:center;font-family:monospace}
+.mark{color:#52e878;font-size:clamp(56px,18vw,128px);font-weight:800;letter-spacing:-.13em;
+      text-shadow:0 0 18px rgba(82,232,120,.35)}
+"""
+
+
 def _write_if_changed(path: Path, content: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -90,6 +106,9 @@ def _install_splash_resources(manifest_path: Path) -> bool:
     changed |= _write_if_changed(res / "values" / "zmux_splash.xml", _SPLASH_BASE_VALUES)
     changed |= _write_if_changed(res / "values-v31" / "zmux_splash.xml", _SPLASH_V31_VALUES)
     changed |= _write_if_changed(res / "drawable" / "zmux_splash_icon.xml", _SPLASH_ICON_VECTOR)
+    assets = manifest_path.parent / "assets"
+    changed |= _write_if_changed(assets / "_load.html", _WEBVIEW_LOADER_HTML)
+    changed |= _write_if_changed(assets / "_loading_style.css", _WEBVIEW_LOADER_CSS)
     return changed
 
 
