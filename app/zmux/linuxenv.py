@@ -306,10 +306,50 @@ def guest_cwd(host_cwd: Path) -> str:
     return f"{GUEST_HOME}/{rel.as_posix()}"
 
 
+def _storage_bind_paths() -> list[Path]:
+    """Host storage paths that must remain valid *inside* the PRoot guest.
+
+    ``zmux-setup-storage`` creates links such as ``~/storage/downloads`` ->
+    ``/sdcard/Download``. A symlink is visible through the /root bind, but its
+    absolute target was previously not mounted in Alpine, producing the
+    confusing ``ls`` works / ``cd`` says no such file error. Bind the target
+    paths at their original guest paths as well.
+    """
+    candidates = [
+        os.environ.get("ANDROID_APP_PATH", ""),
+        os.environ.get("EXTERNAL_STORAGE", ""),
+        os.environ.get("ANDROID_STORAGE", ""),
+        "/sdcard",
+        "/storage/emulated/0",
+    ]
+    paths: list[Path] = []
+    for value in candidates:
+        if not value:
+            continue
+        path = Path(value)
+        if path.is_dir() and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _ensure_guest_mountpoint(path: Path) -> None:
+    """Create the rootfs-side destination used by an absolute storage bind."""
+    try:
+        # Only absolute host paths become guest absolute paths; strip the
+        # leading slash so a malicious env value cannot escape the rootfs.
+        relative = Path(str(path)).relative_to("/")
+        (rootfs_dir() / relative).mkdir(parents=True, exist_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
 def _bind_flags() -> list:
     """proot bind flags shared by every invocation."""
     flags = ["-b", "/dev", "-b", "/proc", "-b", "/sys"]
     flags += ["-b", f"{HOME_DIR}:{HOME_BIND}"]
+    for path in _storage_bind_paths():
+        _ensure_guest_mountpoint(path)
+        flags += ["-b", f"{path}:{path}"]
     resolv = Path("/etc/resolv.conf")
     if resolv.is_file():
         flags += ["-b", f"{resolv}:/etc/resolv.conf"]

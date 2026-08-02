@@ -74,6 +74,21 @@ def test_build_command_line_uses_proot_binary(monkeypatch):
     assert ":/root" in line  # home bind present
 
 
+def test_storage_target_is_bound_into_alpine(tmp_path, monkeypatch):
+    rootfs = tmp_path / "rootfs"
+    rootfs.mkdir()
+    external = tmp_path / "sdcard"
+    external.mkdir()
+    monkeypatch.setattr(linuxenv, "_ROOTFS_DIR", rootfs)
+    monkeypatch.setenv("EXTERNAL_STORAGE", str(external))
+    monkeypatch.delenv("ANDROID_APP_PATH", raising=False)
+    monkeypatch.delenv("ANDROID_STORAGE", raising=False)
+    monkeypatch.setattr(linuxenv, "_storage_bind_paths", lambda: [external])
+    flags = linuxenv._bind_flags()
+    assert f"{external}:{external}" in flags
+    assert (rootfs / str(external).lstrip("/")).is_dir()
+
+
 def test_safe_extract_rejects_traversal(tmp_path):
     import io
     evil = tmp_path / "evil.tar.gz"
