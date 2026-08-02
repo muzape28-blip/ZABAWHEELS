@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Alpine Linux terminal for Android.</strong><br>
-  A real PTY, real <code>apk</code>, real Git, and a mobile-first terminal UI — without Android root.
+  ZMUX, TERMINAL LINUX FOR YOU.
 </p>
 
 <p align="center">
