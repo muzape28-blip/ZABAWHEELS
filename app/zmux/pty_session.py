@@ -165,6 +165,14 @@ class PTYTerminalSession:
         self._history_index: Optional[int] = None
         self._history_stash = ""
         self._esc_state = ""  # "" | "esc" | "csi"
+        # Before the rootfs exists, this is a setup gate rather than a hidden
+        # Python shell. It accepts only linux-setup and then enters Alpine.
+        self._awaiting_alpine = False
+        self._start_alpine_after_command = False
+        # The extensive legacy executor tests intentionally exercise the old
+        # internal command runner without an Alpine fixture. Production never
+        # exposes that runner as a user shell.
+        self._setup_gate_enabled = os.environ.get("ZMUX_TEST") != "1"
 
         self._command_queue: queue.Queue = queue.Queue()
         self._stdin_queue: queue.Queue[str] = queue.Queue()
@@ -195,11 +203,15 @@ class PTYTerminalSession:
             if self._auto_start_alpine():
                 self._enter_linux_pty()
             else:
-                self._emit(
-                    b"ZMUX needs its Alpine Linux environment before a terminal can open.\r\n"
-                    b"Run `linux-setup` to install it, then open a new session.\r\n"
-                )
-                self._emit_prompt()
+                if self._setup_gate_enabled:
+                    self._awaiting_alpine = True
+                    self._emit(
+                        b"ZMUX needs its Alpine Linux environment before a terminal can open.\r\n"
+                        b"Type `linux-setup` to download and verify Alpine, then ZMUX opens it automatically.\r\n"
+                    )
+                    self._emit_setup_prompt()
+                else:  # test-only legacy executor coverage
+                    self._emit_prompt()
 
     def _run_rc(self) -> None:
         """Execute ``~/.zmuxrc`` before the first prompt, if present.
@@ -290,6 +302,11 @@ class PTYTerminalSession:
         if not self._at_line_start:
             self._emit(b"\r\n")
         self._emit(self._prompt().encode("utf-8"))
+
+    def _emit_setup_prompt(self) -> None:
+        if not self._at_line_start:
+            self._emit(b"\r\n")
+        self._emit(b"alpine-setup> ")
 
     # -------------------------------------------------------------- input
     def write_input(self, data: bytes) -> None:
@@ -399,6 +416,13 @@ class PTYTerminalSession:
                 self._emit_prompt()
             return
         self._history_record(stripped)
+        if self._awaiting_alpine:
+            if stripped == "linux-setup":
+                self._command_queue.put((line, "shell"))
+            else:
+                self._emit(b"Only `linux-setup` is available until Alpine is ready.\r\n")
+                self._emit_setup_prompt()
+            return
         if self._mode == "shell" and stripped in _REPL_ENTER:
             self._enter_repl()
             return
@@ -650,7 +674,17 @@ class PTYTerminalSession:
         )
         if pending:
             self._emit(pending.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", errors="replace"))
-        self._emit_prompt()
+        if self._awaiting_alpine:
+            from zmux import linuxenv
+            if linuxenv.is_installed() and linuxenv.proot_binary() is not None:
+                self._awaiting_alpine = False
+                # _enter_linux_pty deliberately refuses while the command is
+                # busy; defer it to _finish_command after linux-setup exits.
+                self._start_alpine_after_command = True
+            else:
+                self._emit_setup_prompt()
+        else:
+            self._emit_prompt()
 
     def _finish_command(self) -> None:
         interrupted = self.shell._interrupt.is_set()
@@ -659,6 +693,10 @@ class PTYTerminalSession:
             # After Ctrl+C, discard type-ahead instead of executing stale lines.
             self._drain(self._stdin_queue)
             self.shell.clear_interrupt()
+            return
+        if self._start_alpine_after_command:
+            self._start_alpine_after_command = False
+            self._enter_linux_pty()
             return
         # Real-terminal type-ahead: lines typed while the command ran become
         # the next commands, in order.
