@@ -213,11 +213,19 @@ class RealPtyProcess:
             pass
 
     def kill(self) -> None:
-        """SIGKILL to the whole session (process group). Reader reaps."""
+        """SIGKILL the session and unblock the reader immediately.
+
+        Some PRoot process trees keep a slave descriptor alive briefly after
+        their leader dies. Merely signalling the process group then leaves the
+        reader blocked in ``os.read`` and makes shutdown/reconnect appear
+        flaky. Closing the master is safe after SIGKILL and guarantees the
+        reader reaches its reap path.
+        """
         try:
             os.killpg(self.pid, signal.SIGKILL)
         except OSError:
             pass
+        self.close()
 
     def close(self) -> None:
         """Close the master. Unblocks a reader stuck in os.read()."""
