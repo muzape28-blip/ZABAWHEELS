@@ -27,6 +27,13 @@ from typing import Optional
 
 from zmux import crash
 
+# A tab can be switched while the previous program (Vim, less, top, …) owns
+# xterm's alternate screen. A plain ED2 clear only clears that *same* buffer;
+# it does not return to the normal terminal screen, so the next tab can look
+# blank or inherit a TUI frame. Always leave the known xterm alternate-buffer
+# modes before clearing/replaying a session.
+RESET_TERMINAL_SCREEN = b"\x1b[?1049l\x1b[?47l\x1b[?1047l\x1b[2J\x1b[H"
+
 
 class SessionManager:
     """Owns every terminal session and decides which one is on screen."""
@@ -80,7 +87,7 @@ class SessionManager:
                 # like switch(). Without this the new banner/prompt were
                 # appended over the old screen — "the tab did not change,
                 # there are just more prompts now".
-                self.ws_server.broadcast(b"\x1b[2J\x1b[H")
+                self.ws_server.broadcast(RESET_TERMINAL_SCREEN)
             session.start()
             return session_id
 
@@ -110,7 +117,7 @@ class SessionManager:
             session = self._sessions[session_id]
         # Clear the client's screen, then repaint from this session's history
         # so switching never shows a mix of two sessions.
-        self.ws_server.broadcast(b"\x1b[2J\x1b[H")
+        self.ws_server.broadcast(RESET_TERMINAL_SCREEN)
         scrollback = session.get_scrollback()
         if scrollback:
             self.ws_server.broadcast(scrollback)

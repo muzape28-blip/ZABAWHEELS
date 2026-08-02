@@ -195,9 +195,13 @@ class WebSocketServer:
             # Replay the active session's scrollback so a reload, rotation or
             # reconnect restores the screen instead of showing a blank terminal.
             try:
-                from zmux.sessions import get_manager
+                from zmux.sessions import RESET_TERMINAL_SCREEN, get_manager
                 session = get_manager(self).active
                 scrollback = session.get_scrollback() if session else b""
+                # A reconnect can happen while Vim/less owns xterm's alternate
+                # buffer. Reset it before replaying the selected session so a
+                # normal shell tab never inherits a stale TUI screen.
+                self._send_frame(sock, 2, RESET_TERMINAL_SCREEN)
                 if scrollback:
                     self._send_frame(sock, 2, scrollback)
                 self._send_sessions_state()
