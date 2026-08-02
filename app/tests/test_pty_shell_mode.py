@@ -208,7 +208,7 @@ def test_guest_wrappers_are_installed_into_rootfs(session, alpine_env):
     assert wrapper.is_file()
     assert os.access(wrapper, os.X_OK)
     text = wrapper.read_text(encoding="utf-8")
-    assert "ZMUX host tool" in text
+    assert "app diagnostic" in text
 
 
 def test_linux_dashdash_help_still_shows_help(session, alpine_env):
