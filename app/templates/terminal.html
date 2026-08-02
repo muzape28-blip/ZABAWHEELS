@@ -499,7 +499,32 @@ function flushTermWrite() {
 // follow, and force a refresh so the cleared canvas renders at the current
 // width — otherwise the viewport appears glued to stale history or
 // mis-measured.
+// This exact sequence is emitted by the session manager before it replays a
+// different tab. CSI 2J clears only the *visible* xterm page; its scrollback
+// still held the old tab, so dragging upward exposed another session's ping /
+// git output. Detect the manager reset and clear xterm's own buffer first.
+const SESSION_RESET_SEQUENCE = '\x1b[?1049l\x1b[?47l\x1b[?1047l\x1b[2J\x1b[H';
+function isSessionScreenReset(data) {
+  if (typeof data === 'string') return data.indexOf(SESSION_RESET_SEQUENCE) !== -1;
+  if (!data || data.length < SESSION_RESET_SEQUENCE.length) return false;
+  for (let start = 0; start <= data.length - SESSION_RESET_SEQUENCE.length; start++) {
+    let same = true;
+    for (let i = 0; i < SESSION_RESET_SEQUENCE.length; i++) {
+      if (data[start + i] !== SESSION_RESET_SEQUENCE.charCodeAt(i)) { same = false; break; }
+    }
+    if (same) return true;
+  }
+  return false;
+}
+function clearPreviousSessionBuffer() {
+  writeQueue.length = 0; // discard output queued for the tab just left
+  try { if (term && typeof term.clear === 'function') term.clear(); } catch (e) {}
+  userScrolledUp = false;
+  lastScrollTop = 0;
+}
+
 function writeTerminalOutput(data, containsClearScreen) {
+  if (isSessionScreenReset(data)) clearPreviousSessionBuffer();
   if (typeof data === 'string') {
     if (data) writeQueue.push(data);
   } else if (data && data.length) {
