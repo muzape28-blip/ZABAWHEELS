@@ -315,7 +315,7 @@ class TestRepaint:
             assert mgr.active_id == second
             assert b"\x1b[2J\x1b[H" in ws.data, "screen must be cleared"
             # The banner of the *second* session follows the clear.
-            assert ws.data.index(b"\x1b[2J\x1b[H") < ws.data.index(b"ZMUX terminal")
+            assert ws.data.index(b"\x1b[2J\x1b[H") < ws.data.index(b"ZMUX needs its Alpine")
         finally:
             mgr.stop_all()
             reset_manager()

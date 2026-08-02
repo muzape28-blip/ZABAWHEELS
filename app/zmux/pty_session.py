@@ -189,7 +189,9 @@ class PTYTerminalSession:
             self._exec_thread.start()
             # Alpine is the product shell. The embedded Python runtime remains
             # an implementation detail for the Android bridge, never a second
-            # user-facing pseudo-shell.
+            # user-facing pseudo-shell. Keep the private rc hook for existing
+            # installs and migration logic; it is never presented as a shell.
+            self._run_rc()
             if self._auto_start_alpine():
                 self._enter_linux_pty()
             else:

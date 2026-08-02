@@ -964,7 +964,12 @@ function fitToVisualViewport() {
   // A CSS variable keeps the complete flex shell (including xterm's mount)
   // inside the actual IME-visible viewport. Direct body/html height writes
   // were overwritten by CSS in some Android WebViews.
-  document.documentElement.style.setProperty('--app-height', visibleHeight + "px");
+  if (document.documentElement.style.setProperty) {
+    document.documentElement.style.setProperty('--app-height', visibleHeight + "px");
+  } else {
+    // Lightweight WebView/test DOMs may expose a plain style object.
+    document.documentElement.style['--app-height'] = visibleHeight + "px";
+  }
   // Re-anchor to the top: with the layout sized to the visible viewport the
   // browser no longer needs to pan the page up behind the keyboard.
   if (window.scrollY > 0) window.scrollTo(0, 0);
