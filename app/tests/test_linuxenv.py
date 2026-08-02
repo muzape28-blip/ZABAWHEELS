@@ -46,6 +46,17 @@ def test_guest_cwd_falls_back_outside_home():
     assert linuxenv.guest_cwd(Path("/somewhere/else")) == "/"
 
 
+def test_interactive_environment_creates_persistent_workspace_profile(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(linuxenv, "HOME_DIR", home)
+    env = linuxenv.interactive_env()
+    profile = home / ".profile"
+    assert (home / "projects").is_dir()
+    assert profile.is_file()
+    assert "zmux@alpine" in profile.read_text(encoding="utf-8")
+    assert env["PS1"] == "zmux@alpine:\\w\\$ "
+
+
 def test_build_command_line_requires_proot(monkeypatch):
     monkeypatch.delenv("ZMUX_PROOT_BIN", raising=False)
     monkeypatch.setattr(linuxenv, "_is_android", lambda: False)

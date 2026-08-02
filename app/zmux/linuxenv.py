@@ -363,6 +363,26 @@ def build_interactive_argv(host_cwd: Path) -> list:
     return argv
 
 
+def ensure_user_home_layout() -> None:
+    """Create the persistent Alpine-facing workspace without touching files
+    a user has already customised.
+
+    ``HOME_DIR`` is bind-mounted as /root, so these files survive rootfs
+    repair/reinstall and APK upgrades. A profile is created only on first use;
+    existing user profiles always remain authoritative.
+    """
+    HOME_DIR.mkdir(parents=True, exist_ok=True)
+    (HOME_DIR / "projects").mkdir(parents=True, exist_ok=True)
+    profile = HOME_DIR / ".profile"
+    if not profile.exists():
+        profile.write_text(
+            "# Created by ZMUX. This file is yours to customise.\n"
+            "export PS1='zmux@alpine:\\w\\$ '\n"
+            "mkdir -p \"$HOME/projects\"\n",
+            encoding="utf-8",
+        )
+
+
 def interactive_env() -> dict:
     """Environment for the interactive PTY shell.
 
@@ -370,6 +390,7 @@ def interactive_env() -> dict:
     Android); TERM + LANG make TUI programs (vim/htop/less) render correctly
     and set a friendly root prompt inside Alpine.
     """
+    ensure_user_home_layout()
     env = proot_env()
     env["TERM"] = "xterm-256color"
     env["LANG"] = "C.UTF-8"
