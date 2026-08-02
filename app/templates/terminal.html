@@ -35,7 +35,15 @@ window.onunhandledrejection = function(event) {
   --mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg); }
+html, body {
+  /* --app-height is set from Android's VisualViewport when the IME opens.
+     Keeping it on both roots makes the flex shell genuinely shrink instead
+     of merely being panned behind the soft keyboard. */
+  height: var(--app-height, 100%);
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
 body {
   color: var(--text);
   font-family: var(--mono);
@@ -154,7 +162,11 @@ body {
 
 /* Terminal Container */
 #terminal-container {
-  flex: 1;
+  /* min-height:0 is essential in a column flex layout: without it this item
+     may retain its content height and slide underneath Android's IME. */
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   background: var(--bg);
   padding: 8px;
   overflow: hidden;
@@ -181,30 +193,40 @@ body {
   max-width: 100% !important;
 }
 
-/* Bottom toolbar — two rows of virtual keys */
+/* Bottom toolbar — deliberately ONE horizontal row. A mobile keyboard has
+   already consumed most of the screen; wrapping controls into 2–3 rows made
+   the live terminal unusable. Swipe horizontally for less common keys. */
 #toolbar {
   background: var(--bg-input);
   border-top: 1px solid #30363d;
   padding: 6px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 5px;
   flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+#toolbar::-webkit-scrollbar { height: 0; display: none; }
 /* Hidden via the topbar toggle; display:none (not height:0) so the flex
    layout hands every pixel back to the terminal before fitTerminal(). */
 #toolbar.hidden { display: none; }
 .key-row {
   display: flex;
   gap: 5px;
-  flex-wrap: wrap;          /* every key stays reachable — nothing hidden
-                               behind an unscrollable overflow on narrow
-                               screens (buttons "could not be scrolled") */
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 .key-row::-webkit-scrollbar { height: 0; display: none; }
+/* The compact toolbar remains easy to tap, while consuming only one row. */
+.tool-btn { min-height: 38px; }
+@media (max-height: 620px) {
+  #toolbar { padding: 4px 6px; }
+  .tool-btn { min-height: 34px; padding: 4px 9px; }
+}
 
 .tool-btn {
   background: #21262d;
@@ -773,10 +795,7 @@ const KEY_ROWS = [
     { label: '←', send: '\x1b[D', repeat: true },
     { label: '→', send: '\x1b[C', repeat: true },
     { label: 'Home', send: '\x1b[H' },
-    { label: 'End', send: '\x1b[F' }
-  ],
-  [
-    { label: 'ZMX⇄', action: 'pty.toggle' },
+    { label: 'End', send: '\x1b[F' },
     { label: '^C', send: '\x03', danger: true },
     { label: '^D', send: '\x04', danger: true },
     { label: '⌫', send: '\x7f', repeat: true },
@@ -905,8 +924,13 @@ function fitTerminal() {
   document.body.appendChild(charMeasure);
 
   const rect = charMeasure.getBoundingClientRect();
-  const charWidth = rect.width || 7.8;
-  const charHeight = rect.height || 18;
+  // Prefer xterm's measured cell geometry. The hidden HTML span is only a
+  // fallback: browser text metrics can differ from xterm's canvas metrics,
+  // which made the PTY believe in a different column count than the screen.
+  let cell = null;
+  try { cell = term._core && term._core._renderService && term._core._renderService.dimensions.css.cell; } catch (e) {}
+  const charWidth = (cell && cell.width) || rect.width || 7.8;
+  const charHeight = (cell && cell.height) || rect.height || 18;
   document.body.removeChild(charMeasure);
 
   // Subtract padding (8px each side). The .xterm-screen is clamped to 100%
@@ -937,8 +961,10 @@ function fitToVisualViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
   const visibleHeight = Math.max(120, Math.round(vv.height));
-  document.documentElement.style.height = visibleHeight + "px";
-  document.body.style.height = visibleHeight + "px";
+  // A CSS variable keeps the complete flex shell (including xterm's mount)
+  // inside the actual IME-visible viewport. Direct body/html height writes
+  // were overwritten by CSS in some Android WebViews.
+  document.documentElement.style.setProperty('--app-height', visibleHeight + "px");
   // Re-anchor to the top: with the layout sized to the visible viewport the
   // browser no longer needs to pan the page up behind the keyboard.
   if (window.scrollY > 0) window.scrollTo(0, 0);

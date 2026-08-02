@@ -187,15 +187,16 @@ class PTYTerminalSession:
                 target=self._exec_loop, daemon=True, name="ZMUX-Terminal-Exec"
             )
             self._exec_thread.start()
-            banner = "ZMUX terminal -- Python runs in the embedded runtime.\r\n"
-            if seed_examples(HOME_DIR) is not None:
-                banner += "Examples for a quick start: examples/\r\n"
-            banner += "Type 'python' for the REPL, 'linux' for the Alpine shell.\r\n"
-            self._emit(banner.encode("utf-8"))
-            self._run_rc()
+            # Alpine is the product shell. The embedded Python runtime remains
+            # an implementation detail for the Android bridge, never a second
+            # user-facing pseudo-shell.
             if self._auto_start_alpine():
                 self._enter_linux_pty()
             else:
+                self._emit(
+                    b"ZMUX needs its Alpine Linux environment before a terminal can open.\r\n"
+                    b"Run `linux-setup` to install it, then open a new session.\r\n"
+                )
                 self._emit_prompt()
 
     def _run_rc(self) -> None:
@@ -426,12 +427,12 @@ class PTYTerminalSession:
         return self.pty is not None
 
     def _auto_start_alpine(self) -> bool:
-        """Phase 2 default: boot straight into the Alpine shell when the
-        rootfs is installed and proot is present. ``ZMUX_SHELL_START=zmux``
-        forces the legacy host console (tests / power users)."""
-        mode = os.environ.get("ZMUX_SHELL_START", "alpine").strip().lower()
-        if mode == "zmux":
-            return False
+        """Return whether the Alpine product environment is ready.
+
+        A legacy host-console override used to live here. Keeping that second
+        shell exposed made normal POSIX commands behave like Python and was
+        the root of much user confusion; ZMUX now has one user-facing shell.
+        """
         from zmux import linuxenv
         return linuxenv.is_installed() and linuxenv.proot_binary() is not None
 
@@ -463,10 +464,7 @@ class PTYTerminalSession:
                 self._emit_prompt()
                 return
             self._mode = "shell"
-            self._emit(
-                b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
-b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
-            )
+            self._emit(b"\r\n[ZMUX Alpine Linux - real PTY]\r\n")
             try:
                 holder: dict = {}
                 def _on_pty_exit():
