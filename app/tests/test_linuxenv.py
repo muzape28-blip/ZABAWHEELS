@@ -54,7 +54,7 @@ def test_interactive_environment_creates_persistent_workspace_profile(tmp_path, 
     assert (home / "projects").is_dir()
     assert profile.is_file()
     assert "zmux@alpine" in profile.read_text(encoding="utf-8")
-    assert env["PS1"] == "zmux@alpine:\\w\\$ "
+    assert env["PS1"] == "zmux@alpine:\\w$ "
 
 
 def test_build_command_line_requires_proot(monkeypatch):

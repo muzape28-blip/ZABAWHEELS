@@ -377,10 +377,21 @@ def ensure_user_home_layout() -> None:
     if not profile.exists():
         profile.write_text(
             "# Created by ZMUX. This file is yours to customise.\n"
-            "export PS1='zmux@alpine:\\w\\$ '\n"
+            "export PS1='zmux@alpine:\\w$ '\n"
             "mkdir -p \"$HOME/projects\"\n",
             encoding="utf-8",
         )
+    else:
+        # Migrate only the exact profile line emitted by the previous ZMUX
+        # build. A literal `$` is intentional: PRoot presents uid 0 inside
+        # its guest, but ZMUX must not imply Android-root privilege with `#`.
+        try:
+            old = profile.read_text(encoding="utf-8")
+            legacy = "export PS1='zmux@alpine:\\w\\$ '"
+            if legacy in old:
+                profile.write_text(old.replace(legacy, "export PS1='zmux@alpine:\\w$ '"), encoding="utf-8")
+        except OSError:
+            pass
 
 
 def interactive_env() -> dict:
@@ -399,7 +410,7 @@ def interactive_env() -> dict:
     # root. The guest is a normal Alpine userland rooted at its own /.
     env["USER"] = "zmux"
     env["LOGNAME"] = "zmux"
-    env["PS1"] = "zmux@alpine:\\w\\$ "
+    env["PS1"] = "zmux@alpine:\\w$ "
     return env
 
 
