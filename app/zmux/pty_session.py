@@ -56,6 +56,11 @@ _REPL_EXIT = {"exit", "quit", "exit()", "quit()"}
 #: Bare words that open the real Alpine PTY shell from the host console.
 _ALPINE_ENTER = {"linux", "alpine"}
 
+# Private terminal control emitted by the generated Alpine
+# `zmux-setup-storage` wrapper. It is consumed before xterm sees it, then the
+# trusted Android bridge writes a normal terminal result back to this session.
+_STORAGE_SETUP_OSC = b"\x1b]777;zmux-setup-storage\x07"
+
 
 class _QueueInput:
     """File-like stdin backed by the session's queue (for ``input()``).
@@ -173,6 +178,10 @@ class PTYTerminalSession:
         # internal command runner without an Alpine fixture. Production never
         # exposes that runner as a user shell.
         self._setup_gate_enabled = os.environ.get("ZMUX_TEST") != "1"
+        # PTY output can split an OSC sequence across read() calls. Retain only
+        # the possible prefix and forward every other byte unchanged.
+        self._pty_control_tail = b""
+        self._storage_setup_pending = threading.Event()
 
         self._command_queue: queue.Queue = queue.Queue()
         self._stdin_queue: queue.Queue[str] = queue.Queue()
@@ -272,7 +281,63 @@ class PTYTerminalSession:
         with self.buffer_lock:
             return bytes(self.scrollback_buffer)
 
+    @staticmethod
+    def _possible_control_prefix(data: bytes) -> int:
+        """Length of the longest suffix that may start the storage OSC."""
+        limit = min(len(data), len(_STORAGE_SETUP_OSC) - 1)
+        for size in range(limit, 0, -1):
+            if data[-size:] == _STORAGE_SETUP_OSC[:size]:
+                return size
+        return 0
+
+    def _filter_pty_controls(self, data: bytes) -> tuple[bytes, int]:
+        """Remove complete private OSC controls while preserving normal bytes."""
+        pending = self._pty_control_tail + data
+        self._pty_control_tail = b""
+        out = bytearray()
+        controls = 0
+        while pending:
+            at = pending.find(_STORAGE_SETUP_OSC)
+            if at >= 0:
+                out.extend(pending[:at])
+                pending = pending[at + len(_STORAGE_SETUP_OSC):]
+                controls += 1
+                continue
+            keep = self._possible_control_prefix(pending)
+            if keep:
+                out.extend(pending[:-keep])
+                self._pty_control_tail = pending[-keep:]
+            else:
+                out.extend(pending)
+            break
+        return bytes(out), controls
+
+    def _request_storage_setup(self) -> None:
+        """Run Android storage setup outside the PTY reader thread."""
+        if self._storage_setup_pending.is_set():
+            return
+        self._storage_setup_pending.set()
+
+        def worker() -> None:
+            try:
+                from zmux import storage
+                self._emit(b"\r\n[ZMUX] Requesting Android storage access...\r\n")
+                result = storage.setup()
+                text = storage.format_setup(result)
+                self._emit((text + "\n").replace("\n", "\r\n").encode("utf-8", errors="replace"))
+            except Exception as error:
+                self._emit(f"\r\n[ZMUX] Storage setup failed: {error}\r\n".encode("utf-8", errors="replace"))
+            finally:
+                self._storage_setup_pending.clear()
+
+        threading.Thread(target=worker, daemon=True, name="ZMUX-Storage-Setup").start()
+
     def _emit(self, data: bytes) -> None:
+        data, storage_requests = self._filter_pty_controls(data)
+        for _ in range(storage_requests):
+            self._request_storage_setup()
+        if not data:
+            return
         # Scrollback is always recorded, even when this session is in the
         # background — that is what makes switching back able to repaint.
         with self.buffer_lock:

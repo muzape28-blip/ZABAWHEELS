@@ -209,6 +209,9 @@ def test_guest_wrappers_are_installed_into_rootfs(session, alpine_env):
     assert os.access(wrapper, os.X_OK)
     text = wrapper.read_text(encoding="utf-8")
     assert "app diagnostic" in text
+    storage_wrapper = alpine_env / "usr" / "local" / "bin" / "zmux-setup-storage"
+    assert storage_wrapper.is_file()
+    assert "zmux-setup-storage" in storage_wrapper.read_text(encoding="utf-8")
 
 
 def test_linux_dashdash_help_still_shows_help(session, alpine_env):
