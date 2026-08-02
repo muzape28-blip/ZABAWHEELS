@@ -1,18 +1,138 @@
 """
-ZMUX p4a hook — inject explicit taskAffinity + documentLaunchMode
-Coexistence fix with Zabacode (see ZABACODE docs/COEXISTENCE_FIX.md)
+ZMUX p4a hook — Android manifest, task and native splash customisation.
 
-Zabacode 5000, Zmux 8000 — distinct ports prevent loopback cross-talk.
-(6000 was Chromium-blocked: the Android WebView refuses to load it with
-net::ERR_UNSAFE_PORT, so ZMUX's WebView port is 8000.)
-TaskAffinity fix prevents launcher task confusion on budget devices.
+The webview bootstrap creates a normal ``PythonActivity`` then shows the
+Buildozer presplash while Python/WebView initialise. Android 12+ additionally
+shows a *system* starting window before that code runs. Without an explicit
+API-31 splash theme, Android supplied the device-default white screen and
+purple loading bars. This hook installs a dark ZMUX splash theme directly in
+the generated Gradle project, where p4a will package it.
+
+It also keeps the task-affinity coexistence fix with Zabacode: ZMUX uses port
+8000 and an explicit ``com.zaba.zmux`` task affinity.
 """
+from __future__ import annotations
+
+import re
 from pathlib import Path
 
 try:
     from pythonforandroid.toolchain import ToolchainCL
 except Exception:
     ToolchainCL = object
+
+
+_SPLASH_THEME = "@style/Theme.ZMUX.Splash"
+_SPLASH_BASE_VALUES = """<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<resources>
+    <color name=\"zmux_splash_background\">#0D1117</color>
+    <!-- Pre-Android-12 starting window: never flash device-default white. -->
+    <style name=\"Theme.ZMUX.Splash\" parent=\"@style/KivySupportCutout\">
+        <item name=\"android:windowBackground\">@color/zmux_splash_background</item>
+        <item name=\"android:colorAccent\">#52E878</item>
+    </style>
+</resources>
+"""
+
+# Kept in values-v31 so older Android releases never try to parse Android-12
+# attributes. The parent preserves p4a's KivySupportCutout behaviour after the
+# system hands control to PythonActivity.
+_SPLASH_V31_VALUES = """<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<resources>
+    <style name=\"Theme.ZMUX.Splash\" parent=\"@style/KivySupportCutout\">
+        <item name=\"android:windowBackground\">@color/zmux_splash_background</item>
+        <item name=\"android:windowSplashScreenBackground\">@color/zmux_splash_background</item>
+        <item name=\"android:windowSplashScreenAnimatedIcon\">@drawable/zmux_splash_icon</item>
+        <item name=\"android:windowSplashScreenIconBackgroundColor\">@color/zmux_splash_background</item>
+        <item name=\"android:windowSplashScreenAnimationDuration\">0</item>
+        <item name=\"android:colorAccent\">#52E878</item>
+    </style>
+</resources>
+"""
+
+# An adaptive foreground must be transparent: using the composed launcher PNG
+# here is what produced a dark square inside Android's white rounded mask.
+# This vector is only the Z>_ mark on the dark theme supplied above.
+_SPLASH_ICON_VECTOR = """<vector xmlns:android=\"http://schemas.android.com/apk/res/android\"
+    android:width=\"108dp\" android:height=\"108dp\"
+    android:viewportWidth=\"108\" android:viewportHeight=\"108\">
+    <path android:fillColor=\"@android:color/transparent\"
+        android:strokeColor=\"#52E878\" android:strokeWidth=\"9.5\"
+        android:strokeLineCap=\"round\" android:strokeLineJoin=\"round\"
+        android:pathData=\"M25.7,31.2 L52.5,31.2 L28.9,68.6 L54.7,68.6\" />
+    <path android:fillColor=\"@android:color/transparent\"
+        android:strokeColor=\"#52E878\" android:strokeWidth=\"9.5\"
+        android:strokeLineCap=\"round\" android:strokeLineJoin=\"round\"
+        android:pathData=\"M62.7,40.6 L78.9,54 L62.7,67.4\" />
+    <path android:fillColor=\"@android:color/transparent\"
+        android:strokeColor=\"#52E878\" android:strokeWidth=\"9.5\"
+        android:strokeLineCap=\"round\" android:pathData=\"M79.8,73.5 L90,73.5\" />
+</vector>
+"""
+
+
+# p4a's webview bootstrap loads file:///android_asset/_load.html while its
+# loopback server starts. Its stock CSS is exactly the white page with three
+# lavender bars seen on-device. Replace that transient page with the same dark
+# ZMUX identity as the native system splash.
+_WEBVIEW_LOADER_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="_loading_style.css"><title>ZMUX</title></head>
+<body><main aria-label="ZMUX loading"><div class="mark">Z&gt;_</div></main></body></html>
+"""
+_WEBVIEW_LOADER_CSS = """html,body{width:100%;height:100%;margin:0;background:#0d1117;overflow:hidden}
+body{display:grid;place-items:center;font-family:monospace}
+.mark{color:#52e878;font-size:clamp(56px,18vw,128px);font-weight:800;letter-spacing:-.13em;
+      text-shadow:0 0 18px rgba(82,232,120,.35)}
+"""
+
+
+def _write_if_changed(path: Path, content: str) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except OSError:
+        existing = None
+    if existing == content:
+        return False
+    path.write_text(content, encoding="utf-8", newline="\n")
+    return True
+
+
+def _install_splash_resources(manifest_path: Path) -> bool:
+    """Install generated resources beside the p4a manifest, idempotently."""
+    res = manifest_path.parent / "res"
+    changed = False
+    changed |= _write_if_changed(res / "values" / "zmux_splash.xml", _SPLASH_BASE_VALUES)
+    changed |= _write_if_changed(res / "values-v31" / "zmux_splash.xml", _SPLASH_V31_VALUES)
+    changed |= _write_if_changed(res / "drawable" / "zmux_splash_icon.xml", _SPLASH_ICON_VECTOR)
+    assets = manifest_path.parent / "assets"
+    changed |= _write_if_changed(assets / "_load.html", _WEBVIEW_LOADER_HTML)
+    changed |= _write_if_changed(assets / "_loading_style.css", _WEBVIEW_LOADER_CSS)
+    return changed
+
+
+def _apply_splash_theme(text: str) -> tuple[str, bool]:
+    """Point only PythonActivity at the ZMUX system-splash theme."""
+    pattern = re.compile(
+        r'(<activity\b[^>]*android:name="org\.kivy\.android\.PythonActivity"[\s\S]*?</activity>)'
+    )
+    match = pattern.search(text)
+    if not match:
+        return text, False
+    activity = match.group(1)
+    if "android:theme=" in activity:
+        themed = re.sub(r'android:theme="[^"]*"', f'android:theme="{_SPLASH_THEME}"', activity, count=1)
+    else:
+        themed = activity.replace(
+            'android:name="org.kivy.android.PythonActivity"',
+            f'android:name="org.kivy.android.PythonActivity"\n                  android:theme="{_SPLASH_THEME}"',
+            1,
+        )
+    if themed == activity:
+        return text, False
+    return text[:match.start()] + themed + text[match.end():], True
+
 
 def _patch_manifest(manifest_path: Path, package: str = "com.zaba.zmux"):
     if not manifest_path.exists():
@@ -22,7 +142,6 @@ def _patch_manifest(manifest_path: Path, package: str = "com.zaba.zmux"):
     original = text
     affinity = package
     if 'android:taskAffinity' in text:
-        import re
         text = re.sub(r'android:taskAffinity="[^"]*"', f'android:taskAffinity="{affinity}"', text)
         print(f"[p4a_hook ZMUX] Updated existing taskAffinity to {affinity}")
     else:
@@ -37,17 +156,23 @@ def _patch_manifest(manifest_path: Path, package: str = "com.zaba.zmux"):
             text = text.replace(
                 "<activity",
                 f'<activity android:taskAffinity="{affinity}" android:documentLaunchMode="intoExisting"',
-                1
+                1,
             )
     if 'android:launchMode="singleTask"' in text:
         text = text.replace('android:launchMode="singleTask"', 'android:launchMode="singleTop"')
         print("[p4a_hook ZMUX] Changed singleTask -> singleTop")
+    text, themed = _apply_splash_theme(text)
+    if themed:
+        print("[p4a_hook ZMUX] Applied Android 12+ ZMUX splash theme")
     if text != original:
         manifest_path.write_text(text, encoding="utf-8")
+    resources_changed = _install_splash_resources(manifest_path)
+    if text != original or resources_changed:
         print(f"[p4a_hook ZMUX] Patched {manifest_path}")
         return True
     print("[p4a_hook ZMUX] No changes")
     return False
+
 
 def before_apk_build(toolchain):
     dist_dir = getattr(getattr(toolchain, "_dist", None), "dist_dir", None)
@@ -63,8 +188,10 @@ def before_apk_build(toolchain):
         if cand.exists():
             _patch_manifest(cand)
 
+
 def after_apk_build(toolchain):
     return before_apk_build(toolchain)
+
 
 if __name__ == "__main__":
     import sys

@@ -56,6 +56,11 @@ _REPL_EXIT = {"exit", "quit", "exit()", "quit()"}
 #: Bare words that open the real Alpine PTY shell from the host console.
 _ALPINE_ENTER = {"linux", "alpine"}
 
+# Private terminal control emitted by the generated Alpine
+# `zmux-setup-storage` wrapper. It is consumed before xterm sees it, then the
+# trusted Android bridge writes a normal terminal result back to this session.
+_STORAGE_SETUP_OSC = b"\x1b]777;zmux-setup-storage\x07"
+
 
 class _QueueInput:
     """File-like stdin backed by the session's queue (for ``input()``).
@@ -165,6 +170,18 @@ class PTYTerminalSession:
         self._history_index: Optional[int] = None
         self._history_stash = ""
         self._esc_state = ""  # "" | "esc" | "csi"
+        # Before the rootfs exists, this is a setup gate rather than a hidden
+        # Python shell. It accepts only linux-setup and then enters Alpine.
+        self._awaiting_alpine = False
+        self._start_alpine_after_command = False
+        # The extensive legacy executor tests intentionally exercise the old
+        # internal command runner without an Alpine fixture. Production never
+        # exposes that runner as a user shell.
+        self._setup_gate_enabled = os.environ.get("ZMUX_TEST") != "1"
+        # PTY output can split an OSC sequence across read() calls. Retain only
+        # the possible prefix and forward every other byte unchanged.
+        self._pty_control_tail = b""
+        self._storage_setup_pending = threading.Event()
 
         self._command_queue: queue.Queue = queue.Queue()
         self._stdin_queue: queue.Queue[str] = queue.Queue()
@@ -187,16 +204,23 @@ class PTYTerminalSession:
                 target=self._exec_loop, daemon=True, name="ZMUX-Terminal-Exec"
             )
             self._exec_thread.start()
-            banner = "ZMUX terminal -- Python runs in the embedded runtime.\r\n"
-            if seed_examples(HOME_DIR) is not None:
-                banner += "Examples for a quick start: examples/\r\n"
-            banner += "Type 'python' for the REPL, 'linux' for the Alpine shell.\r\n"
-            self._emit(banner.encode("utf-8"))
+            # Alpine is the product shell. The embedded Python runtime remains
+            # an implementation detail for the Android bridge, never a second
+            # user-facing pseudo-shell. Keep the private rc hook for existing
+            # installs and migration logic; it is never presented as a shell.
             self._run_rc()
             if self._auto_start_alpine():
                 self._enter_linux_pty()
             else:
-                self._emit_prompt()
+                if self._setup_gate_enabled:
+                    self._awaiting_alpine = True
+                    self._emit(
+                        b"ZMUX needs its Alpine Linux environment before a terminal can open.\r\n"
+                        b"Type `linux-setup` to download and verify Alpine, then ZMUX opens it automatically.\r\n"
+                    )
+                    self._emit_setup_prompt()
+                else:  # test-only legacy executor coverage
+                    self._emit_prompt()
 
     def _run_rc(self) -> None:
         """Execute ``~/.zmuxrc`` before the first prompt, if present.
@@ -257,7 +281,63 @@ class PTYTerminalSession:
         with self.buffer_lock:
             return bytes(self.scrollback_buffer)
 
+    @staticmethod
+    def _possible_control_prefix(data: bytes) -> int:
+        """Length of the longest suffix that may start the storage OSC."""
+        limit = min(len(data), len(_STORAGE_SETUP_OSC) - 1)
+        for size in range(limit, 0, -1):
+            if data[-size:] == _STORAGE_SETUP_OSC[:size]:
+                return size
+        return 0
+
+    def _filter_pty_controls(self, data: bytes) -> tuple[bytes, int]:
+        """Remove complete private OSC controls while preserving normal bytes."""
+        pending = self._pty_control_tail + data
+        self._pty_control_tail = b""
+        out = bytearray()
+        controls = 0
+        while pending:
+            at = pending.find(_STORAGE_SETUP_OSC)
+            if at >= 0:
+                out.extend(pending[:at])
+                pending = pending[at + len(_STORAGE_SETUP_OSC):]
+                controls += 1
+                continue
+            keep = self._possible_control_prefix(pending)
+            if keep:
+                out.extend(pending[:-keep])
+                self._pty_control_tail = pending[-keep:]
+            else:
+                out.extend(pending)
+            break
+        return bytes(out), controls
+
+    def _request_storage_setup(self) -> None:
+        """Run Android storage setup outside the PTY reader thread."""
+        if self._storage_setup_pending.is_set():
+            return
+        self._storage_setup_pending.set()
+
+        def worker() -> None:
+            try:
+                from zmux import storage
+                self._emit(b"\r\n[ZMUX] Requesting Android storage access...\r\n")
+                result = storage.setup()
+                text = storage.format_setup(result)
+                self._emit((text + "\n").replace("\n", "\r\n").encode("utf-8", errors="replace"))
+            except Exception as error:
+                self._emit(f"\r\n[ZMUX] Storage setup failed: {error}\r\n".encode("utf-8", errors="replace"))
+            finally:
+                self._storage_setup_pending.clear()
+
+        threading.Thread(target=worker, daemon=True, name="ZMUX-Storage-Setup").start()
+
     def _emit(self, data: bytes) -> None:
+        data, storage_requests = self._filter_pty_controls(data)
+        for _ in range(storage_requests):
+            self._request_storage_setup()
+        if not data:
+            return
         # Scrollback is always recorded, even when this session is in the
         # background — that is what makes switching back able to repaint.
         with self.buffer_lock:
@@ -287,6 +367,11 @@ class PTYTerminalSession:
         if not self._at_line_start:
             self._emit(b"\r\n")
         self._emit(self._prompt().encode("utf-8"))
+
+    def _emit_setup_prompt(self) -> None:
+        if not self._at_line_start:
+            self._emit(b"\r\n")
+        self._emit(b"alpine-setup> ")
 
     # -------------------------------------------------------------- input
     def write_input(self, data: bytes) -> None:
@@ -396,6 +481,13 @@ class PTYTerminalSession:
                 self._emit_prompt()
             return
         self._history_record(stripped)
+        if self._awaiting_alpine:
+            if stripped == "linux-setup":
+                self._command_queue.put((line, "shell"))
+            else:
+                self._emit(b"Only `linux-setup` is available until Alpine is ready.\r\n")
+                self._emit_setup_prompt()
+            return
         if self._mode == "shell" and stripped in _REPL_ENTER:
             self._enter_repl()
             return
@@ -426,12 +518,12 @@ class PTYTerminalSession:
         return self.pty is not None
 
     def _auto_start_alpine(self) -> bool:
-        """Phase 2 default: boot straight into the Alpine shell when the
-        rootfs is installed and proot is present. ``ZMUX_SHELL_START=zmux``
-        forces the legacy host console (tests / power users)."""
-        mode = os.environ.get("ZMUX_SHELL_START", "alpine").strip().lower()
-        if mode == "zmux":
-            return False
+        """Return whether the Alpine product environment is ready.
+
+        A legacy host-console override used to live here. Keeping that second
+        shell exposed made normal POSIX commands behave like Python and was
+        the root of much user confusion; ZMUX now has one user-facing shell.
+        """
         from zmux import linuxenv
         return linuxenv.is_installed() and linuxenv.proot_binary() is not None
 
@@ -463,10 +555,7 @@ class PTYTerminalSession:
                 self._emit_prompt()
                 return
             self._mode = "shell"
-            self._emit(
-                b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
-b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
-            )
+            self._emit(b"\r\n[ZMUX Alpine Linux - real PTY]\r\n")
             try:
                 holder: dict = {}
                 def _on_pty_exit():
@@ -509,7 +598,11 @@ b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
         self._emit(
             f"\r\n[Alpine shell exited (code {code})]\r\n".encode("utf-8", errors="replace")
         )
-        self._emit_prompt()
+        # A terminal emulator does not drop users into an unrelated interpreter
+        # after `exit`. Keep the one user-facing contract: if the app/session
+        # remains alive, replace the exited Alpine shell with a fresh PTY.
+        if self.is_running and self._auto_start_alpine():
+            self._enter_linux_pty()
 
     def _leave_linux_pty(self, reason: str = "detach") -> None:
         """Terminate the Alpine PTY session and return to the host console."""
@@ -646,7 +739,17 @@ b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
         )
         if pending:
             self._emit(pending.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", errors="replace"))
-        self._emit_prompt()
+        if self._awaiting_alpine:
+            from zmux import linuxenv
+            if linuxenv.is_installed() and linuxenv.proot_binary() is not None:
+                self._awaiting_alpine = False
+                # _enter_linux_pty deliberately refuses while the command is
+                # busy; defer it to _finish_command after linux-setup exits.
+                self._start_alpine_after_command = True
+            else:
+                self._emit_setup_prompt()
+        else:
+            self._emit_prompt()
 
     def _finish_command(self) -> None:
         interrupted = self.shell._interrupt.is_set()
@@ -655,6 +758,10 @@ b"\r\n[Alpine Linux shell - real PTY] ZMX key: host console, "
             # After Ctrl+C, discard type-ahead instead of executing stale lines.
             self._drain(self._stdin_queue)
             self.shell.clear_interrupt()
+            return
+        if self._start_alpine_after_command:
+            self._start_alpine_after_command = False
+            self._enter_linux_pty()
             return
         # Real-terminal type-ahead: lines typed while the command ran become
         # the next commands, in order.

@@ -1,359 +1,250 @@
-# ZMUX — Standalone Android Terminal for Python
+# ZMUX
 
-[![Build ZMUX APK](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml/badge.svg)](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml)
-[![Validate Repository](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/validate.yml/badge.svg)](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/validate.yml)
+<p align="center">
+  <strong>Alpine Linux terminal for Android.</strong><br>
+  A real PTY, real <code>apk</code>, real Git, and a mobile-first terminal UI — without Android root.
+</p>
 
-**ZMUX** is a standalone Android terminal for Python development. It pairs a
-real embedded CPython runtime with the **ZABAWHEELS** curated wheelhouse
-infrastructure (hash-verifying packages, reproducible builds) and an
-opt-in **Alpine Linux sandbox** — real `git`, `apk`, `sh` — running through
-PRoot, no root required.
+<p align="center">
+  <img src="app/assets/logo.png" width="124" alt="ZMUX Z prompt logo">
+</p>
 
-> **Status (2026-08-01):** verified on a real ARMv7 device — `gates` **5/5 PASS**
-> on-device, `git clone` over HTTPS works, `apk add` installs real Alpine
-> packages, terminal UX is smooth (soft-keyboard aware, exact line wrapping,
-> fast scrolling). Everything in this README is executed, not claimed.
+<p align="center">
+  <a href="https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml"><img src="https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml/badge.svg" alt="Build ZMUX APK"></a>
+  <a href="https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/validate.yml"><img src="https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/validate.yml/badge.svg" alt="Validate repository"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-52e878?style=flat-square" alt="AGPL-3.0 license"></a>
+  <img src="https://img.shields.io/badge/Android-8.0%2B-0d1117?style=flat-square&logo=android&logoColor=52e878" alt="Android 8.0 or newer">
+  <img src="https://img.shields.io/badge/ABI-armv7%20%7C%20arm64-0d1117?style=flat-square" alt="ARMv7 and ARM64">
+</p>
 
 ---
 
 ## What is ZMUX?
 
-ZMUX is a lightweight terminal emulator for Android that lets you:
+ZMUX is a lightweight Android terminal whose user-facing environment is **Alpine Linux**. It starts an Alpine login shell through **PRoot** on a genuine `/dev/ptmx` PTY, then connects it to a keyboard-aware xterm.js interface.
 
-- Type **Python directly** — expressions, statements, scripts — in a real
-  embedded CPython runtime (not a fake shell).
-- Run **real system commands** (`ls`, `cat`, `git`, `apk`, …) as genuine child
-  processes with real exit codes, streaming output.
-- Install Python packages with **`zpip`**, a transactional, SHA-256-verifying
-  package manager backed by the curated ZABAWHEELS index.
-- Enter a **real Alpine Linux userland** (`linux-setup` + proot) for anything
-  that needs a normal Unix environment — `git clone`, `apk add`, shell scripts.
-- Work inside an **app-private sandbox** — nothing touches your device's
-  system, no root, no `/system` writes.
-
-### What ZMUX is NOT
-
-- **Not an IDE or code editor** — it is a command-line terminal.
-- **Not Zabacode with a new name** — the old IDE features (editors, AI
-  assistants, theme marketplaces) were deliberately removed; ZMUX was rebuilt
-  from scratch as an honest, standalone terminal (see
-  [REFACTOR_REPORT.md](REFACTOR_REPORT.md)).
-- **Not a fake terminal** — nothing is hardcoded or mocked. `git` is real git,
-  `apk` is real apk, Python is real CPython, errors are real tracebacks, and
-  the Alpine shell is a genuine `/dev/ptmx` PTY (see
-  [Terminal model](#terminal-model)).
-- **Not Termux** — ZMUX is Python-first, lives inside Android's app sandbox,
-  and does not claim root/system access. It is a *smaller, honest* terminal:
-  a Python host console plus a real Alpine PTY shell, not a full Unix PTY
-  app with native UI.
-
----
-
-## Terminal model
-
-ZMUX now has **two terminal layers**, and it says plainly which one you are
-in:
-
-1. **ZMUX host console** (`zmux:~$`, the default until the Alpine rootfs is
-   installed): a *virtual* terminal. Keystrokes travel over a WebSocket to a
-   Python line-discipline layer (`pty_session.py`) that handles echo,
-   backspace, history and Ctrl+C; completed lines go to `python_shell.py`,
-   which evaluates them in the embedded CPython runtime or spawns a real
-   child process. Builtins (`zpip`, `gates`, `zmux-info`, …) live here
-   because they need the app's embedded Python.
-2. **Alpine shell** (real PTY): `linux` (bare) — or automatically at startup
-   when the rootfs is installed — spawns a *genuine* PTY whose child is
-   `proot -> /bin/sh -l` inside the Alpine userland (`app/zmux/realpty.py`).
-   From that moment the **kernel** does echo, backspace, Ctrl+C (SIGINT to
-   the foreground process group), job control and `isatty()`; the Python
-   layer is only a byte pump between the WebSocket and `/dev/ptmx`. `vim`,
-   `htop`, `less`, `tmux` work here. `exit` returns to the host console; the
-   **ZMX⇄** toolbar key detaches and returns immediately.
-
-**Host console — what that gives you**
-
-- Python that behaves like Python: real `exec`/`eval`, persistent globals,
-  real tracebacks (Rich-rendered and wrapped to your screen width).
-- Real child processes: real exit codes, real signals, pipelines `|`,
-  redirection `>`/`>>`, live streaming output and working `input()`.
-- **Streaming progress** — `git clone`, `apk add`, `curl` show their stderr
-  progress live (stderr is streamed like stdout), so a long operation never
-  looks frozen.
-- **Robust against hangs** — the executor waits on the *process*, not the
-  pipe, so a finished command whose grandchild held the pipe open can never
-  wedge your session.
-- No dependency on `/dev/ptmx`, which some Android Go / SELinux setups deny.
-
-**Host console — what it does not give you (and where the Alpine shell takes
-over)**
-
-- **No full-screen TUI programs** in the host console — but `vim`, `htop`,
-  `nano`, `less`, `tmux` work in the real Alpine PTY shell (`linux`).
-- **No job control** in the host console — `&`, `fg`, `bg`, `Ctrl+Z` are
-  real in the Alpine shell.
-- **No login-shell semantics** in the host console (`~/.zmuxrc` is read);
-  the Alpine shell is a login shell and sources `/etc/profile`.
-- `isatty()` on host-console children sees a pipe; in the Alpine shell it is
-  a real TTY, so colour and interactive behaviour are the real thing.
-- **`zmux-pty-probe`** runs the on-device acceptance probe (pty1–pty6) that
-  verifies the real-PTY foundation on your exact device.
-
----
-
-## Key Features
-
-### Real Terminal Execution Engine
-
-- ✅ **Embedded CPython:** Python runs in-process in the runtime bundled with
-  the APK; external programs are real child processes by absolute path.
-- ✅ **Real-Time Streaming I/O:** stdout *and* stderr reach the screen as they
-  are produced — `input()` prompts appear before the read blocks, git/apk
-  progress is visible while it runs.
-- ✅ **Bi-directional WebSocket:** binary streaming between xterm.js and Python.
-- ✅ **Multiple Sessions:** up to 8 tabs, each with its own cwd, Python globals
-  and history; background sessions keep running.
-- ✅ **Virtual Keys:** two-row key bar with a sticky Ctrl latch
-  (`Ctrl+C`, `Ctrl+R`, `Ctrl+L` typeable) and hold-to-repeat arrows.
-- ✅ **Process Control:** Ctrl+C / Stop cancels running processes cleanly
-  (process-group signalling, no Bionic libc crashes on ARMv7).
-- ✅ **Persistent Working Directory:** `cd` persists across commands with
-  sandbox path-traversal protection — including bare `cd` (go home), even when
-  Android exposes the app home through the `/data/user/0` ↔ `/data/data`
-  symlink.
-- ✅ **Mobile UX:** soft-keyboard aware (the banner stays visible and the
-  prompt sits above the IME), exact line wrapping to the visible width,
-  coalesced frame-synced scrolling, 6000-line scrollback.
-
-### Alpine Linux Shell (PRoot) — real PTY, real git, apk, sh
-
-- ✅ **Real PTY shell:** `linux` (bare) opens an interactive Alpine
-  `/bin/sh -l` on a genuine `/dev/ptmx` PTY — kernel echo, Ctrl+C (SIGINT),
-  job control, `isatty()`, and working `vim`/`htop`/`less`/`tmux`. `exit`
-  returns to the ZMUX console; the **ZMX⇄** toolbar key detaches.
-- ✅ `linux-setup` downloads the **Alpine 3.22.5** minirootfs (~4 MiB),
-  SHA-512 verified against the official Alpine digest, extracted atomically.
-- ✅ `git <args>` runs **real git** (Alpine's build) with normal syntax:
-  clone, branch, checkout, push.
-- ✅ `linux <cmd>` / `alpine <cmd>` runs any shell command inside the sandbox:
-  `linux apk add git openssh-client` installs real Alpine packages.
-- ✅ W^X-safe: proot execs from `nativeLibraryDir` (the one app location
-  Android allows) — no root, no SELinux changes, no system writes.
-- ✅ **On-device diagnostics:** `zmux-info` prints the real `DT_NEEDED` of the
-  shipped `libproot.so` and `gates` reads the binary on the phone itself, so
-  a stale or corrupted build is reported explicitly instead of as a cryptic
-  linker error.
-
-### Built-in Commands
-
-```bash
-help            # Display available commands
-clear           # Clear terminal screen
-pwd             # Print working directory
-cd <dir>        # Change directory (restricted to app home; bare `cd` = home)
-ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
-python          # Launch Python REPL (typing Python directly also works)
-python <file>   # Execute a Python script
-python -c "..." # Execute inline Python code
-pip             # Standard pip package manager (if available)
-zpip            # ZMUX secure package manager
-zmux-info       # Runtime fingerprint + on-device binary verification
-
-# Alpine Linux sandbox (PRoot) — real git and shell commands
-linux-setup     # Install Alpine 3.22.5 (SHA-512 verified) — enables git/linux
-git <args>      # REAL git: clone, branch, checkout, push
-linux <cmd>     # Any shell command inside Alpine: linux apk add git
-alpine <cmd>    # Alias of linux
-gates           # Strict on-device acceptance probe (G1–G5)
+```text
+Android keyboard / touch UI
+        ↓
+xterm.js + local WebSocket
+        ↓
+real PTY (/dev/ptmx)
+        ↓
+PRoot
+        ↓
+Alpine Linux: /bin/sh, apk, git, nano, Python, pip…
 ```
 
-### Secure Package Manager (`zpip`)
+It is designed for practical mobile workflows:
 
-```bash
-zpip search <name>             # Search curated index + PyPI (exact probe)
-zpip info <name>               # Package details and compatibility
-zpip install <name>            # Install verified package (SHA-256 checked)
-zpip install <name> <version>  # Install a specific version
-zpip list                      # Installed packages (dependencies marked)
-zpip verify <name>             # Verify installation integrity against manifest
-zpip uninstall <name>          # Cleanly remove a package and its files
-zpip doctor                    # Diagnose system health and runtime fingerprint
-```
+- `apk add`, `git clone`, `nano`, `python3`, `pip`, `ssh`, and shell scripting;
+- persistent projects in `~/projects`;
+- opt-in Android Documents/Downloads/shared-storage access under `~/storage`;
+- compact tabs, horizontal virtual keys, and soft-keyboard-aware layout;
+- ARMv7-friendly operation on entry-level Android devices.
 
-`zpip` is transactional: a failed install rolls back atomically, file
-ownership conflicts are rejected, and native wheels must match your exact
-Android ABI. Name collisions with famous CLI tools (e.g. PyPI's `nano` is a
-Django library, not GNU nano) produce a loud warning instead of silent
-"success".
-
-### Security & Hardening
-
-- ✅ **Mandatory SHA-256 verification** for every package; SHA-512 for the
-  Alpine rootfs.
-- ✅ **Loopback-only server** (HTTP + WebSocket bind strictly to `127.0.0.1`/`::1`)
-  with a 128-bit session token.
-- ✅ **Transactional installs** with full rollback; path-traversal protection
-  on archives and commands.
-- ✅ **Encrypted local storage** (AES/HMAC-SHA256) via Android Keystore.
-- ✅ **Zero ads, zero telemetry, zero background tracking.** `INTERNET` is the
-  only permission; storage access is opt-in (`zmux-setup-storage`).
+> **Not Android root.** ZMUX provides a real Linux *userspace* inside the app sandbox. It does not provide kernel access, systemd, Docker, kernel modules, or unrestricted Android filesystem access.
 
 ---
 
-## Verified on device (2026-08-01)
+## Highlights
 
-First real-device pass on an entry-level **ARMv7** phone (Infinix Smart 9 HD
-class, Android 14):
-
-| Check | Result |
+| Area | What ZMUX provides |
 |---|---|
-| `gates` G1–G5 (ptmx, proot-exec, alpine-boot, git-clone, apk) | ✅ **5/5 PASS** |
-| `linux apk add git openssh-client` | ✅ 19 real Alpine packages installed |
-| `git clone https://github.com/…` | ✅ full repo cloned over HTTPS |
-| `zmux-info` → `Proot NEEDED` | ✅ `libtalloc.so, libdl.so, libc.so` (patched binary verified on-device) |
-| Terminal UX (keyboard, wrapping, scrolling, `cd`) | ✅ smooth and correct |
-
-The full failure→fix journey (talloc SONAME, DT_HASH corruption, Java
-classloader on worker threads, stale-APK detection, clone "hang", `cd` home,
-keyboard overlap) is documented in
-[docs/DEVICE_FAILURE_ANALYSIS.md](docs/DEVICE_FAILURE_ANALYSIS.md).
+| **Real terminal** | `/dev/ptmx` PTY, terminal resize, foreground `SIGINT`, `isatty()`, shell echo, and normal interactive behavior. |
+| **Alpine-first** | `apk`, BusyBox shell, Git, Nano, Python, virtual environments, and standard Linux paths. |
+| **Mobile UI** | One-row swipeable virtual keys, compact tabs, soft-keyboard-aware viewport, scrollback, and safe output wrapping. |
+| **Projects** | Persistent `~/projects` workspace that survives Alpine rootfs repair/reinstall. |
+| **Android storage** | `zmux-setup-storage` bridges Android permissions into Alpine links such as `~/storage/documents` and `~/storage/downloads`. |
+| **Security** | Loopback-only HTTP/WebSocket transport, session token, verified Alpine rootfs, app-private default storage, and no Android root requirement. |
+| **Builds** | Universal `armeabi-v7a` + `arm64-v8a` APK builds with pinned toolchain inputs. |
 
 ---
 
-## APK Specifications & Android Compatibility
+## Quick start
 
-- **App Title:** ZMUX · **Package:** `com.zaba.zmux` · **Version:** `1.0.0`
-- **Min API 26** (Android 8.0) · **Target API 34** (Android 14)
-- **ABIs:** `armeabi-v7a` (32-bit), `arm64-v8a` (64-bit)
-- **Permission:** `INTERNET` only (loopback WebView + package index).
+### 1. Install Alpine
+
+On the first launch, ZMUX shows an Alpine setup prompt:
+
+```sh
+alpine-setup> linux-setup
+```
+
+The minirootfs is downloaded, SHA-512 verified, extracted atomically, and ZMUX opens the shell automatically:
+
+```sh
+zmux@alpine:~$
+```
+
+### 2. Install useful tools
+
+```sh
+apk add nano git python3 py3-pip py3-virtualenv openssh-client
+```
+
+### 3. Create a project
+
+```sh
+cd ~/projects
+mkdir hello-zmux
+cd hello-zmux
+nano README.md
+```
+
+### 4. Use Python safely with a virtual environment
+
+```sh
+python3 -m venv ~/.venv
+. ~/.venv/bin/activate
+python3 -m pip install colorama
+python3 -c "import colorama; print('colorama OK')"
+```
+
+### 5. Access Android files
+
+```sh
+zmux-setup-storage
+cd ~/storage/documents
+ls
+```
+
+The command requests Android storage access where required and exposes reachable locations inside Alpine:
+
+```text
+~/storage/app
+~/storage/shared
+~/storage/downloads
+~/storage/documents
+~/storage/dcim
+~/storage/pictures
+~/storage/music
+~/storage/movies
+```
+
+Use `~/projects` for active work. Use `~/storage/*` to import/export files with Android.
 
 ---
 
-## Installation
+## Terminal controls
 
-### Download the Universal APK
+The virtual key bar stays on **one horizontally swipeable row** so it does not consume the terminal when the phone keyboard is open.
 
-Grab the latest artifact from
-[GitHub Actions](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml)
-(latest successful **Build ZMUX APK** run → *Artifacts* → `zmux`). The zip
-contains:
+```text
+ESC  CTRL  Tab  ↑  ↓  ←  →  Home  End  ^C  ^D  ⌫  …
+```
 
-- `zmux-1.0.0-universal-debug.apk` — signed universal APK (both ABIs)
-- `SHA256SUMS` — checksums for provenance
-- `build-contract.json` — pinned runtime contract
+Useful shortcuts:
 
-> On Android, uninstall the previous ZMUX before installing a new build —
-> the app data dir can otherwise carry a stale build's binaries.
+| Key | Action |
+|---|---|
+| `CTRL` then `C` | Interrupt the foreground command, e.g. `ping` |
+| `CTRL` then `D` | End input / exit a shell program |
+| `ESC` | Essential for Vim, Nano, and shell programs |
+| Arrow keys | Navigate command history, Nano, Vim, and shell input |
 
-### Build from Source
+---
+
+## Verified on a real ARMv7 device
+
+Current device validation on an Infinix Smart 9 HD-class Android device includes:
+
+```text
+✓ Alpine real PTY shell
+✓ apk package installation
+✓ Nano full-screen editor
+✓ Git clone over HTTPS
+✓ Python 3 + venv + pip
+✓ pip install colorama + import verification
+✓ Android Documents/Downloads storage access from Alpine
+✓ Multiple terminal sessions
+✓ ping + Ctrl+C foreground SIGINT
+✓ Soft keyboard, wrapping, scrollback, and horizontal key bar
+```
+
+Example real workflow:
+
+```sh
+apk add python3 nano git py3-pip py3-virtualenv
+cd ~/projects
+git clone https://github.com/muzape28-blip/ZABAWHEELS
+python3 -m venv ~/.venv
+. ~/.venv/bin/activate
+python3 -m pip install colorama
+```
+
+---
+
+## Install the APK
+
+Download the latest successful **Build ZMUX APK** artifact from [GitHub Actions](https://github.com/muzape28-blip/ZABAWHEELS/actions/workflows/build-zmux-apk.yml).
+
+The `zmux` artifact contains:
+
+```text
+zmux-1.0.0-universal-debug.apk
+SHA256SUMS
+build-contract.json
+```
+
+> When replacing a debug APK, Android may require uninstalling an older build if its signing identity differs. Back up `~/projects` first if you plan to uninstall the app.
+
+---
+
+## Build from source
+
+The reproducible GitHub Actions workflow is the recommended build path. For a local build environment, use the repository-local bootstrap script on a machine with outbound network access:
 
 ```bash
+./scripts/bootstrap_android_toolchain.sh
+
 cd app
-pip install buildozer==1.6.0
-buildozer android debug
+../.toolchain/buildozer-venv/bin/buildozer android debug
 ```
 
-The APK build runs `scripts/build_proot_android.py` (cross-compiles PRoot +
-talloc with the NDK), patches/verifies the ELF `DT_NEEDED` on the artifacts,
-and refuses to package a broken binary. See [docs/BUILDING.md](docs/BUILDING.md).
+The build creates a universal ARMv7 + ARM64 APK and cross-compiles the Android PRoot bridge.
 
 ---
 
-## Architecture
+## Honest limitations
 
-```
-ZMUX Terminal
-├── Backend (Python 3 / Flask / Waitress)
-│   ├── server.py          # Flask HTTP WebView server
-│   ├── ws_server.py       # Pure-Python RFC-6455 WebSocket server
-│   ├── python_shell.py    # Embedded CPython executor + subprocess pipelines
-│   ├── pty_session.py     # Virtual terminal session (line discipline, tabs)
-│   ├── sessions.py        # Multiple sessions, tab routing, scrollback replay
-│   ├── streams.py         # Live stdout/stderr streaming to the websocket
-│   ├── linuxenv.py        # Alpine PRoot sandbox (setup, command line, gates)
-│   ├── elfscan.py         # Pure-Python ELF DT_NEEDED/SONAME reader (on-device)
-│   ├── javabridge.py      # Java bridge primed on the main thread (worker-safe)
-│   ├── storage.py         # Opt-in shared-storage access (zmux-setup-storage)
-│   ├── zpip.py            # Transactional hash-verifying package manager
-│   ├── security.py        # Token authentication
-│   ├── keystore.py        # Encrypted local storage
-│   └── paths.py           # App-private directory management + CLI wrappers
-│
-├── Frontend (HTML / CSS / JavaScript)
-│   └── terminal.html      # Mobile-optimized xterm.js terminal UI
-│
-└── Infrastructure (ZABAWHEELS)
-    ├── index/             # Curated package index (stable, candidate, experimental)
-    ├── packages/          # Package recipes and manifests
-    ├── schemas/           # JSON Schemas for recipes, manifests, and runtimes
-    ├── scripts/           # Verification, inspection, index, and build tools
-    └── toolchain/         # Pinned runtime and source lockfiles
-```
+- PRoot adds overhead; heavy native compilation is slow on low-end ARMv7 devices.
+- Local filesystem access follows Android permission and scoped-storage rules.
+- Android root, Docker, systemd, kernel modules, and full kernel isolation are outside ZMUX's scope.
+- Alpine uses `musl`; some prebuilt glibc binaries or Python native wheels may not work. Prefer Alpine `apk` packages first, then use `pip` inside a virtual environment when appropriate.
 
 ---
 
-## Honest Limitations
+## Roadmap
 
-1. **No PTY, therefore no TUI programs.** `vim`, `htop`, `less` and other
-   full-screen programs will not work; there is no job control. ZMUX says so
-   instead of pretending.
-2. **Directory scope.** Built-in `cd` is restricted to app-private storage.
-   Child processes can access whatever Android permits.
-3. **Native wheels.** Packages with native extensions (NumPy etc.) need
-   cross-compiled wheels matching your ABI; `zpip` reports honestly when a
-   package is not yet available for your runtime.
-4. **ARMv7 performance.** PRoot adds ptrace overhead; heavy compiles are slow
-   on low-end devices — fine for `git`/`apk`/`sh`, painful for builds.
+After Alpine PTY, storage, keyboard, and lifecycle hardening are complete, planned updates include:
+
+- terminal appearance profiles and low-resource mode;
+- named terminal sessions;
+- Nano-oriented helper controls;
+- GitHub-aware project workflow built around real Alpine Git;
+- tmux onboarding/helper path;
+- honest `apk` / venv / pip package recommendation UI;
+- optional Debian compatibility environment after Alpine remains stable.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full planned-update notes.
 
 ---
 
 ## Documentation
 
-- **[CHANGELOG.md](CHANGELOG.md)** — version history and every fix.
-- **[docs/DEVICE_FAILURE_ANALYSIS.md](docs/DEVICE_FAILURE_ANALYSIS.md)** —
-  the on-device failure→fix journey with primary-source citations.
-- **[docs/PROOT_ALPINE.md](docs/PROOT_ALPINE.md)** — the Alpine PRoot sandbox
-  design and packaging.
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — WebView port contract,
-  streaming, and anti-freeze invariants.
-- **[docs/SECURITY.md](docs/SECURITY.md)** — threat model and mechanisms.
-- **[docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md)** — device test matrix.
-- **[REFACTOR_REPORT.md](REFACTOR_REPORT.md)** — Zabacode → ZMUX transition.
-- **[ZABAWHEELS.md](ZABAWHEELS.md)** — the curated wheelhouse spec.
-
----
-
-## Local Development & Testing
-
-```bash
-cd app
-pip install -r requirements-dev.txt
-pip install -e .
-
-# Backend + infra tests
-PYTHONPATH=. pytest -q app/tests tests/          # 367 passing, 25 skipped
-
-# Frontend behavioral tests (Node)
-node app/tests/ui_harness.js app/templates/terminal.html   # 44/44
-
-# Run the terminal on desktop (browser at http://127.0.0.1:8000)
-python main.py
-```
-
----
-
-## Contributing
-
-We welcome contributions to the ZMUX app and the ZABAWHEELS package
-infrastructure. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for package request
-guidelines, recipe formatting, and PR procedures.
+- [CHANGELOG.md](CHANGELOG.md) — changes and planned updates
+- [docs/PROOT_ALPINE.md](docs/PROOT_ALPINE.md) — Alpine/PRoot design
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — application architecture
+- [docs/SECURITY.md](docs/SECURITY.md) — security model
+- [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md) — device test matrix
+- [docs/DEVICE_FAILURE_ANALYSIS.md](docs/DEVICE_FAILURE_ANALYSIS.md) — real-device failure analysis
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution guide
 
 ---
 
 ## License
 
-Licensed under the terms of the **[LICENSE](LICENSE)**.
+[AGPL-3.0](LICENSE)
 
----
-
-**ZMUX / ZABAWHEELS** — Honest, transparent, and reproducible Android Python
-tooling.
+<p align="center"><strong>ZMUX</strong> — a focused Alpine Linux terminal for Android.</p>

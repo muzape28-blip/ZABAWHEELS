@@ -27,6 +27,13 @@ from typing import Optional
 
 from zmux import crash
 
+# A tab can be switched while the previous program (Vim, less, top, …) owns
+# xterm's alternate screen. A plain ED2 clear only clears that *same* buffer;
+# it does not return to the normal terminal screen, so the next tab can look
+# blank or inherit a TUI frame. Always leave the known xterm alternate-buffer
+# modes before clearing/replaying a session.
+RESET_TERMINAL_SCREEN = b"\x1b[?1049l\x1b[?47l\x1b[?1047l\x1b[2J\x1b[H"
+
 
 class SessionManager:
     """Owns every terminal session and decides which one is on screen."""
@@ -41,6 +48,12 @@ class SessionManager:
         self._order: list = []          # creation order, drives tab display
         self._active: Optional[str] = None
         self._counter = 0
+        # Geometry belongs to the visible terminal, not every background TUI.
+        # A Vim tab must not receive a storm of SIGWINCH events merely because
+        # another tab's keyboard opened. Apply the latest geometry when that
+        # tab becomes visible again.
+        self._cols = 80
+        self._rows = 24
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------- internals
@@ -80,7 +93,8 @@ class SessionManager:
                 # like switch(). Without this the new banner/prompt were
                 # appended over the old screen — "the tab did not change,
                 # there are just more prompts now".
-                self.ws_server.broadcast(b"\x1b[2J\x1b[H")
+                self.ws_server.broadcast(RESET_TERMINAL_SCREEN)
+            session.resize(self._cols, self._rows)
             session.start()
             return session_id
 
@@ -108,9 +122,13 @@ class SessionManager:
                 return session_id in self._sessions
             self._active = session_id
             session = self._sessions[session_id]
+            cols, rows = self._cols, self._rows
+        # A background session receives exactly one resize when it becomes
+        # visible, rather than being disturbed by every IME animation.
+        session.resize(cols, rows)
         # Clear the client's screen, then repaint from this session's history
         # so switching never shows a mix of two sessions.
-        self.ws_server.broadcast(b"\x1b[2J\x1b[H")
+        self.ws_server.broadcast(RESET_TERMINAL_SCREEN)
         scrollback = session.get_scrollback()
         if scrollback:
             self.ws_server.broadcast(scrollback)
@@ -152,10 +170,18 @@ class SessionManager:
             session.write_input(data)
 
     def resize(self, cols: int, rows: int) -> None:
-        """Resize every session: a background job should not wake to stale width."""
+        """Resize only the displayed terminal and remember it for other tabs.
+
+        Mobile IMEs animate through several viewport heights. Resizing every
+        background session on every frame was especially disruptive to Vim and
+        other full-screen programs; inactive tabs now catch up on switch().
+        """
+        if cols <= 0 or rows <= 0:
+            return
         with self._lock:
-            sessions = list(self._sessions.values())
-        for session in sessions:
+            self._cols, self._rows = cols, rows
+            session = self._sessions.get(self._active) if self._active else None
+        if session is not None:
             session.resize(cols, rows)
 
     def snapshot(self) -> dict:

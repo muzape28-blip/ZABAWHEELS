@@ -28,66 +28,38 @@ from typing import Optional
 from zmux.paths import BIN_DIR, HOME_DIR, display_path
 
 
-HELP_TEXT = """ZMUX Terminal v1.0.0
+HELP_TEXT = """ZMUX Terminal — Alpine Linux
 
-Built-in commands:
-  help          Show this help message
-  clear         Clear terminal screen
-  pwd           Print working directory
-  cd <dir>      Change directory
-  exit / quit   In the Python REPL: back to the shell. In shell mode these
-                behave like CPython's builtins (exit() / Ctrl+D to leave)
+ZMUX opens a real Alpine Linux shell in a PTY. Standard shell commands work
+normally: cd, export, pwd, ls, sh, vim, git, ssh, and apk.
 
-Python-native terminal:
-  Type Python expressions or statements directly (this is the primary REPL).
-  python <file> Run a Python script in the embedded CPython runtime
-  python -c "..." Execute Python code in the embedded CPython runtime
-  pip           Python package manager (if available)
+Packages:
+  apk add <package>               Install Alpine packages
+  apk add py3-colorama            Example Python package from Alpine
+  python3 -m venv ~/.venv         Create a Python virtual environment
+  . ~/.venv/bin/activate          Activate it
+  python3 -m pip install <name>   Install a Python package in the venv
 
-Filesystem commands:
-  ls, cat, mkdir, touch, cp, mv, rm, echo, env, which, uname
-  These use real Python filesystem APIs. Native Android utilities are invoked
-  directly by absolute path; ZMUX never starts /system/bin/sh.
+Workspace:
+  ~/projects                      Persistent ZMUX projects
+  ~/storage                       Optional Android storage links
+  zmux-setup-storage              Request Android storage access and link the
+                                  reachable directories into ~/storage
 
-ZMUX Package Manager:
-  zpip search <query>     Search curated index, installs, and PyPI
-  zpip info <name>        Show package info
-  zpip install <name>     Install package
-  zpip list               List installed packages
-  zpip verify <name>      Verify package installation
-  zpip uninstall <name>   Uninstall package
-  zpip doctor             Check system health
+Terminal controls:
+  help                           Show this help text
+  ESC, CTRL, Tab and arrows are available in the one-row swipeable key bar.
+  Ctrl+C                          Interrupt foreground command
+  Ctrl+D                          End input / exit the active shell
 
-Runtime Info:
-  zmux-info               Show runtime fingerprint
+Migration from legacy ZABAWHEELS:
+  zpip search <query>            Retired; use apk search <query> or pip in a venv
 
-Storage:
-  zmux-setup-storage      Request Android storage access and link the shared
-                          directories into ~/storage (opt-in; ZMUX stays
-                          sandboxed until you run it)
-
-Alpine Linux shell (real PTY):
-  linux                   Open the real interactive Alpine shell — a genuine
-                          PTY (proot -> /bin/sh -l). vim, htop, less and tmux
-                          work. 'exit' returns to the ZMUX console; the ZMX⇄
-                          toolbar key detaches and returns immediately.
-  linux <cmd...>          Run one shell command inside Alpine,
-                          e.g. linux apk add openssh-client
-  alpine <cmd...>         Alias of linux
-  linux-setup             Install the Alpine userland (download ~4 MiB,
-                          SHA-512 verified) — enables git and linux below
-  git <args...>           Real git: clone, branch, checkout, push — normal
-                          syntax. e.g. git clone <url>
-  gates                   Run the strict on-device acceptance probe (G1-G5)
-  zmux-pty-probe          Run the real-PTY acceptance probe (pty1-pty6)
-
-Startup file:
-  ~/.zmuxrc     Runs line by line when a session starts (imports, variables,
-                commands). ZMUX has no login shell, so this replaces .bashrc.
-
-Note: This terminal executes real system commands within app-private storage.
-Standard shell commands can access areas permitted by Android OS.
-There is no PTY, so full-screen programs (vim, htop, less) do not work.
+Diagnostics:
+  linux-setup                    Install/repair the Alpine rootfs
+  gates                          Run the ZMUX device acceptance checks
+  ZMUX diagnostics are app-internal. Alpine package and shell commands remain
+  the normal user workflow.
 """
 
 

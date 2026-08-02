@@ -35,7 +35,15 @@ window.onunhandledrejection = function(event) {
   --mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; width: 100%; overflow: hidden; background: var(--bg); }
+html, body {
+  /* --app-height is set from Android's VisualViewport when the IME opens.
+     Keeping it on both roots makes the flex shell genuinely shrink instead
+     of merely being panned behind the soft keyboard. */
+  height: var(--app-height, 100%);
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
 body {
   color: var(--text);
   font-family: var(--mono);
@@ -45,7 +53,9 @@ body {
 
 /* Top Bar */
 #topbar {
-  height: 40px;
+  /* Terminal space is the primary UI on a phone. Keep controls tappable but
+     avoid spending two full desktop-height rows above every session. */
+  height: 36px;
   background: var(--bg-input);
   border-bottom: 1px solid #30363d;
   display: flex;
@@ -87,7 +97,7 @@ body {
   align-items: center;
   gap: 6px;
   padding: 0 8px 0 12px;
-  height: 42px;
+  height: 38px;
   background: var(--bg-input);
   border-bottom: 1px solid #30363d;
   flex-shrink: 0;
@@ -100,9 +110,9 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 8px 14px;           /* big enough to tap confidently on a phone */
-  min-width: 44px;
-  min-height: 32px;
+  padding: 5px 12px;           /* compact, still a comfortable tap target */
+  min-width: 40px;
+  min-height: 30px;
   font-size: 12px;
   font-family: var(--mono);
   color: var(--text-dim);
@@ -136,7 +146,7 @@ body {
 @keyframes tab-hold-progress { from { width: 0; } to { width: 100%; } }
 #tab-new {
   color: var(--text-bright); background: transparent; border: 1px dashed #30363d;
-  border-radius: 4px; padding: 8px 12px; min-height: 32px; font-size: 13px;
+  border-radius: 4px; padding: 5px 11px; min-height: 30px; font-size: 13px;
   cursor: pointer; flex-shrink: 0;
 }
 #status-dot {
@@ -154,7 +164,11 @@ body {
 
 /* Terminal Container */
 #terminal-container {
-  flex: 1;
+  /* min-height:0 is essential in a column flex layout: without it this item
+     may retain its content height and slide underneath Android's IME. */
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   background: var(--bg);
   padding: 8px;
   overflow: hidden;
@@ -181,30 +195,43 @@ body {
   max-width: 100% !important;
 }
 
-/* Bottom toolbar — two rows of virtual keys */
+/* Bottom toolbar — deliberately ONE horizontal row. A mobile keyboard has
+   already consumed most of the screen; wrapping controls into 2–3 rows made
+   the live terminal unusable. Swipe horizontally for less common keys. */
 #toolbar {
   background: var(--bg-input);
   border-top: 1px solid #30363d;
   padding: 6px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 5px;
   flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+#toolbar::-webkit-scrollbar { height: 0; display: none; }
 /* Hidden via the topbar toggle; display:none (not height:0) so the flex
    layout hands every pixel back to the terminal before fitTerminal(). */
 #toolbar.hidden { display: none; }
 .key-row {
   display: flex;
   gap: 5px;
-  flex-wrap: wrap;          /* every key stays reachable — nothing hidden
-                               behind an unscrollable overflow on narrow
-                               screens (buttons "could not be scrolled") */
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 .key-row::-webkit-scrollbar { height: 0; display: none; }
+/* The compact toolbar remains easy to tap, while consuming only one row. */
+.tool-btn { min-height: 38px; }
+@media (max-height: 620px) {
+  #topbar { height: 34px; }
+  #tabs { height: 36px; }
+  .tab, #tab-new { min-height: 28px; padding-top: 4px; padding-bottom: 4px; }
+  #toolbar { padding: 4px 6px; }
+  .tool-btn { min-height: 34px; padding: 4px 9px; }
+}
 
 .tool-btn {
   background: #21262d;
@@ -472,7 +499,32 @@ function flushTermWrite() {
 // follow, and force a refresh so the cleared canvas renders at the current
 // width — otherwise the viewport appears glued to stale history or
 // mis-measured.
+// This exact sequence is emitted by the session manager before it replays a
+// different tab. CSI 2J clears only the *visible* xterm page; its scrollback
+// still held the old tab, so dragging upward exposed another session's ping /
+// git output. Detect the manager reset and clear xterm's own buffer first.
+const SESSION_RESET_SEQUENCE = '\x1b[?1049l\x1b[?47l\x1b[?1047l\x1b[2J\x1b[H';
+function isSessionScreenReset(data) {
+  if (typeof data === 'string') return data.indexOf(SESSION_RESET_SEQUENCE) !== -1;
+  if (!data || data.length < SESSION_RESET_SEQUENCE.length) return false;
+  for (let start = 0; start <= data.length - SESSION_RESET_SEQUENCE.length; start++) {
+    let same = true;
+    for (let i = 0; i < SESSION_RESET_SEQUENCE.length; i++) {
+      if (data[start + i] !== SESSION_RESET_SEQUENCE.charCodeAt(i)) { same = false; break; }
+    }
+    if (same) return true;
+  }
+  return false;
+}
+function clearPreviousSessionBuffer() {
+  writeQueue.length = 0; // discard output queued for the tab just left
+  try { if (term && typeof term.clear === 'function') term.clear(); } catch (e) {}
+  userScrolledUp = false;
+  lastScrollTop = 0;
+}
+
 function writeTerminalOutput(data, containsClearScreen) {
+  if (isSessionScreenReset(data)) clearPreviousSessionBuffer();
   if (typeof data === 'string') {
     if (data) writeQueue.push(data);
   } else if (data && data.length) {
@@ -773,10 +825,7 @@ const KEY_ROWS = [
     { label: '←', send: '\x1b[D', repeat: true },
     { label: '→', send: '\x1b[C', repeat: true },
     { label: 'Home', send: '\x1b[H' },
-    { label: 'End', send: '\x1b[F' }
-  ],
-  [
-    { label: 'ZMX⇄', action: 'pty.toggle' },
+    { label: 'End', send: '\x1b[F' },
     { label: '^C', send: '\x03', danger: true },
     { label: '^D', send: '\x04', danger: true },
     { label: '⌫', send: '\x7f', repeat: true },
@@ -890,8 +939,19 @@ function fitTerminal() {
   if (!term) return;
 
   const container = document.getElementById("terminal-container");
-  const width = container.clientWidth;
-  const height = container.clientHeight;
+  // clientWidth/clientHeight include the container padding. Measure the real
+  // content box so the PTY never receives columns that xterm cannot draw.
+  let horizontalPadding = 16;
+  let verticalPadding = 16;
+  try {
+    const style = window.getComputedStyle && window.getComputedStyle(container);
+    if (style) {
+      horizontalPadding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      verticalPadding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    }
+  } catch (e) {}
+  const width = Math.max(0, container.clientWidth - horizontalPadding);
+  const height = Math.max(0, container.clientHeight - verticalPadding);
 
   // Measure precisely using a temporary hidden character. If the webfont is
   // still loading the measurement returns 0/0 — fall back and re-fit once
@@ -905,16 +965,21 @@ function fitTerminal() {
   document.body.appendChild(charMeasure);
 
   const rect = charMeasure.getBoundingClientRect();
-  const charWidth = rect.width || 7.8;
-  const charHeight = rect.height || 18;
+  // Prefer xterm's measured cell geometry. The hidden HTML span is only a
+  // fallback: browser text metrics can differ from xterm's canvas metrics,
+  // which made the PTY believe in a different column count than the screen.
+  let cell = null;
+  try { cell = term._core && term._core._renderService && term._core._renderService.dimensions.css.cell; } catch (e) {}
+  const charWidth = (cell && cell.width) || rect.width || 7.8;
+  const charHeight = (cell && cell.height) || rect.height || 18;
   document.body.removeChild(charMeasure);
 
-  // Subtract padding (8px each side). The .xterm-screen is clamped to 100%
-  // width by CSS, so cols measured here are the real visible width — lines
-  // wrap exactly at the screen edge (this is what keeps `help` and
-  // `cat README.md` from looking ragged).
-  const cols = Math.max(20, Math.floor((width - 16) / charWidth));
-  const rows = Math.max(5, Math.floor((height - 16) / charHeight));
+  // Do not impose a desktop-sized 20-column / 5-row minimum. When an IME,
+  // toolbar, or a very small split viewport leaves less room, that old floor
+  // told Alpine the screen was larger than the xterm canvas and caused text
+  // to run under the keyboard or past the right edge.
+  const cols = Math.max(2, Math.floor(width / charWidth));
+  const rows = Math.max(1, Math.floor(height / charHeight));
 
   if (term.cols !== cols || term.rows !== rows) {
     term.resize(cols, rows);
@@ -937,8 +1002,15 @@ function fitToVisualViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
   const visibleHeight = Math.max(120, Math.round(vv.height));
-  document.documentElement.style.height = visibleHeight + "px";
-  document.body.style.height = visibleHeight + "px";
+  // A CSS variable keeps the complete flex shell (including xterm's mount)
+  // inside the actual IME-visible viewport. Direct body/html height writes
+  // were overwritten by CSS in some Android WebViews.
+  if (document.documentElement.style.setProperty) {
+    document.documentElement.style.setProperty('--app-height', visibleHeight + "px");
+  } else {
+    // Lightweight WebView/test DOMs may expose a plain style object.
+    document.documentElement.style['--app-height'] = visibleHeight + "px";
+  }
   // Re-anchor to the top: with the layout sized to the visible viewport the
   // browser no longer needs to pan the page up behind the keyboard.
   if (window.scrollY > 0) window.scrollTo(0, 0);

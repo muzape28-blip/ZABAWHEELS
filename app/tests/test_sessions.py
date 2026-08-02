@@ -119,7 +119,7 @@ class TestSwitching:
         manager.create()
         manager.ws_server.data.clear()
         manager.switch(first)
-        assert manager.ws_server.data.startswith(b"\x1b[2J\x1b[H")
+        assert manager.ws_server.data.startswith(b"\x1b[?1049l\x1b[?47l\x1b[?1047l\x1b[2J\x1b[H")
 
     def test_input_is_routed_to_the_active_session(self, manager):
         first = manager.ids()[0]
@@ -166,11 +166,15 @@ class TestSnapshot:
         assert snap["active"] == second
         assert snap["max"] == SessionManager.MAX_SESSIONS
 
-    def test_resize_applies_to_every_session(self, manager):
-        second = manager.create()
+    def test_resize_defers_background_tui_until_tab_is_visible(self, manager):
+        first = manager.ids()[0]
+        second = manager.create()  # second is active
         manager.resize(120, 40)
         assert manager.get(second).shell.width == 120
-        assert manager.get(manager.ids()[0]).shell.width == 120
+        # The inactive tab is deliberately left alone during IME animation.
+        assert manager.get(first).shell.width != 120
+        manager.switch(first)
+        assert manager.get(first).shell.width == 120
 
 
 class TestEndToEnd:
@@ -315,7 +319,24 @@ class TestRepaint:
             assert mgr.active_id == second
             assert b"\x1b[2J\x1b[H" in ws.data, "screen must be cleared"
             # The banner of the *second* session follows the clear.
-            assert ws.data.index(b"\x1b[2J\x1b[H") < ws.data.index(b"ZMUX terminal")
+            assert ws.data.index(b"\x1b[2J\x1b[H") < ws.data.index(b"zmux:")
+        finally:
+            mgr.stop_all()
+            reset_manager()
+
+    def test_switch_leaves_alternate_screen_before_replay(self):
+        """Switching away from Vim/less must not leave the next tab inside
+        xterm's alternate buffer."""
+        from zmux.sessions import RESET_TERMINAL_SCREEN
+        ws = _FakeWS()
+        mgr = SessionManager(ws)
+        first = mgr.create()
+        second = mgr.create(activate=False)
+        try:
+            ws.data.clear()
+            mgr.switch(second)
+            assert ws.data.startswith(RESET_TERMINAL_SCREEN)
+            assert b"\x1b[?1049l" in ws.data
         finally:
             mgr.stop_all()
             reset_manager()

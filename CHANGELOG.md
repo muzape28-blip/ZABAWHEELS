@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Planned — ZMUX Alpine-first updates (post-stability roadmap)
+> Planning only: items below are intentionally scheduled **after** the Alpine
+> PTY, keyboard/IME, storage, lifecycle, and device-test acceptance gates are
+> complete. They are not promises for the next APK and will be delivered in
+> small, testable releases.
+
+- **Terminal profiles and low-resource mode:** selectable compact/balanced/
+  large-text/high-contrast/AMOLED profiles, plus a low-resource profile for
+  ARMv7 and Android Go devices (reduced animation/glow, conservative
+  scrollback and rendering work while retaining terminal behavior).
+- **GitHub-aware project workflow:** lightweight project/repository status,
+  branch and remote visibility around the real Alpine `git` command; clone/
+  open project helpers and normal user-managed GitHub authentication (SSH or
+  device-login/token flow). ZMUX will not replace Git with a proprietary
+  client or store credentials in source/logs.
+- **Nano-first editing support:** document/install Alpine `nano` and expose
+  the useful one-row ZMUX controls (`CTRL`, arrows, `^O`, `^W`, `^X`) without
+  attempting to build a heavy in-app IDE.
+- **Named terminal sessions:** replace anonymous numeric tabs with user names
+  and optional directory-derived names, while keeping each tab an isolated
+  Alpine real-PTY session.
+- **tmux helper path:** retain `tmux` as the Linux-native advanced session
+  manager (`apk add tmux`, `tmux new`, `tmux attach`) and add lightweight
+  onboarding/shortcuts rather than reimplementing tmux in the app.
+- **Honest package recommendation UI:** suggest and show executable Alpine
+  commands (`apk add py3-…`, or `python3 -m venv` + `pip`) with availability/
+  compatibility information. It will not revive `zpip` as a separate package
+  ecosystem.
+- **Optional Debian compatibility environment:** evaluate a Debian/glibc
+  environment only after Alpine is stable, as an optional compatibility
+  profile—not a replacement for the lightweight Alpine default and not a
+  multi-distro manager in the first release.
+- **Remote-development-friendly direction:** keep SSH/VPS/desktop workflows
+  first-class so constrained ARMv7 phones remain capable terminal clients
+  without promising unsupported local heavy workloads.
+
 ### Fixed — terminal UX: stutter-free scrolling, keyboard-aware layout, clean wrap (2026-08-01)
 - **Scroll no longer stutters on low-end phones.** Output writes are now
   coalesced to ONE `term.write()` per animation frame (`writeQueue` +

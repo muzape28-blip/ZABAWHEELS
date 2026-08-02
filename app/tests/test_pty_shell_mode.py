@@ -97,16 +97,18 @@ def test_bare_linux_without_alpine_is_honest(session):
 
 def test_bare_linux_enters_real_pty_shell_and_exit_returns(session, alpine_env):
     session.write_input(b"linux\n")
-    assert _wait_for(lambda: b"[Alpine Linux shell" in session.get_scrollback())
+    assert _wait_for(lambda: b"[ZMUX Alpine Linux - real PTY]" in session.get_scrollback())
     assert session.pty is not None
 
     session.write_input(b"echo HI-FROM-ALPINE\n")
     assert _wait_for(lambda: b"HI-FROM-ALPINE" in session.get_scrollback())
 
+    old_pty = session.pty
     session.write_input(b"exit\n")
     assert _wait_for(lambda: b"[Alpine shell exited" in session.get_scrollback())
-    assert _wait_for(lambda: b"zmux:" in session.get_scrollback())
-    assert session.pty is None
+    # Alpine-first ZMUX never falls back to the embedded Python console after
+    # `exit`; it presents a fresh real shell in the same terminal tab.
+    assert _wait_for(lambda: session.pty is not None and session.pty is not old_pty)
 
 
 def test_input_is_passthrough_no_double_echo(session, alpine_env):
@@ -138,7 +140,7 @@ def test_toggle_pty_detaches_and_reattaches(session, alpine_env):
     assert _wait_for(lambda: b"zmux:" in session.get_scrollback())
     # Toggle again re-enters the Alpine shell.
     session.toggle_pty()
-    assert _wait_for(lambda: b"[Alpine Linux shell" in session.get_scrollback())
+    assert _wait_for(lambda: b"[ZMUX Alpine Linux - real PTY]" in session.get_scrollback())
     assert session.pty is not None
 
 
@@ -177,7 +179,7 @@ def test_phase2_auto_start_alpine_shell(alpine_env):
     s = PTYTerminalSession(_FakeWS())
     try:
         s.start()
-        assert _wait_for(lambda: b"[Alpine Linux shell" in s.get_scrollback())
+        assert _wait_for(lambda: b"[ZMUX Alpine Linux - real PTY]" in s.get_scrollback())
         assert s.pty is not None
         # The shell actually answers.
         s.write_input(b"echo AUTO-OK\n")
@@ -186,14 +188,15 @@ def test_phase2_auto_start_alpine_shell(alpine_env):
         s.stop()
 
 
-def test_zmux_shell_start_zmux_forces_host_console(alpine_env, monkeypatch):
+def test_alpine_is_not_overridden_by_legacy_host_shell_environment(alpine_env, monkeypatch):
+    """The old host-console switch is intentionally ignored: ZMUX exposes
+    one shell contract to users, Alpine in a real PTY."""
     monkeypatch.setenv("ZMUX_SHELL_START", "zmux")
     s = PTYTerminalSession(_FakeWS())
     try:
         s.start()
-        assert _wait_for(lambda: b"zmux:" in s.get_scrollback())
-        assert s.pty is None
-        assert b"[Alpine Linux shell" not in s.get_scrollback()
+        assert _wait_for(lambda: b"[ZMUX Alpine Linux - real PTY]" in s.get_scrollback())
+        assert s.pty is not None
     finally:
         s.stop()
 
@@ -205,7 +208,10 @@ def test_guest_wrappers_are_installed_into_rootfs(session, alpine_env):
     assert wrapper.is_file()
     assert os.access(wrapper, os.X_OK)
     text = wrapper.read_text(encoding="utf-8")
-    assert "ZMUX host tool" in text
+    assert "app diagnostic" in text
+    storage_wrapper = alpine_env / "usr" / "local" / "bin" / "zmux-setup-storage"
+    assert storage_wrapper.is_file()
+    assert "zmux-setup-storage" in storage_wrapper.read_text(encoding="utf-8")
 
 
 def test_linux_dashdash_help_still_shows_help(session, alpine_env):

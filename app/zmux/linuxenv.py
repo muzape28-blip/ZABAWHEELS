@@ -306,10 +306,50 @@ def guest_cwd(host_cwd: Path) -> str:
     return f"{GUEST_HOME}/{rel.as_posix()}"
 
 
+def _storage_bind_paths() -> list[Path]:
+    """Host storage paths that must remain valid *inside* the PRoot guest.
+
+    ``zmux-setup-storage`` creates links such as ``~/storage/downloads`` ->
+    ``/sdcard/Download``. A symlink is visible through the /root bind, but its
+    absolute target was previously not mounted in Alpine, producing the
+    confusing ``ls`` works / ``cd`` says no such file error. Bind the target
+    paths at their original guest paths as well.
+    """
+    candidates = [
+        os.environ.get("ANDROID_APP_PATH", ""),
+        os.environ.get("EXTERNAL_STORAGE", ""),
+        os.environ.get("ANDROID_STORAGE", ""),
+        "/sdcard",
+        "/storage/emulated/0",
+    ]
+    paths: list[Path] = []
+    for value in candidates:
+        if not value:
+            continue
+        path = Path(value)
+        if path.is_dir() and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _ensure_guest_mountpoint(path: Path) -> None:
+    """Create the rootfs-side destination used by an absolute storage bind."""
+    try:
+        # Only absolute host paths become guest absolute paths; strip the
+        # leading slash so a malicious env value cannot escape the rootfs.
+        relative = Path(str(path)).relative_to("/")
+        (rootfs_dir() / relative).mkdir(parents=True, exist_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
 def _bind_flags() -> list:
     """proot bind flags shared by every invocation."""
     flags = ["-b", "/dev", "-b", "/proc", "-b", "/sys"]
     flags += ["-b", f"{HOME_DIR}:{HOME_BIND}"]
+    for path in _storage_bind_paths():
+        _ensure_guest_mountpoint(path)
+        flags += ["-b", f"{path}:{path}"]
     resolv = Path("/etc/resolv.conf")
     if resolv.is_file():
         flags += ["-b", f"{resolv}:/etc/resolv.conf"]
@@ -363,6 +403,37 @@ def build_interactive_argv(host_cwd: Path) -> list:
     return argv
 
 
+def ensure_user_home_layout() -> None:
+    """Create the persistent Alpine-facing workspace without touching files
+    a user has already customised.
+
+    ``HOME_DIR`` is bind-mounted as /root, so these files survive rootfs
+    repair/reinstall and APK upgrades. A profile is created only on first use;
+    existing user profiles always remain authoritative.
+    """
+    HOME_DIR.mkdir(parents=True, exist_ok=True)
+    (HOME_DIR / "projects").mkdir(parents=True, exist_ok=True)
+    profile = HOME_DIR / ".profile"
+    if not profile.exists():
+        profile.write_text(
+            "# Created by ZMUX. This file is yours to customise.\n"
+            "export PS1='zmux@alpine:\\w$ '\n"
+            "mkdir -p \"$HOME/projects\"\n",
+            encoding="utf-8",
+        )
+    else:
+        # Migrate only the exact profile line emitted by the previous ZMUX
+        # build. A literal `$` is intentional: PRoot presents uid 0 inside
+        # its guest, but ZMUX must not imply Android-root privilege with `#`.
+        try:
+            old = profile.read_text(encoding="utf-8")
+            legacy = "export PS1='zmux@alpine:\\w\\$ '"
+            if legacy in old:
+                profile.write_text(old.replace(legacy, "export PS1='zmux@alpine:\\w$ '"), encoding="utf-8")
+        except OSError:
+            pass
+
+
 def interactive_env() -> dict:
     """Environment for the interactive PTY shell.
 
@@ -370,42 +441,68 @@ def interactive_env() -> dict:
     Android); TERM + LANG make TUI programs (vim/htop/less) render correctly
     and set a friendly root prompt inside Alpine.
     """
+    ensure_user_home_layout()
     env = proot_env()
     env["TERM"] = "xterm-256color"
     env["LANG"] = "C.UTF-8"
     env["SHELL"] = "/bin/sh"
+    # Keep the product boundary visible without pretending this is Android
+    # root. The guest is a normal Alpine userland rooted at its own /.
+    env["USER"] = "zmux"
+    env["LOGNAME"] = "zmux"
+    env["PS1"] = "zmux@alpine:\\w$ "
     return env
 
 
 def install_guest_wrappers() -> int:
-    """Write tiny notice-wrappers for ZMUX host tools into the rootfs.
+    """Install small migration notices, never a route back to a host shell.
 
-    Inside the pure-Alpine PTY shell, ``zpip``/``gates``/``zmux-info``/
-    ``linux-setup``/``help``/``zmux-pty-probe`` are ZMUX *host* tools: they
-    run in the app's embedded Python, not in the musl userland. The wrappers
-    make the muscle memory work — typing ``gates`` inside Alpine prints how
-    to reach the host console (ZMX⇄ toolbar key) instead of ``command not
-    found``. Returns number of wrappers written.
+    Alpine is ZMUX's user-facing environment. Historic ZABAWHEELS commands
+    must therefore not tell users to detach into an embedded Python console.
+    ``zpip`` gets a useful Alpine package-management migration message; the
+    remaining diagnostic names explicitly stay app-internal.
     """
     if not is_installed():
         return 0
     bin_dir = rootfs_dir() / "usr" / "local" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    template = "#!/bin/sh\n" \
-               "echo \"$0: ZMUX host tool.\"\n" \
-               "echo \"  This runs inside the app's embedded Python, not the\"\n" \
-               "echo \"  Alpine userland. Press the ZMX key (toolbar) for the\"\n" \
-               "echo \"  ZMUX host console, then type: {cmd}\"\n" \
-               "exit 1\n"
-    written = 0
-    for cmd in ("zpip", "gates", "zmux-info", "linux-setup", "help", "zmux-pty-probe"):
-        wrapper = bin_dir / cmd
-        content = template.format(cmd=cmd)
+    notices = {
+        "zpip": "#!/bin/sh\n"
+                "echo 'zpip is retired in Alpine-first ZMUX.' >&2\n"
+                "echo 'Use: apk add py3-<package>' >&2\n"
+                "echo '  or: python3 -m pip install <package> (prefer a venv)' >&2\n"
+                "exit 127\n",
+        "gates": "#!/bin/sh\n"
+                 "echo 'gates is an app diagnostic and is not part of Alpine.' >&2\n"
+                 "exit 127\n",
+        "zmux-info": "#!/bin/sh\n"
+                     "echo 'zmux-info is available from ZMUX diagnostics.' >&2\n"
+                     "exit 127\n",
+        "zmux-pty-probe": "#!/bin/sh\n"
+                          "echo 'zmux-pty-probe is an app diagnostic and is not part of Alpine.' >&2\n"
+                          "exit 127\n",
+        # Storage permission is an Android operation, not an apk command. The
+        # OSC is consumed by PTYTerminalSession and forwarded to the trusted
+        # app bridge without exposing the legacy host Python console.
+        "zmux-setup-storage": "#!/bin/sh\n"
+                              "printf '\\033]777;zmux-setup-storage\\007'\n"
+                              "exit 0\n",
+    }
+    # Remove only stale wrappers generated by older ZMUX builds; never delete
+    # a user-created command with the same name.
+    for stale in ("linux-setup", "help"):
+        candidate = bin_dir / stale
         try:
-            try:
-                current = wrapper.read_text(encoding="utf-8") if wrapper.exists() else None
-            except OSError:
-                current = None
+            if candidate.is_file() and "ZMUX host tool" in candidate.read_text(encoding="utf-8"):
+                candidate.unlink()
+        except OSError:
+            pass
+
+    written = 0
+    for cmd, content in notices.items():
+        wrapper = bin_dir / cmd
+        try:
+            current = wrapper.read_text(encoding="utf-8") if wrapper.exists() else None
             if current != content:
                 wrapper.write_text(content, encoding="utf-8", newline="\n")
             os.chmod(wrapper, 0o755)
@@ -582,6 +679,13 @@ def run_gates(report=None) -> dict:
     """
     if report is None:
         report = progress_sink if progress_sink is not None else print
+
+    # ``print`` supplies a newline, but the live terminal progress sink writes
+    # raw bytes directly to the PTY/WebSocket. Without this boundary, adjacent
+    # gate results were glued together as `...possible[PASS]...` on phones.
+    def report_line(text: str) -> None:
+        report(text if text.endswith("\n") else text + "\n")
+
     results: dict = {}
 
     # Identify the exact build under test; "fixed APK still failing" reports
@@ -591,13 +695,13 @@ def run_gates(report=None) -> dict:
         from zmux.buildinfo import build_marker
         marker = build_marker()
         if marker:
-            report(f"[INFO] zmux build: {marker}")
+            report_line(f"[INFO] zmux build: {marker}")
     except Exception:
         pass
 
     def gate(name, ok, detail):
         results[name] = {"ok": bool(ok), "detail": str(detail)}
-        report(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+        report_line(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
         return bool(ok)
 
     # G1 — /dev/ptmx: can ZMUX ever be a real PTY terminal?
@@ -713,7 +817,7 @@ def run_gates(report=None) -> dict:
     else:
         gate("apk", False, "skipped: proot/rootfs unavailable")
 
-    report("")
+    report_line("")
     passed = sum(1 for r in results.values() if r["ok"])
-    report(f"[INFO] gates passed: {passed}/{len(results)}")
+    report_line(f"[INFO] gates passed: {passed}/{len(results)}")
     return results
