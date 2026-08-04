@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from zmux.paths import BIN_DIR, HOME_DIR, USER_PACKAGES_DIR
+from zmux.paths import BIN_DIR, HOME_DIR, legacy_user_packages_pythonpath
 
 #: Directories always present on PATH, after BIN_DIR. On Android the inherited
 #: PATH is frequently minimal or absent, which makes basic utilities fail with
@@ -84,11 +84,9 @@ def build_env(cwd: Path | None = None) -> dict:
     env["LC_ALL"] = "C.UTF-8"
     env["PATH"] = build_path()
     env["TMPDIR"] = str(Path(HOME_DIR).parent / "cache")
-    # Installed zpip packages must be importable by child interpreters too.
-    pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{USER_PACKAGES_DIR}{os.pathsep}{pythonpath}" if pythonpath else str(USER_PACKAGES_DIR)
-    )
+    # Legacy zpip packages remain importable by host-side compatibility child
+    # interpreters. Alpine-first package work uses apk and venv-local pip.
+    env["PYTHONPATH"] = legacy_user_packages_pythonpath(env.get("PYTHONPATH", ""))
     env["ZMUX"] = "1"
     return env
 

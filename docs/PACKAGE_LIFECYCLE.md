@@ -1,5 +1,8 @@
 # Package Lifecycle
 
+> **Legacy ZABAWHEELS note (2026-08-03):** this lifecycle describes the retained
+> wheelhouse/package-pipeline era. Do not use it as current user package
+> guidance; Alpine `apk` and venv-local `pip` are the supported workflow.
 > **Status:** Pre-Alpha (M0)
 
 ## Lifecycle States

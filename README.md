@@ -23,6 +23,8 @@
 
 ZMUX is a lightweight Android terminal whose user-facing environment is **Alpine Linux**. It starts an Alpine login shell through **PRoot** on a genuine `/dev/ptmx` PTY, then connects it to a keyboard-aware xterm.js interface.
 
+> **Package workflow:** use Alpine `apk` and Python virtual environments inside Alpine. The historical ZABAWHEELS/`zpip` wheelhouse pipeline is retained only for migration and legacy artifact reproducibility; it is not the recommended user package path.
+
 ```text
 Android keyboard / touch UI
         ↓
@@ -206,6 +208,22 @@ The build creates a universal ARMv7 + ARM64 APK and cross-compiles the Android P
 
 ---
 
+## Developer API boundary
+
+The interactive terminal is driven by the authenticated WebSocket connected to the Alpine PTY. REST terminal-session endpoints such as `/api/exec`, `/api/status`, and `/api/prompt` are retained for legacy compatibility and should not be used for new terminal UX.
+
+If a legacy client must call `/api/exec`, send an explicit language value:
+
+```json
+{"command": "echo hello", "language": "command"}
+{"command": "print(21 + 21)", "language": "python"}
+{"command": "echo old flow", "language": "legacy-auto"}
+```
+
+See [docs/REST_COMPATIBILITY.md](docs/REST_COMPATIBILITY.md) and [docs/REST_EXEC_LANGUAGE_MIGRATION.md](docs/REST_EXEC_LANGUAGE_MIGRATION.md).
+
+---
+
 ## Honest limitations
 
 - PRoot adds overhead; heavy native compilation is slow on low-end ARMv7 devices.
@@ -233,13 +251,30 @@ See [CHANGELOG.md](CHANGELOG.md) for the full planned-update notes.
 
 ## Documentation
 
+### Documentation map
+
+- [docs/README.md](docs/README.md) — Alpine-first documentation index and current-vs-legacy map
 - [CHANGELOG.md](CHANGELOG.md) — changes and planned updates
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution guide
+
+### Current technical docs
+
 - [docs/PROOT_ALPINE.md](docs/PROOT_ALPINE.md) — Alpine/PRoot design
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — application architecture
+- [docs/BUILDING.md](docs/BUILDING.md) — APK build path
+- [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — runtime compatibility contract
 - [docs/SECURITY.md](docs/SECURITY.md) — security model
 - [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md) — device test matrix
+- [docs/REST_COMPATIBILITY.md](docs/REST_COMPATIBILITY.md) — REST vs WebSocket terminal boundary
+- [docs/REST_EXEC_LANGUAGE_MIGRATION.md](docs/REST_EXEC_LANGUAGE_MIGRATION.md) — legacy `/api/exec` language migration guide
+
+### Legacy package pipeline
+
+- [docs/LEGACY_PACKAGE_PIPELINE.md](docs/LEGACY_PACKAGE_PIPELINE.md) — why ZABAWHEELS wheelhouse tooling is still retained for migration/historical artifacts
+
+### Historical docs
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — application architecture plus legacy host-console/API history
 - [docs/DEVICE_FAILURE_ANALYSIS.md](docs/DEVICE_FAILURE_ANALYSIS.md) — real-device failure analysis
-- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution guide
 
 ---
 

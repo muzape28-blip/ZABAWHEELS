@@ -1,5 +1,6 @@
 # ZMUX Roadmap & Status
 
+> **Historical roadmap note (2026-08-03):** this file predates the Alpine-first cleanup and still references the ZABAWHEELS/`zpip` package era. Use [README.md](README.md) and [docs/README.md](docs/README.md) for current user-facing guidance.
 ## Status Legend
 
 | Status | Meaning |
