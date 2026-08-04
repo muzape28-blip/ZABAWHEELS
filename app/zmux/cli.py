@@ -8,9 +8,9 @@ re-enter the Python runtime through this module::
 
 Each wrapper forwards ``"$0"`` (its own invoked path) as the first argument,
 so the typed command name is recovered with ``os.path.basename(argv[0])``.
-This is what makes ZMUX built-in commands (``zpip``, ``help``, ``zmux-info``,
-``clear``, ``pip``) work natively inside the real Android PTY shell
-(``/system/bin/sh``) instead of failing with "inaccessible or not found".
+This is kept as a small app-control compatibility layer. The user-facing
+terminal is Alpine-first; package work should happen with ``apk`` and, for
+Python projects, ``pip`` inside an Alpine virtual environment.
 """
 from __future__ import annotations
 
@@ -19,22 +19,60 @@ import shlex
 import subprocess
 import sys
 
-#: Commands handled by this module (mirrors zmux.paths.CLI_COMMANDS).
-COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip", "zmux-setup-storage",
-            "linux-setup", "linux", "gates", "zmux-pty-probe")
+from zmux.command_registry import (
+    ACCEPTED_COMMANDS,
+    DIAGNOSTIC_COMMANDS,
+    LEGACY_ALIAS_COMMANDS,
+    LEGACY_COMPAT_COMMANDS,
+    PRIMARY_COMMANDS,
+    WRAPPER_COMMANDS,
+)
 
-_USAGE = ("usage: python -m zmux.cli "
-          "<zpip|help|zmux-info|clear|pip|zmux-setup-storage|linux-setup|linux|gates|zmux-pty-probe> [args...]")
+#: Commands with generated wrappers (mirrors zmux.paths.CLI_COMMANDS).
+COMMANDS = WRAPPER_COMMANDS
 
-_PIP_FALLBACK = """pip is not available inside this ZMUX runtime.
-Use the ZMUX package manager instead:
-  zpip search <query>     Search curated index, installs, and PyPI
-  zpip info <name>        Show package info
-  zpip install <name>     Install a package
-  zpip list               List installed packages
-  zpip verify <name>      Verify a package installation
-  zpip uninstall <name>   Uninstall a package
-  zpip doctor             Check system health"""
+_USAGE = (
+    "usage: python -m zmux.cli <command> [args...]\n"
+    f"active: {', '.join(PRIMARY_COMMANDS)}\n"
+    f"diagnostics: {', '.join(DIAGNOSTIC_COMMANDS)}\n"
+    f"legacy compat: {', '.join((*LEGACY_COMPAT_COMMANDS, *LEGACY_ALIAS_COMMANDS))}"
+)
+
+_PIP_FALLBACK = """Host-side pip is not part of the Alpine-first ZMUX workflow.
+Open the Alpine terminal and install Python packages there instead:
+  apk add python3 py3-pip py3-virtualenv
+  python3 -m venv ~/.venv
+  . ~/.venv/bin/activate
+  python3 -m pip install <name>
+
+Prefer Alpine packages first when they exist:
+  apk search <name>
+  apk add py3-<package>"""
+
+
+def _legacy_notice(command: str) -> str:
+    """Return a one-line retirement notice for legacy compatibility commands."""
+    if command == "zpip":
+        return (
+            "zpip is legacy compatibility in Alpine-first ZMUX; "
+            "prefer `apk search/add` or `python3 -m pip` inside an Alpine venv."
+        )
+    if command == "pip":
+        return (
+            "host-side pip is legacy compatibility; "
+            "prefer Python packages inside an Alpine virtual environment."
+        )
+    if command in {"linux", "alpine"}:
+        return (
+            f"{command} is a legacy host wrapper; in the normal Alpine shell, "
+            "run the command directly without the prefix."
+        )
+    return f"{command} is legacy compatibility."
+
+
+def _warn_legacy(command: str) -> None:
+    """Print a deprecation notice to stderr without changing stdout contracts."""
+    print(f"WARNING: {_legacy_notice(command)}", file=sys.stderr)
 
 
 def _cmd_help() -> int:
@@ -62,13 +100,14 @@ def _cmd_setup_storage() -> int:
 
 def _cmd_zmux_info() -> int:
     """Print the formatted ZMUX runtime fingerprint."""
-    from zmux import zpip
-    print(zpip.format_fingerprint(zpip.runtime_fingerprint()))
+    from zmux import runtime_info
+    print(runtime_info.format_fingerprint(runtime_info.runtime_fingerprint()))
     return 0
 
 
 def _cmd_zpip(args: list) -> int:
-    """Run a zpip command and print terminal-friendly formatted output."""
+    """Run the legacy zpip command for compatibility."""
+    _warn_legacy("zpip")
     from zmux import zpip
     command = "zpip" + (" " + shlex.join(args) if args else "")
     output, exit_code = zpip.format_output(command, zpip.dispatch(command))
@@ -88,19 +127,21 @@ def _cmd_linux_setup(args: list) -> int:
     if (linuxenv.rootfs_dir() / "usr" / "bin" / "git").is_file():
         print("`git` is available. Try: git clone <url>")
     else:
-        print("Enable git (one-time, needs network):")
-        print("  linux apk add git openssh-client")
+        print("Enable git from the Alpine shell (one-time, needs network):")
+        print("  apk add git openssh-client")
     return 0
 
 
-def _cmd_linux(args: list) -> int:
-    """Run a shell command inside the Alpine userland (CLI entry)."""
+def _cmd_linux(command: str, args: list) -> int:
+    """Run a shell command inside the Alpine userland (legacy CLI entry)."""
+    _warn_legacy(command)
     from zmux import linuxenv
     if not linuxenv.is_installed():
         print("Alpine environment is not installed. Run: linux-setup", file=sys.stderr)
         return 1
     if not args:
-        print("usage: zmux linux <command...>")
+        print(f"usage: zmux {command} <command...>")
+        print("In the normal Alpine shell, run commands directly, e.g.: apk add git")
         return 2
     try:
         guest_argv = ["/bin/sh", "-c", shlex.join(args)]
@@ -130,14 +171,10 @@ def _cmd_pty_probe(args: list) -> int:
 
 
 def _cmd_pip(args: list) -> int:
-    """Run standard pip, or explain how to use zpip when pip cannot run.
-
-    On Android, Python lives inside the app as a shared library, so
-    ``sys.executable`` is often not a runnable standalone interpreter;
-    the ZABAWHEELS-native ``zpip`` package manager is the supported path.
-    """
+    """Run standard host pip when available, otherwise print Alpine guidance."""
     executable = sys.executable or ""
     if executable and os.access(executable, os.X_OK):
+        _warn_legacy("pip")
         try:
             return subprocess.call([executable, "-m", "pip", *args])
         except OSError:
@@ -154,6 +191,10 @@ def main(argv=None) -> int:
         return 2
     command = os.path.basename(argv[0])
     args = argv[1:]
+    if command not in ACCEPTED_COMMANDS:
+        print(f"zmux.cli: unknown command: {command}", file=sys.stderr)
+        print(_USAGE, file=sys.stderr)
+        return 127
     if command == "help":
         return _cmd_help()
     if command == "clear":
@@ -165,7 +206,7 @@ def main(argv=None) -> int:
     if command == "linux-setup":
         return _cmd_linux_setup(args)
     if command in ("linux", "alpine"):
-        return _cmd_linux(args)
+        return _cmd_linux(command, args)
     if command == "gates":
         return _cmd_gates(args)
     if command == "zmux-pty-probe":

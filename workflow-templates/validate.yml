@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   validate:
-    name: YAML, source locks, and tests
+    name: YAML, app tests, and legacy package contracts
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
@@ -29,7 +29,7 @@ jobs:
           cache: pip
           cache-dependency-path: app/requirements.lock
 
-      - name: Install validation dependencies
+      - name: Install app and legacy validation dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r app/requirements-dev.txt PyYAML==6.0.3 jsonschema==4.26.0 Cython==3.2.9
@@ -67,8 +67,9 @@ jobs:
           cmp workflow-templates/build-zmux-apk.yml .github/workflows/build-zmux-apk.yml
           cmp workflow-templates/validate.yml .github/workflows/validate.yml
 
-      - name: Validate source and build contracts
+      - name: Validate app and legacy package build contracts
         run: |
+          echo "::notice title=Legacy package checks::ZABAWHEELS package validation is retained for migration; ZMUX user packages should use Alpine apk and Python venv/pip."
           python scripts/validate_recipes.py --all
           python scripts/verify_source_lock.py
           python scripts/build.py \

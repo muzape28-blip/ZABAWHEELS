@@ -238,3 +238,166 @@ class TestWsPortConfig:
             assert b"59999" in resp.data
         finally:
             app.config["WS_PORT"] = old
+
+
+class TestLegacyExecSurface:
+    """REST /api/exec is compatibility-only; the UI uses WebSocket PTY."""
+
+    def _auth(self):
+        from zmux.security import AUTH_TOKEN
+        return {"X-ZMUX-Token": AUTH_TOKEN}
+
+    def test_terminal_html_does_not_call_legacy_exec_endpoint(self):
+        from zmux import server
+        html = (server.BASE_DIR / "templates" / "terminal.html").read_text(encoding="utf-8")
+        assert "/api/exec" not in html
+        assert "fetch(" not in html
+
+    def test_health_does_not_create_legacy_terminal_session(self, monkeypatch):
+        from zmux import server
+        monkeypatch.setattr(server, "get_session", lambda: (_ for _ in ()).throw(AssertionError("legacy session created")))
+        resp = server.app.test_client().get("/api/health")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "idle"
+        assert data["runtime"] == "alpine-pty"
+
+    def test_legacy_exec_still_accepts_implicit_python_with_metadata(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "1 + 1"},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["stdout"].strip() == "2"
+        assert data["legacy"] is True
+        assert data["legacy_input_mode"] == server.LEGACY_EXEC_INPUT_MODE
+        assert data["explicit_language"] is False
+        assert data["language"] == server.EXEC_LANGUAGE_DEFAULT
+
+    def test_legacy_auto_language_is_explicit_alias_of_current_behavior(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "1 + 1", "language": "legacy-auto"},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["stdout"].strip() == "2"
+        assert data["explicit_language"] is True
+        assert data["language"] == "legacy-auto"
+
+    def test_python_language_executes_python_explicitly(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "print(21 + 21)", "language": "python"},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["stdout"].strip() == "42"
+        assert data["explicit_language"] is True
+        assert data["language"] == "python"
+
+    def test_python_language_bypasses_shell_builtins(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "ls", "language": "python"},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["language"] == "python"
+        assert "NameError" in data["stderr"]
+
+    def test_command_language_runs_known_command(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "echo hello", "language": "command"},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["stdout"] == "hello\n"
+        assert data["explicit_language"] is True
+        assert data["language"] == "command"
+
+    def test_command_language_unknown_command_is_not_python(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "gti status", "language": "command"},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["exit_code"] == 127
+        assert "gti: command not found" in data["stderr"]
+        assert data["language"] == "command"
+
+    def test_command_language_does_not_evaluate_python_expression(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "1 + 1", "language": "command"},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["stdout"] != "2\n"
+        assert data["exit_code"] == 127
+        assert data["language"] == "command"
+
+    def test_unknown_exec_language_is_rejected_without_execution(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "1 + 1", "language": "ruby"},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["code"] == "invalid_language"
+        assert data["supported"] == ["command", "legacy-auto", "python"]
+        assert data["planned"] == []
+
+    def test_non_string_exec_language_is_rejected(self):
+        from zmux import server
+        resp = server.app.test_client().post(
+            "/api/exec",
+            json={"command": "1 + 1", "language": ["legacy-auto"]},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "invalid_language"
+
+    def test_status_prompt_input_and_stop_are_legacy_rest_endpoints(self):
+        from zmux import server
+        client = server.app.test_client()
+        checks = [
+            client.get("/api/status", headers=self._auth()),
+            client.get("/api/prompt", headers=self._auth()),
+            client.post("/api/input", json={"text": "hello"}, headers=self._auth()),
+            client.post("/api/stop", headers=self._auth()),
+        ]
+        for resp in checks:
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["legacy"] is True
+            assert data["legacy_endpoint"] is True
+            assert data["legacy_status"] == "compatibility-only"
+            assert "REST terminal session endpoints" in data["deprecation"]

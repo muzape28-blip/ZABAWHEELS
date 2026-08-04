@@ -10,6 +10,8 @@ import shlex
 import stat
 from pathlib import Path
 
+from zmux.command_registry import WRAPPER_COMMANDS
+
 
 def _is_writable(path: Path) -> bool:
     """Check if a directory can be created and written to."""
@@ -60,37 +62,68 @@ def resolve_app_dir() -> Path:
 
 APP_DIR = resolve_app_dir()
 
-# Critical directories - all app-private
+# Core runtime directories — all app-private.
 HOME_DIR = APP_DIR / "home"
 PROJECTS_DIR = HOME_DIR / "projects"
 CACHE_DIR = APP_DIR / "cache"
+LOG_DIR = APP_DIR / "logs"
+BIN_DIR = APP_DIR / "bin"
+
+# Legacy ZABAWHEELS/zpip package-manager directories. Retained for migration,
+# tests, and existing installs only; Alpine apk + venv/pip is the product
+# package workflow.
 DOWNLOADS_DIR = CACHE_DIR / "downloads"
 STAGING_DIR = APP_DIR / "staging"
 USER_PACKAGES_DIR = APP_DIR / "user_packages"
 INSTALLED_DIR = APP_DIR / "installed"
-LOG_DIR = APP_DIR / "logs"
-BIN_DIR = APP_DIR / "bin"
 
-# Ensure all directories exist with restricted permissions (owner-only).
-# On Android this keeps app-private data inaccessible to other apps and
-# prevents accidental exposure via shared storage providers.
-for directory in [
+CORE_RUNTIME_DIRS = (
     HOME_DIR,
     PROJECTS_DIR,
     CACHE_DIR,
+    LOG_DIR,
+    BIN_DIR,
+)
+
+LEGACY_PACKAGE_DIRS = (
     DOWNLOADS_DIR,
     STAGING_DIR,
     USER_PACKAGES_DIR,
     INSTALLED_DIR,
-    LOG_DIR,
-    BIN_DIR,
-]:
+)
+
+ALL_RUNTIME_DIRS = CORE_RUNTIME_DIRS + LEGACY_PACKAGE_DIRS
+
+# Ensure all directories exist with restricted permissions (owner-only).
+# On Android this keeps app-private data inaccessible to other apps and
+# prevents accidental exposure via shared storage providers. Legacy package
+# dirs are still created so old installs/tests keep working until removal.
+for directory in ALL_RUNTIME_DIRS:
     directory.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(directory, stat.S_IRWXU)  # 0o700
     except OSError:
         pass
 
+
+
+def legacy_package_paths() -> dict[str, Path]:
+    """Return legacy package-manager paths for diagnostics/migration."""
+    return {
+        "downloads": DOWNLOADS_DIR,
+        "staging": STAGING_DIR,
+        "user_packages": USER_PACKAGES_DIR,
+        "installed": INSTALLED_DIR,
+    }
+
+
+def legacy_user_packages_pythonpath(existing: str = "") -> str:
+    """Prepend legacy ``USER_PACKAGES_DIR`` to a PYTHONPATH string."""
+    entry = str(USER_PACKAGES_DIR)
+    parts = [entry]
+    if existing:
+        parts.append(existing)
+    return os.pathsep.join(parts)
 
 # ---------------------------------------------------------------------------
 # Transparent Unix shell integration
@@ -102,9 +135,9 @@ for directory in [
 # commands resolve natively in any /system/bin/sh session.
 # ---------------------------------------------------------------------------
 
-#: Commands that get an executable shell wrapper inside BIN_DIR.
-CLI_COMMANDS = ("zpip", "help", "zmux-info", "clear", "pip", "zmux-setup-storage",
-                "linux-setup", "linux", "gates", "zmux-pty-probe")
+#: Commands that get an executable shell wrapper inside BIN_DIR. The registry
+#: distinguishes supported app controls from legacy compatibility names.
+CLI_COMMANDS = WRAPPER_COMMANDS
 
 #: Wrapper template shared by every ZMUX command. Each script re-enters the
 #: Python runtime via ``python -m zmux.cli "$0" "$@"`` so the typed command
@@ -176,12 +209,12 @@ except OSError:
 # ---------------------------------------------------------------------------
 
 def ensure_user_packages_importable() -> None:
-    """Put ``USER_PACKAGES_DIR`` on ``sys.path`` for the running interpreter.
+    """Keep legacy ``USER_PACKAGES_DIR`` importable in host-side Python.
 
-    ``zpip install`` writes there and child processes see it through
-    ``PYTHONPATH``, but the in-process REPL — the primary way people use
-    ZMUX — did not: ``zpip install X`` reported success and ``import X``
-    then failed with ModuleNotFoundError. Idempotent; called at import time.
+    ``zpip install`` writes there and old host-console/REST compatibility paths
+    may still import those packages. Alpine-first user workflows should prefer
+    ``apk`` and venv-local ``pip`` inside the guest instead. Idempotent; called
+    at import time until the zpip runtime is removed.
     """
     import sys
     entry = str(USER_PACKAGES_DIR)
@@ -221,31 +254,44 @@ EXAMPLE_SCRIPTS: dict[str, str] = {
         'print("isi notes.txt:", note.read_text(encoding="utf-8").strip())\n'
         'note.unlink()\n'
     ),
-    "zpip_demo.py": (
-        '"""See what zpip knows about this runtime."""\n'
+    "runtime_info_demo.py": (
+        '"""See the ZMUX runtime fingerprint used by diagnostics."""\n'
         'import sys\n\n'
         'sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))\n'
-        'from zmux import zpip  # noqa: E402\n\n'
-        'print(zpip.format_fingerprint(zpip.runtime_fingerprint()))\n'
+        'from zmux import runtime_info  # noqa: E402\n\n'
+        'print(runtime_info.format_fingerprint(runtime_info.runtime_fingerprint()))\n'
     ),
 }
 
 _EXAMPLES_MARKER = ".examples_seeded"
 
-#: User startup file, executed line by line when a session starts.
-#: ZMUX has no login shell, so nothing sources /etc/profile or .bashrc;
-#: this is the equivalent hook (cf. Rin's ENV=$HOME/.mkshrc).
+LEGACY_RC_HOOK = True
+"""``~/.zmuxrc`` is a legacy host-side hook, not the Alpine shell profile."""
+
+ALPINE_PROFILE_FILENAME = ".profile"
+"""Persistent Alpine login-shell profile stored in HOME_DIR and bound to /root."""
+
+#: Legacy host-side startup file, executed line by line before Alpine starts.
+#: Keep for migration and tests only. User-facing shell customisation belongs
+#: in Alpine's ``~/.profile`` (``ALPINE_PROFILE_FILENAME``), not here.
 RC_FILENAME = ".zmuxrc"
 
 
-def read_rc_lines(home: Path = HOME_DIR) -> list:
-    """Return executable lines from ``~/.zmuxrc`` (comments/blanks stripped).
+def legacy_rc_path(home: Path = HOME_DIR) -> Path:
+    """Return the legacy host-side rc file path for migration diagnostics."""
+    return Path(home) / RC_FILENAME
 
-    Never raises: a broken or unreadable rc file must not stop the terminal
-    from starting.
+
+def read_rc_lines(home: Path = HOME_DIR) -> list:
+    """Return executable legacy ``~/.zmuxrc`` lines.
+
+    This hook feeds host-side Python compatibility code before Alpine starts.
+    It is retained for migration; normal shell customisation belongs in
+    Alpine's ``~/.profile``. Never raises: a broken or unreadable rc file must
+    not stop the terminal from starting.
     """
     try:
-        raw = (Path(home) / RC_FILENAME).read_text(encoding="utf-8")
+        raw = legacy_rc_path(home).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []
     lines = []

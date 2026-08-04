@@ -16,10 +16,24 @@ from waitress import serve
 
 from zmux.security import AUTH_TOKEN, verify_token
 from zmux.terminal import get_session
-from zmux import zpip
+from zmux import runtime_info
 
 APP_VERSION = "1.0.2"
 BASE_DIR = Path(__file__).resolve().parent.parent
+LEGACY_REST_DEPRECATION = (
+    "REST terminal session endpoints are retained for compatibility only. The "
+    "WebView terminal uses authenticated WebSocket input connected to the "
+    "Alpine PTY shell."
+)
+LEGACY_EXEC_DEPRECATION = (
+    "REST /api/exec is retained for compatibility only. The WebView terminal "
+    "uses authenticated WebSocket input connected to the Alpine PTY shell."
+)
+LEGACY_EXEC_PROMPT = "zmux:~$ "
+LEGACY_EXEC_INPUT_MODE = "legacy-auto-command-or-python"
+EXEC_LANGUAGE_DEFAULT = "legacy-auto"
+EXEC_LANGUAGES_IMPLEMENTED = frozenset({"legacy-auto", "python", "command"})
+EXEC_LANGUAGES_PLANNED = frozenset()
 
 #: Chromium's blocked-port list (net/base/port_util.cc ``kRestrictedPorts``).
 #: The Android WebView is Chromium and refuses to *load* (ERR_UNSAFE_PORT)
@@ -126,13 +140,66 @@ def index():
 
 @app.get("/api/health")
 def health_check():
-    session = get_session()
-    return jsonify({"ok": True, "version": APP_VERSION, "app": "ZMUX", "type": "terminal", "status": session.status})
+    # Health must stay cheap and side-effect-free: the product terminal is
+    # created by the WebSocket session manager, not by this legacy REST check.
+    return jsonify({"ok": True, "version": APP_VERSION, "app": "ZMUX", "type": "terminal", "status": "idle", "runtime": "alpine-pty"})
 
 
-# Backwards-compatible alias: the formatter now lives in zmux.zpip so the
-# REST server and the CLI (python -m zmux.cli) share one implementation.
-_format_zpip_output = zpip.format_output
+def _legacy_rest_result(payload: dict, *, deprecation: str = LEGACY_REST_DEPRECATION) -> dict:
+    """Annotate compatibility REST terminal responses without breaking callers."""
+    payload.setdefault("legacy", True)
+    payload.setdefault("legacy_endpoint", True)
+    payload.setdefault("legacy_status", "compatibility-only")
+    payload.setdefault("deprecation", deprecation)
+    return payload
+
+
+def _legacy_exec_result(payload: dict, *, language: str = EXEC_LANGUAGE_DEFAULT,
+                        explicit_language: bool = False) -> dict:
+    """Annotate compatibility REST-exec responses without breaking callers."""
+    payload.setdefault("legacy_input_mode", LEGACY_EXEC_INPUT_MODE)
+    payload.setdefault("explicit_language", explicit_language)
+    payload.setdefault("language", language)
+    return _legacy_rest_result(payload, deprecation=LEGACY_EXEC_DEPRECATION)
+
+
+def _get_exec_language(payload: dict):
+    """Validate optional /api/exec language without changing default behavior."""
+    explicit = "language" in payload
+    raw = payload.get("language", EXEC_LANGUAGE_DEFAULT)
+    if not isinstance(raw, str):
+        return None, explicit, (jsonify({
+            "ok": False,
+            "code": "invalid_language",
+            "message": "Field 'language' must be a string",
+            "supported": sorted(EXEC_LANGUAGES_IMPLEMENTED),
+            "planned": sorted(EXEC_LANGUAGES_PLANNED),
+        }), 400)
+    language = raw.strip().lower()
+    if language in EXEC_LANGUAGES_IMPLEMENTED:
+        return language, explicit, None
+    if language in EXEC_LANGUAGES_PLANNED:
+        return None, explicit, (jsonify({
+            "ok": False,
+            "code": "language_not_implemented",
+            "message": f"/api/exec language={language!r} is reserved but not implemented yet",
+            "supported": sorted(EXEC_LANGUAGES_IMPLEMENTED),
+            "planned": sorted(EXEC_LANGUAGES_PLANNED),
+        }), 501)
+    return None, explicit, (jsonify({
+        "ok": False,
+        "code": "invalid_language",
+        "message": f"Unsupported /api/exec language: {raw}",
+        "supported": sorted(EXEC_LANGUAGES_IMPLEMENTED),
+        "planned": sorted(EXEC_LANGUAGES_PLANNED),
+    }), 400)
+
+
+# Backwards-compatible wrapper: the formatter still lives in zmux.zpip, but the
+# server no longer imports the retiring package manager at module import time.
+def _format_zpip_output(command, result):
+    from zmux import zpip
+    return zpip.format_output(command, result)
 
 
 @app.post("/api/exec")
@@ -144,42 +211,75 @@ def exec_command():
     command = payload.get("command", "")
     if not isinstance(command, str):
         return jsonify({"ok": False, "message": "Field 'command' must be a string"}), 400
-    if command.strip().startswith("zpip"):
-        result = zpip.dispatch(command)
-        output, exit_code = _format_zpip_output(command, result)
-        return jsonify(
-            {
-                "ok": exit_code == 0,
-                "stdout": output + "\n",
-                "stderr": "",
-                "exit_code": exit_code,
-                "status": "idle",
-                "prompt": get_session().get_prompt(),
-            }
-        )
-    if command.strip() == "zmux-info":
-        fp = zpip.runtime_fingerprint()
-        return jsonify(
-            {
-                "ok": True,
-                "stdout": zpip.format_fingerprint(fp) + "\n",
-                "stderr": "",
-                "exit_code": 0,
-                "status": "idle",
-                "prompt": get_session().get_prompt(),
-            }
-        )
-    session = get_session()
+    language, explicit_language, language_err = _get_exec_language(payload)
+    if language_err:
+        return language_err
     timeout = payload.get("timeout")
     if timeout is not None:
         try:
             timeout = float(timeout)
         except (TypeError, ValueError):
             return jsonify({"ok": False, "message": "timeout must be a number"}), 400
+
+    def legacy_result(result_payload: dict) -> dict:
+        return _legacy_exec_result(
+            result_payload,
+            language=language or EXEC_LANGUAGE_DEFAULT,
+            explicit_language=explicit_language,
+        )
+
+    if language == "python":
+        session = get_session()
+        result = session.execute_python(command, timeout=timeout)
+        result["prompt"] = session.get_prompt()
+        return jsonify(legacy_result(result))
+    if language == "command":
+        session = get_session()
+        result = session.execute_command(command, timeout=timeout)
+        result["prompt"] = session.get_prompt()
+        return jsonify(legacy_result(result))
+    if command.strip().startswith("zpip"):
+        from zmux import zpip
+        result = zpip.dispatch(command)
+        output, exit_code = _format_zpip_output(command, result)
+        return jsonify(
+            legacy_result(
+                {
+                    "ok": exit_code == 0,
+                    "stdout": output + "\n",
+                    "stderr": "",
+                    "exit_code": exit_code,
+                    "status": "idle",
+                    "legacy_command": result.get("legacy", True),
+                    "legacy_status": result.get("legacy_status", "compatibility-only"),
+                    "legacy_notice": result.get("legacy_notice", ""),
+                    "legacy_manager": result.get("manager", "zpip"),
+                    # Do not instantiate the legacy PythonShell session just to
+                    # answer a compatibility metadata command.
+                    "prompt": LEGACY_EXEC_PROMPT,
+                }
+            )
+        )
+    if command.strip() == "zmux-info":
+        fp = runtime_info.runtime_fingerprint()
+        return jsonify(
+            legacy_result(
+                {
+                    "ok": True,
+                    "stdout": runtime_info.format_fingerprint(fp) + "\n",
+                    "stderr": "",
+                    "exit_code": 0,
+                    "status": "idle",
+                    # Diagnostic-only command; avoid booting the legacy REST
+                    # PythonShell session.
+                    "prompt": LEGACY_EXEC_PROMPT,
+                }
+            )
+        )
+    session = get_session()
     result = session.execute(command, timeout=timeout)
     result["prompt"] = session.get_prompt()
-    return jsonify(result)
-
+    return jsonify(legacy_result(result))
 
 @app.post("/api/input")
 @require_auth
@@ -192,7 +292,7 @@ def send_input():
         return jsonify({"ok": False, "message": "Field 'text' must be a string"}), 400
     session = get_session()
     result = session.send_input(text)
-    return jsonify(result)
+    return jsonify(_legacy_rest_result(result))
 
 
 @app.post("/api/stop")
@@ -201,21 +301,27 @@ def stop_process():
     session = get_session()
     result = session.stop()
     result["prompt"] = session.get_prompt()
-    return jsonify(result)
+    return jsonify(_legacy_rest_result(result))
 
 
 @app.get("/api/status")
 @require_auth
 def get_status():
     session = get_session()
-    return jsonify({"ok": True, "status": session.status, "exit_code": session.exit_code, "cwd": str(session.cwd), "prompt": session.get_prompt()})
+    return jsonify(_legacy_rest_result({
+        "ok": True,
+        "status": session.status,
+        "exit_code": session.exit_code,
+        "cwd": str(session.cwd),
+        "prompt": session.get_prompt(),
+    }))
 
 
 @app.get("/api/prompt")
 @require_auth
 def get_prompt():
     session = get_session()
-    return jsonify({"ok": True, "prompt": session.get_prompt()})
+    return jsonify(_legacy_rest_result({"ok": True, "prompt": session.get_prompt()}))
 
 
 def _bind_listener(host: str, port: int, family: int = socket.AF_INET, reuse_port: bool = False) -> socket.socket:

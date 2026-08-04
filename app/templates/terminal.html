@@ -361,7 +361,7 @@ function initTerminal() {
     // Treat a bare LF as CRLF: Alpine/busybox tools sometimes emit \n alone,
     // and without this the next line starts mid-row (the "messy, unaligned
     // left edge" output). Real PTYs do this in the kernel (ONLCR); for the
-    // host console this is the faithful equivalent.
+    // legacy app-control console this is the faithful equivalent.
     convertEol: true,
     fontSize: 13,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
@@ -409,7 +409,7 @@ function initTerminal() {
     }
     if (ctrlLatched && data.length === 1) { sendKeyInput(data); return; }
     // Ctrl+B is deliberately NOT intercepted here: vim (and other TUIs) use
-    // it for page-up. The explicit ZMX⇄ toolbar key toggles shell modes.
+    // it for page-up. Any explicit PTY toggle is legacy compatibility only.
     ws.send(data);
   });
 
@@ -811,7 +811,7 @@ function renderTabs(state) {
  *
  *   label     text on the button
  *   send      literal string sent to the terminal
- *   action    'pty.toggle' — jump between Alpine PTY shell and host console
+ *   action    'pty.toggle' — legacy compatibility toggle (not normal UX)
  *   modifier  'ctrl' — latches instead of sending (tap CTRL, then a key)
  *   repeat    auto-repeats while held (arrows, backspace)
  * ------------------------------------------------------------------ */

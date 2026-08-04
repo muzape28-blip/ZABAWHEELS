@@ -1,23 +1,21 @@
-"""Interactive terminal session — ZMUX host console + real Alpine PTY shell.
+"""Interactive terminal session — Alpine PTY shell plus legacy app-control console.
 
-Two terminal personalities, both honest:
+Two terminal personalities exist, but only Alpine is the product shell:
 
-- **Host console** (``zmux:~$``): the original Python-native line
-  discipline. Filesystem/zmux commands run directly; anything unrecognized
-  is evaluated as Python. Builtins (``zpip``, ``gates``, ``zmux-info``,
-  ``linux-setup``, …) live here because they need the app's embedded Python.
+- **Legacy app-control console** (``zmux:~$``): the original Python-native
+  line discipline. It remains for migration/tests/internal diagnostics while
+  cleanup phases retire host-side package and REPL behavior.
 - **Alpine shell (real PTY)**: ``linux`` (bare) — or automatic startup —
   spawns a genuine PTY whose child is ``proot -> /bin/sh -l`` inside the
   Alpine rootfs. From that moment the *kernel* does echo, backspace,
   Ctrl+C (SIGINT to the foreground process group), job control and
   ``isatty()``; this class is only a byte pump between the WebSocket and
   ``/dev/ptmx``. ``vim``/``htop``/``less``/``tmux`` work here. ``exit`` (or
-  Ctrl+D) ends the shell and returns to the host console; the **ZMX⇄**
-  toolbar key detaches (terminating the Alpine session) and returns
-  immediately. Ctrl+B is deliberately not reserved — vim uses it for
-  page-up.
+  Ctrl+D) ends the shell; production auto-reopens Alpine. Any legacy detach
+  control is compatibility-only and should not be presented as normal UX.
+  Ctrl+B is deliberately not reserved — vim uses it for page-up.
 
-Interactivity (host console)
+Interactivity (legacy app-control console)
 ----------------------------
 Commands run on a dedicated worker thread so the input path stays live:
 
@@ -47,13 +45,24 @@ from zmux.paths import HOME_DIR, RC_FILENAME, display_path, read_rc_lines, seed_
 from zmux.python_shell import PythonShell
 
 
+ALPINE_PRODUCT_SHELL = True
+"""WebSocket sessions should present Alpine in a real PTY as the product shell."""
+
+LEGACY_APP_CONTROL_CONSOLE = True
+"""The Python app-control console remains only as a migration/internal fallback."""
+
+LEGACY_PTY_TOGGLE_WARNING = (
+    b"[legacy compatibility: app-control console; use the Alpine shell for normal work]\r\n"
+)
+"""Warning shown when a compatibility toggle detaches from the Alpine PTY."""
+
 _SENTINEL_COMPILE_ERROR = object()
 _CSI_FINAL_BYTES = frozenset(
     chr(c) for c in range(0x40, 0x7F)  # @A–Z[\]^_`a–z{|}~
 )
 _REPL_ENTER = {"python", "python3"}
 _REPL_EXIT = {"exit", "quit", "exit()", "quit()"}
-#: Bare words that open the real Alpine PTY shell from the host console.
+#: Bare words that open the real Alpine PTY shell from the legacy app-control console.
 _ALPINE_ENTER = {"linux", "alpine"}
 
 # Private terminal control emitted by the generated Alpine
@@ -223,11 +232,12 @@ class PTYTerminalSession:
                     self._emit_prompt()
 
     def _run_rc(self) -> None:
-        """Execute ``~/.zmuxrc`` before the first prompt, if present.
+        """Execute the legacy host-side ``~/.zmuxrc`` hook, if present.
 
-        ZMUX has no login shell, so this is the only hook users have for
-        aliases, imports or environment tweaks. Failures are reported but
-        never prevent the terminal from starting.
+        This exists for migration and compatibility with the legacy app-control
+        console. It is not the Alpine shell startup file; user-facing shell
+        customisation should go in Alpine ``~/.profile``. Failures are reported
+        but never prevent the terminal from starting.
         """
         lines = read_rc_lines(HOME_DIR)
         if not lines:
@@ -605,7 +615,7 @@ class PTYTerminalSession:
             self._enter_linux_pty()
 
     def _leave_linux_pty(self, reason: str = "detach") -> None:
-        """Terminate the Alpine PTY session and return to the host console."""
+        """Terminate the Alpine PTY session and enter the legacy app-control console."""
         with self.lock:
             pty = self.pty
             self.pty = None
@@ -618,7 +628,7 @@ class PTYTerminalSession:
         self._emit_prompt()
 
     def toggle_pty(self) -> None:
-        """Ctrl+B: jump between the Alpine PTY shell and the host console."""
+        """Compatibility toggle between Alpine PTY and legacy app-control console."""
         with self.lock:
             if not self.is_running:
                 return

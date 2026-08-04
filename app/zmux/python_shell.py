@@ -1,9 +1,13 @@
-"""Python-native command interpreter used by the ZMUX terminal.
+"""Legacy host-side Python command interpreter.
 
-This module deliberately never starts ``/system/bin/sh``.  Python source is
+This module deliberately never starts ``/system/bin/sh``. Python source is
 executed by the embedded p4a CPython runtime and Android utilities, when
 needed, are started directly with ``subprocess`` and an absolute executable
 path.
+
+The Alpine PTY shell is the product terminal. ``PythonShell`` remains only for
+REST ``/api/exec`` compatibility, app-control commands that still need embedded
+Python, migration hooks, and tests while the host-console era is retired.
 """
 from __future__ import annotations
 
@@ -29,6 +33,16 @@ from zmux.paths import HOME_DIR
 from zmux.streams import StreamingWriter
 
 
+LEGACY_COMPATIBILITY_EXECUTOR = True
+"""This executor is retained for compatibility; Alpine PTY is the product shell."""
+
+LEGACY_PYTHON_FALLBACK = True
+"""Unknown host-console lines may still fall through to Python for compatibility."""
+
+STRICT_HOST_COMMANDS_ENV = "ZMUX_STRICT_HOST_COMMANDS"
+"""Opt-in env flag: command-like unknown lines skip Python fallback."""
+
+
 # --- Optional Rich rendering (DX polish) --------------------------------------
 # Rich is a pure-python universal wheel; when installed (e.g. via
 # ``zpip install rich``) tracebacks render syntax-highlighted. Everything
@@ -51,12 +65,12 @@ def _get_rich():
 
 
 class PythonShell:
-    """A persistent Python REPL with real Python filesystem commands.
+    """Legacy persistent Python REPL with real Python filesystem commands.
 
-    ``execute`` returns terminal-style dictionaries so it can be used by both
-    the HTTP endpoint and the websocket terminal.  No output is fabricated:
-    output is either produced by CPython, Python's filesystem APIs, or a real
-    child process.
+    ``execute`` returns terminal-style dictionaries for compatibility callers.
+    It is not the normal user-facing ZMUX shell; WebSocket sessions should boot
+    Alpine in a real PTY. No output is fabricated: output is either produced by
+    CPython, Python's filesystem APIs, or a real child process.
     """
 
     def __init__(self, cwd: Path | None = None):
@@ -188,6 +202,13 @@ class PythonShell:
                 )
         return None
 
+    def _command_names(self) -> set:
+        """Commands accepted by the legacy host-side command dispatcher."""
+        return set(self.commands) | {
+            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage",
+            "git", "linux", "alpine", "linux-setup", "gates", "zmux-pty-probe",
+        }
+
     def execute(self, line: str, timeout: float | None = None, force_python: bool = False,
                 env_extra: dict | None = None) -> dict:
         line = line.strip()
@@ -207,10 +228,7 @@ class PythonShell:
         # Only guard lines that are actually command invocations. Python
         # source legitimately contains ';', '&' and '&&'-like text, and must
         # keep falling through to the interpreter.
-        if command in self.commands or command in {
-            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage",
-            "git", "linux", "alpine", "linux-setup", "gates", "zmux-pty-probe",
-        } or self._is_external_command(command):
+        if command in self._command_names() or self._is_external_command(command):
             rejection = self._unsupported_operator(parts, line)
             if rejection is not None:
                 return rejection
@@ -275,6 +293,13 @@ class PythonShell:
                     ),
                     code=1,
                 )
+            # Legacy host-console fallback: preserve old Python escape-hatch
+            # behavior until callers are migrated. Alpine PTY users should not
+            # reach this path for normal shell commands. A strict opt-in flag
+            # lets tests/callers preview command-only behavior without changing
+            # the default compatibility contract.
+            if self._strict_host_commands() and self._looks_like_command(line):
+                return self._command_not_found(line)
             return self._exec_python(line, origin=line)
         except (OSError, ValueError) as exc:
             return self._result(stderr=f"{command}: {exc}\n", code=1)
@@ -593,13 +618,74 @@ class PythonShell:
         "+ - * / // % ** = == != < > <= >= | & ^ ~ @ := and or not in is if else for".split()
     )
 
+    @staticmethod
+    def _strict_host_commands() -> bool:
+        """Whether to preview strict command-only handling in host shell mode."""
+        return os.environ.get(STRICT_HOST_COMMANDS_ENV, "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+
+    def execute_command(self, line: str, timeout: float | None = None,
+                        env_extra: dict | None = None) -> dict:
+        """Execute one line as a command, never as implicit Python.
+
+        This backs explicit REST ``language="command"``. It keeps known
+        builtins/app-control/external commands working but returns shell-style
+        command-not-found for anything else, including Python expressions.
+        """
+        line = line.strip()
+        if not line:
+            return self._result()
+        try:
+            parts = shlex.split(line)
+        except ValueError as exc:
+            return self._result(stderr=f"parse error: {exc}\n", code=2)
+        if not parts:
+            return self._result()
+        command = parts[0]
+        rejection = self._unsupported_operator(parts, line)
+        if rejection is not None:
+            return rejection
+        if any(x in line for x in ("|", ">", "<")):
+            return self._exec_subprocess(line, timeout, env_extra=env_extra)
+        try:
+            if command in self.commands:
+                return self._result(stdout=self.commands[command](parts[1:]))
+            if command in {"git", "linux", "alpine"}:
+                return self._exec_linux(command, parts[1:], timeout)
+            if command in {"linux-setup", "gates", "zmux-pty-probe"}:
+                return self._exec_zmux_command(command, parts[1:])
+            if command in {"python", "python3"}:
+                return self._exec_python_command(parts[1:])
+            if command in {"pip", "zpip", "help", "zmux-info", "zmux-setup-storage"}:
+                return self._exec_zmux_command(command, parts[1:])
+            if self._is_external_command(command):
+                return self._exec_subprocess(line, timeout, env_extra=env_extra)
+            if command in self.KNOWN_TUI_COMMANDS:
+                return self._result(
+                    stderr=(
+                        f"zmux: {command} needs a real TTY, which ZMUX does not "
+                        "provide (no PTY).\n"
+                    ),
+                    code=1,
+                )
+            return self._command_not_found(line)
+        except (OSError, ValueError) as exc:
+            return self._result(stderr=f"{command}: {exc}\n", code=1)
+
+    def _command_not_found(self, source: str) -> dict:
+        """Return a shell-style command-not-found result for a legacy line."""
+        name = source.strip().split()[0]
+        return self._result(stderr=f"zmux: {name}: command not found\n", code=127)
+
     def _looks_like_command(self, source: str) -> bool:
-        """True when a failed Python line was probably a mistyped command.
+        """True when a failed legacy host-console line was probably a command.
 
         `gti status` is not valid Python and not a known program; reporting
         `SyntaxError: invalid syntax` for it is unhelpful, because the user
         was typing a shell command. Real Python (assignments, calls, literals)
-        must never be diverted, so this only matches bare-word lines.
+        must never be diverted, so this only matches bare-word lines. This is a
+        compatibility classifier for the old host console, not Alpine PTY UX.
         """
         stripped = source.strip()
         if not stripped or "\n" in stripped:
@@ -620,9 +706,7 @@ class PythonShell:
         # Anything Python could legitimately resolve is not a typo.
         if first in self.globals or first in dir(builtins):
             return False
-        if first in self.commands or first in {
-            "python", "python3", "pip", "zpip", "help", "zmux-info", "zmux-setup-storage", "exit", "quit"
-        }:
+        if first in self._command_names() or first in {"exit", "quit"}:
             return False
         import keyword
         return not keyword.iskeyword(first) and not keyword.issoftkeyword(first)

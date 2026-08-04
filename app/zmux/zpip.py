@@ -73,6 +73,21 @@ SEARCH_TIMEOUT = 8
 CATALOG_TTL_SECONDS = 3600
 
 DB_FILE = INSTALLED_DIR / "packages.json"
+LEGACY_PACKAGE_MANAGER = True
+LEGACY_STATUS = "compatibility-only"
+LEGACY_NOTICE = (
+    "zpip is retained for compatibility only. ZMUX user package workflow is "
+    "Alpine apk plus Python venv/pip."
+)
+
+
+def _mark_legacy_result(result: dict) -> dict:
+    """Annotate a dispatch result without changing command-specific fields."""
+    result.setdefault("legacy", True)
+    result.setdefault("legacy_status", LEGACY_STATUS)
+    result.setdefault("legacy_notice", LEGACY_NOTICE)
+    result.setdefault("manager", "zpip")
+    return result
 
 #: PyPI distribution names that collide with famous command-line tools.
 #: `zpip install nano` resolves to PyPI (no curated manifest), and PyPI's
@@ -1124,28 +1139,32 @@ def format_fingerprint(fp: dict) -> str:
     return "\n".join(lines)
 
 
+# Runtime-info compatibility aliases; diagnostics live outside legacy zpip.
+from zmux.runtime_info import android_abi, format_fingerprint, runtime_fingerprint
+
+
 def dispatch(command: str) -> dict:
     """Dispatch one honest zpip command without invoking a shell."""
     try:
         args = shlex.split(command)
     except ValueError as error:
-        return {"ok": False, "error": str(error)}
+        return _mark_legacy_result({"ok": False, "error": str(error)})
     if args and args[0] == "zpip":
         args.pop(0)
     if not args:
-        return {"ok": False, "error": "usage: zpip search|info|install|list|verify|uninstall|doctor"}
+        return _mark_legacy_result({"ok": False, "error": "usage: zpip search|info|install|list|verify|uninstall|doctor"})
     action, values = args[0], args[1:]
     try:
         if action == "list" and not values:
-            return list_installed()
+            return _mark_legacy_result(list_installed())
         if action == "doctor" and not values:
-            return doctor()
+            return _mark_legacy_result(doctor())
         if action == "search" and values:
-            return search(" ".join(values))
+            return _mark_legacy_result(search(" ".join(values)))
         if action in {"info", "verify", "uninstall"} and len(values) == 1:
-            return globals()[action](values[0])
+            return _mark_legacy_result(globals()[action](values[0]))
         if action == "install" and len(values) in {1, 2}:
-            return install(values[0], values[1] if len(values) == 2 else None)
+            return _mark_legacy_result(install(values[0], values[1] if len(values) == 2 else None))
     except (ValueError, OSError) as error:
-        return {"ok": False, "error": str(error)}
-    return {"ok": False, "error": f"invalid arguments for zpip {action}"}
+        return _mark_legacy_result({"ok": False, "error": str(error)})
+    return _mark_legacy_result({"ok": False, "error": f"invalid arguments for zpip {action}"})

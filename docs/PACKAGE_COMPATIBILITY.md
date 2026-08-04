@@ -1,5 +1,8 @@
 # Package Compatibility Matrix
 
+> **Legacy ZABAWHEELS note (2026-08-03):** this matrix belongs to the retained
+> wheelhouse/package-pipeline era. ZMUX's current user-facing package workflow
+> is Alpine `apk` plus Python venv/pip inside the Alpine shell.
 Runtime: zmux-py314-api26-p4a5c192d7b7308-r1
 Last Updated: 2026-07-29
 Status: Initial tracking - No native packages built yet

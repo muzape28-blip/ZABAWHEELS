@@ -395,13 +395,17 @@ class TestZmuxCli:
         assert "ZMUX Runtime Fingerprint" in result.stdout
 
     def test_cli_pip_fallback_message(self, capsys, monkeypatch):
-        """Without a runnable interpreter, pip points the user to zpip."""
+        """Without a runnable host interpreter, pip points users to Alpine."""
         from zmux import cli
         monkeypatch.setattr(sys, "executable", "/nonexistent/python")
         assert cli.main(["pip", "install", "requests"]) == 1
-        out = capsys.readouterr().out
-        assert "pip is not available" in out
-        assert "zpip install <name>" in out
+        captured = capsys.readouterr()
+        out = captured.out
+        assert "Host-side pip is not part of the Alpine-first ZMUX workflow" in out
+        assert "python3 -m venv ~/.venv" in out
+        assert "python3 -m pip install <name>" in out
+        assert "zpip install <name>" not in out
+        assert "WARNING:" not in captured.err
 
     def test_cli_pip_delegates_to_standard_pip(self, capfd):
         """With a runnable interpreter, standard pip is invoked."""
@@ -422,10 +426,9 @@ class TestZmuxCli:
         assert "pip" in capfd.readouterr().out
 
     def test_format_output_is_shared(self):
-        """zpip.format_output is the shared formatter used by server and CLI."""
-        from zmux import zpip, server
-        assert server._format_zpip_output is zpip.format_output
-        output, exit_code = zpip.format_output(
+        """Server keeps a lazy wrapper around the legacy zpip formatter."""
+        from zmux import server
+        output, exit_code = server._format_zpip_output(
             "zpip install demo",
             {"ok": True, "package": "demo", "version": "1.0", "dependencies_installed": []},
         )
@@ -437,4 +440,4 @@ class TestZmuxCli:
         from zmux import zpip
         text = zpip.format_fingerprint(zpip.runtime_fingerprint())
         assert text.startswith("ZMUX Runtime Fingerprint\n")
-        assert "Installed packages:" in text
+        assert "Installed packages (legacy zpip):" in text

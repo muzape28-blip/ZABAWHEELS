@@ -1,5 +1,6 @@
 # ZMUX Refactor & Architecture Audit Report
 
+> **Historical audit note (2026-08-03):** this report captures the earlier IDE-to-terminal and ZABAWHEELS wheelhouse era. Current ZMUX user guidance is Alpine-first; see [README.md](README.md), [docs/README.md](docs/README.md), and [docs/LEGACY_PACKAGE_PIPELINE.md](docs/LEGACY_PACKAGE_PIPELINE.md).
 ## Executive Summary
 
 ZMUX has been successfully refactored from **Zabacode IDE** into a standalone, lightweight **Android Terminal** for Python development, backed by the **ZABAWHEELS** curated wheelhouse infrastructure.
